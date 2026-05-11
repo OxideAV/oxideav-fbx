@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.1](https://github.com/OxideAV/oxideav-fbx/releases/tag/v0.0.1) - 2026-05-11
+
+### Other
+
+- Initial commit: oxideav-fbx round 1 (binary container reader + decoder)
+
 ### Added
 
 - Round 1 — initial bootstrap.
