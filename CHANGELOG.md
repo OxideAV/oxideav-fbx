@@ -9,6 +9,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Round 3 — binary writer (decoder/parser round-trip closure).
+  - New `writer` module: `write_document(&FbxDocument) -> Result<Vec<u8>>`
+    emits the 27-byte header + recursive Node Records + final
+    NULL-record sentinel per Alexander Gessler / Blender Foundation,
+    *FBX Binary File Format Specification* (`docs/3d/fbx/blender-fbx-binary-format.html`).
+    All property type codes — scalars `Y C I F D L`, arrays
+    `f d l i b`, specials `S R` — are written; the 32-bit (pre-7500)
+    vs 64-bit (≥ 7500) Node Record layout is auto-selected from
+    `FbxDocument::version`. Arrays use `Encoding == 0` (raw) for
+    byte-determinism (the Gessler doc allows both forms; readers
+    accept either).
+  - Round-trip closure: `binary::parse` + `writer::write_document` is
+    deterministic and self-inverse on every `FbxDocument` the parser
+    produces. Verified by `tests/writer_roundtrip.rs`: a hand-built
+    `FbxDocument` mirroring the synthetic-quad fixture serialises +
+    re-decodes to an equal scene at both layout widths, and a
+    parser-output → writer → parser → writer chain yields the
+    identical byte buffer twice.
+  - **No Autodesk footer is emitted.** The Gessler doc records the
+    bytes after the top-level NULL-record as *"a footer with unknown
+    contents"*; our parser already tolerates files that end at EOF,
+    so files this writer produces round-trip through our own pipeline
+    but may be flagged by SDKs that validate the trailer signature.
+  - Scene3D-level `Mesh3DEncoder` impl (the inverse of
+    `scene::build_scene`) remains NYI; this round only ships the
+    lower-level `FbxDocument` → bytes serialiser.
+  - **ASCII FBX remains NYI** — and unblockable on the current docs
+    corpus. The staged `docs/3d/fbx/README.md` §"What's covered (and
+    what isn't)" explicitly records that no ASCII grammar reference
+    is mirrored (Blender's writeup is binary-only; Kaydara's
+    original FBX 6.x ASCII documentation is no longer on the public
+    web). Implementing ASCII FBX without re-deriving the grammar
+    from ufbx C source / Blender's GPL `io_scene_fbx` add-on would
+    violate the project's clean-room policy.
+
 - Round 2 — animation + deformer surfacing.
   - `AnimationStack` / `AnimationLayer` / `AnimationCurveNode` /
     `AnimationCurve` walk in the new `animation` module produces one

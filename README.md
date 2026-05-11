@@ -1,6 +1,6 @@
 # oxideav-fbx
 
-Pure-Rust FBX (Filmbox) binary mesh decoder.
+Pure-Rust FBX (Filmbox) binary mesh decoder + low-level binary writer.
 
 FBX is Autodesk's proprietary 3D scene-and-asset interchange format,
 originally developed by Kaydara for MotionBuilder. There is no
@@ -41,6 +41,13 @@ clean-room from third-party documentation:
   `Deformer{BlendShape}` + `BlendShapeChannel` + `Geometry{Shape}`
   → `MorphTarget` per channel (sparse `Indexes` deltas expanded to
   per-corner buffers).
+- **Binary writer** (round 3) — `write_document(&FbxDocument)` round-trips
+  the parser's output back to a byte buffer the parser re-reads as an
+  equal `FbxDocument`. Every property variant (scalars `Y` `C` `I` `F`
+  `D` `L`; arrays `f` `d` `l` `i` `b`; specials `S` `R`) is emitted;
+  the 32-bit (pre-7500) vs 64-bit (≥ 7500) Node Record layout is
+  auto-selected from `FbxDocument::version`. Arrays are written
+  uncompressed (`Encoding == 0`) for byte-determinism.
 
 ## Decode
 
@@ -57,8 +64,18 @@ println!("{} mesh(es), {} node(s)", scene.meshes.len(), scene.nodes.len());
 ## Lacks
 
 - ASCII FBX — input not starting with the `Kaydara FBX Binary` magic
-  returns `Error::Unsupported("ASCII FBX is not yet supported")`.
-- Encoder — bytes-out is a follow-up round.
+  returns `Error::Unsupported("ASCII FBX is not yet supported")`. The
+  staged docs corpus deliberately omits an ASCII grammar source
+  (Blender's writeup is binary-only and the original Kaydara FBX 6.x
+  ASCII documentation is no longer on the public web — see
+  `docs/3d/fbx/README.md` §"What's covered (and what isn't)").
+- `Mesh3DEncoder` (Scene3D → bytes) — `write_document` operates on the
+  parsed `FbxDocument` tree only; building a fresh `FbxDocument` from a
+  `Scene3D` (the inverse of `scene::build_scene`) is a follow-up round.
+- Autodesk binary footer — the Blender doc records its contents as
+  "unknown"; `write_document` emits no footer at all. Files round-trip
+  through our own parser but may be flagged by SDKs that validate the
+  trailer signature.
 - Animation: per-layer compositing weights, `KeyAttrFlags` cubic /
   step / TCB interpolation modes, `PreRotation` / `PostRotation` /
   pivot composition. Linear sampling between keyframes only.
