@@ -1,0 +1,42 @@
+[package]
+name = "oxideav-fbx"
+version = "0.0.1"
+edition = "2021"
+rust-version = "1.80"
+license = "Apache-2.0"
+authors = ["Mark Karpeles <admin@echelle.co.jp>"]
+description = "Pure-Rust FBX (Filmbox) binary decoder — implements oxideav-mesh3d's Decoder trait"
+repository = "https://github.com/OxideAV/oxideav-fbx"
+homepage = "https://github.com/OxideAV/oxideav-fbx"
+readme = "README.md"
+keywords = ["fbx", "filmbox", "3d", "mesh", "oxideav"]
+categories = ["multimedia::encoding", "rendering::data-formats"]
+
+[features]
+default = ["registry"]
+
+# `registry` wires up `Mesh3DRegistry::register_decoder` against
+# `oxideav-core` so this crate plugs into the broader oxideav framework.
+# Drop it (`default-features = false`) for a free-standing build that
+# only exposes the parsers + Decoder trait impl (Decoder trait comes
+# from `oxideav-mesh3d`, which itself follows the same standalone
+# pattern).
+registry = ["dep:oxideav-core", "oxideav-mesh3d/registry"]
+
+[dependencies]
+# Optional under the `registry` feature so consumers can use the parser
+# API without pulling the framework dependency tree.
+oxideav-core = { version = "0.1", optional = true }
+# `oxideav-mesh3d` carries the typed Scene3D / Mesh / Primitive model
+# and the `Mesh3DDecoder` trait this crate implements. We disable its
+# default features and re-enable `registry` only when our own `registry`
+# feature is on, so the standalone build path stays oxideav-core-free
+# end-to-end.
+oxideav-mesh3d = { version = "0.0", default-features = false }
+# Pure-Rust zlib decoder for FBX array properties whose Encoding == 1
+# (deflate-compressed). This is the same pure-Rust dep oxideav-png and
+# oxideav-pdf use.
+miniz_oxide = "0.9"
+# Used directly to populate `Primitive::extras` / `Mesh::extras` (which
+# are typed as `HashMap<String, serde_json::Value>` by oxideav-mesh3d).
+serde_json = "1"
