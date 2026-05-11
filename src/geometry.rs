@@ -39,7 +39,23 @@ use oxideav_mesh3d::{Error, Mesh, Primitive, Result, Topology};
 use crate::binary::{FbxNode, FbxProperty};
 
 /// Build an `oxideav-mesh3d` [`Mesh`] from an FBX `Geometry` node.
+///
+/// Convenience wrapper around [`extract_geometry_mesh_with_corners`]
+/// that drops the per-corner shared-vertex index cache. New callers
+/// (the deformer module) should prefer the `_with_corners` variant.
 pub fn extract_geometry_mesh(geom: &FbxNode, name: Option<String>) -> Result<Mesh> {
+    extract_geometry_mesh_with_corners(geom, name).map(|(m, _)| m)
+}
+
+/// Same as [`extract_geometry_mesh`] but also returns the per-corner
+/// shared-vertex index buffer (`corner_indices[i]` is the index into
+/// the original `Vertices` array for the i-th `Primitive::positions`
+/// entry). The deformer module uses this to map per-shared-vertex
+/// skin / morph payloads to the per-corner attribute layout.
+pub fn extract_geometry_mesh_with_corners(
+    geom: &FbxNode,
+    name: Option<String>,
+) -> Result<(Mesh, Vec<u32>)> {
     let positions = read_vertices(geom)?;
     let polygon_indices = read_polygon_vertex_index(geom)?;
     let triangles = triangulate(&polygon_indices)?;
@@ -110,7 +126,7 @@ pub fn extract_geometry_mesh(geom: &FbxNode, name: Option<String>) -> Result<Mes
     );
     let mut mesh = Mesh::new(name);
     mesh.primitives.push(prim);
-    Ok(mesh)
+    Ok((mesh, triangles.corner_indices))
 }
 
 /// Pull the `Vertices` payload (a `d` array) out of the Geometry

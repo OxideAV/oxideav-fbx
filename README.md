@@ -13,7 +13,7 @@ clean-room from third-party documentation:
 - **Object-graph semantics** — ufbx project documentation (dual MIT /
   Unlicense). Staged under `docs/3d/fbx/ufbx/`.
 
-## What's covered (round 1)
+## What's covered
 
 - Binary container reader: 27-byte header, recursive Node Record
   walker (32-bit pre-7500, 64-bit ≥ 7500), full property type-code
@@ -28,6 +28,19 @@ clean-room from third-party documentation:
   `LayerElementNormal` / `LayerElementUV` flattened when the mapping
   mode is `ByPolygonVertex` or `ByVertex` (with optional
   `IndexToDirect` indirection).
+- Animation: `AnimationStack` / `AnimationLayer` /
+  `AnimationCurveNode` / `AnimationCurve` → one
+  `oxideav_mesh3d::Animation` per stack. `Lcl Translation` /
+  `Lcl Rotation` (XYZ-Euler-degrees → quaternion) /
+  `Lcl Scaling` (Vec3) and morph-target `DeformPercent` (Scalar)
+  channels supported; component curves merged onto a unified linear
+  grid; `KeyTime` ticks divided by the well-known FBX KTime constant.
+- Deformers: `Deformer{Skin}` + `Deformer{Cluster}` →
+  `oxideav_mesh3d::Skeleton` + `Skin` (per-corner top-4 joints +
+  weights, normalised; inverse-bind = `inverse(TransformLink) * Transform`).
+  `Deformer{BlendShape}` + `BlendShapeChannel` + `Geometry{Shape}`
+  → `MorphTarget` per channel (sparse `Indexes` deltas expanded to
+  per-corner buffers).
 
 ## Decode
 
@@ -46,10 +59,16 @@ println!("{} mesh(es), {} node(s)", scene.meshes.len(), scene.nodes.len());
 - ASCII FBX — input not starting with the `Kaydara FBX Binary` magic
   returns `Error::Unsupported("ASCII FBX is not yet supported")`.
 - Encoder — bytes-out is a follow-up round.
-- Skin / Cluster (deformer) wiring, AnimationStack / Layer / Curve,
-  BlendShape / BlendShapeChannel — parsed into the underlying
-  `FbxDocument` but not surfaced on `Scene3D`.
-- Material / Texture / Video — same.
+- Animation: per-layer compositing weights, `KeyAttrFlags` cubic /
+  step / TCB interpolation modes, `PreRotation` / `PostRotation` /
+  pivot composition. Linear sampling between keyframes only.
+- Skin: `SKINNING_METHOD_DUAL_QUATERNION` / `BLENDED_DQ_LINEAR`
+  surface as plain LBS buffers (the doc notes this is safe to ignore
+  unless the renderer specifically needs it).
+- BlendShape: in-between keyframes are collapsed to the most-recent
+  `Shape` per the doc's `target_shape` simplification.
+- Material / Texture / Video — parsed into the `FbxDocument` but not
+  surfaced on `Scene3D`.
 - Coordinate-system / unit-scale auto-conversion.
 
 ## Standalone build

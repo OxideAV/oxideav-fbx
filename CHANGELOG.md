@@ -7,13 +7,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Round 2 — animation + deformer surfacing.
+  - `AnimationStack` / `AnimationLayer` / `AnimationCurveNode` /
+    `AnimationCurve` walk in the new `animation` module produces one
+    `oxideav_mesh3d::Animation` per stack. Curves on `Lcl Translation`,
+    `Lcl Rotation`, `Lcl Scaling` (default XYZ Euler order, degrees,
+    Hamilton-product Euler→quaternion conversion) and morph
+    `DeformPercent` are surfaced as typed `AnimationChannel`s. Per-axis
+    component curves (`d|X` / `d|Y` / `d|Z`) are merged onto a unified
+    keyframe grid with linear interpolation; `KeyTime` is converted
+    from FBX KTime ticks (`46_186_158_000` ticks/second) to seconds.
+    Per-layer compositing weights, `KeyAttrFlags` interpolation flags,
+    and pivot/PreRotation/PostRotation chains stay NYI per the doc's
+    `ufbx_evaluate_scene()` notes.
+  - `Deformer` walk in the new `deformer` module:
+    - `Deformer{Skin}` + `Deformer{Cluster}` produce one
+      `oxideav_mesh3d::Skeleton` + `oxideav_mesh3d::Skin` per skin
+      deformer; per-cluster `TransformLink` / `Transform` matrices are
+      composed (`inverse(TransformLink) * Transform`) into the
+      skeleton's per-joint inverse-bind matrix; `Indexes` / `Weights`
+      are expanded onto the per-corner `Primitive::joints` /
+      `Primitive::weights` buffers (top-4 weights per corner, sum-1
+      normalised). Skinning method (`SKINNING_METHOD_*`) not surfaced
+      — every skin produces LBS-compatible buffers.
+    - `Deformer{BlendShape}` + `Deformer{BlendShapeChannel}` +
+      `Geometry{Shape}` produce one `oxideav_mesh3d::MorphTarget` per
+      channel (taking the most-recent `Shape` per the doc's
+      `target_shape` simplification — in-between keyframes ignored).
+      Sparse `Indexes` / `Vertices` / `Normals` deltas expand to
+      per-corner `MorphTarget::position` / `MorphTarget::normal`.
+      `Mesh::weights` is grown one slot per channel, default `0.0`.
+  - `geometry::extract_geometry_mesh_with_corners` returns the
+    per-corner shared-vertex index buffer alongside the `Mesh` so the
+    deformer module can map per-shared-vertex skin / morph payloads
+    onto the per-corner `Primitive` layout. Original
+    `extract_geometry_mesh` retained as a thin wrapper.
+
 ## [0.0.1](https://github.com/OxideAV/oxideav-fbx/releases/tag/v0.0.1) - 2026-05-11
 
 ### Other
 
 - Initial commit: oxideav-fbx round 1 (binary container reader + decoder)
 
-### Added
+### Round 1 details
 
 - Round 1 — initial bootstrap.
   - Binary FBX container reader: 27-byte header parse (Kaydara magic +

@@ -24,8 +24,10 @@ use std::collections::HashMap;
 
 use oxideav_mesh3d::{Error, Node, Result, Scene3D};
 
+use crate::animation::extract_animations;
 use crate::binary::{FbxDocument, FbxNode, FbxProperty};
-use crate::geometry::extract_geometry_mesh;
+use crate::deformer::extract_deformers;
+use crate::geometry::extract_geometry_mesh_with_corners;
 
 /// Decode the top-level `Objects` / `Connections` records into a
 /// [`Scene3D`].
@@ -36,6 +38,10 @@ pub fn build_scene(doc: &FbxDocument) -> Result<Scene3D> {
     // animations, etc. are deferred — round 1 surfaces just enough
     // for downstream renderers to draw the mesh.
     let mut geometry_meshes: HashMap<i64, oxideav_mesh3d::MeshId> = HashMap::new();
+    // Per-Geometry FBX id → per-corner shared-vertex indices, captured
+    // so the deformer module can map per-shared-vertex skin / morph
+    // payloads to the per-corner Primitive layout.
+    let mut geometry_corner_indices: HashMap<i64, Vec<u32>> = HashMap::new();
     // Per-Model FBX id → the Node we created for it.
     let mut model_nodes: HashMap<i64, oxideav_mesh3d::NodeId> = HashMap::new();
     // Map the Model FBX id → its FBX subtype string (`"Mesh"`, etc.).
@@ -59,9 +65,11 @@ pub fn build_scene(doc: &FbxDocument) -> Result<Scene3D> {
                     // Patch / Boundary subtypes are not yet
                     // supported.
                     {
-                        let mesh = extract_geometry_mesh(child, element_name(child))?;
+                        let (mesh, corners) =
+                            extract_geometry_mesh_with_corners(child, element_name(child))?;
                         let mid = scene.add_mesh(mesh);
                         geometry_meshes.insert(id, mid);
+                        geometry_corner_indices.insert(id, corners);
                     }
                 }
                 "Model" => {
@@ -94,6 +102,11 @@ pub fn build_scene(doc: &FbxDocument) -> Result<Scene3D> {
     // (kind, child_id, parent_id [, prop_name]) per
     // ufbx/elements-overview.md §"Connections".
     let mut child_of_model: HashMap<i64, Vec<i64>> = HashMap::new();
+    // Per-Geometry FBX id → owning Model's NodeId. Captured here so
+    // the deformer module can hang a [`Skin`] off the right scene-graph
+    // node + so animation curves on the model's transform properties
+    // can find the right `AnimationTarget`.
+    let mut geometry_to_node: HashMap<i64, oxideav_mesh3d::NodeId> = HashMap::new();
     if let Some(conns) = doc.root.child("Connections") {
         for c in conns.children_named("C") {
             let kind = c.properties.first().and_then(FbxProperty::as_str);
@@ -111,6 +124,7 @@ pub fn build_scene(doc: &FbxDocument) -> Result<Scene3D> {
             {
                 let node = &mut scene.nodes[nid.0 as usize];
                 node.mesh = Some(mid);
+                geometry_to_node.insert(child_id, nid);
                 continue;
             }
             // Model → Model (scene-graph parent/child).
@@ -160,12 +174,12 @@ pub fn build_scene(doc: &FbxDocument) -> Result<Scene3D> {
     // Model" tolerance documented in ufbx/elements-meshes.md.
     let referenced_meshes: std::collections::HashSet<oxideav_mesh3d::MeshId> =
         scene.nodes.iter().filter_map(|n| n.mesh).collect();
-    let orphan_mesh_ids: Vec<oxideav_mesh3d::MeshId> = geometry_meshes
-        .values()
-        .copied()
-        .filter(|mid| !referenced_meshes.contains(mid))
+    let orphan_mesh_ids: Vec<(i64, oxideav_mesh3d::MeshId)> = geometry_meshes
+        .iter()
+        .filter(|(_, mid)| !referenced_meshes.contains(mid))
+        .map(|(g, mid)| (*g, *mid))
         .collect();
-    for mid in orphan_mesh_ids {
+    for (geom_id, mid) in orphan_mesh_ids {
         let name = scene
             .meshes
             .get(mid.0 as usize)
@@ -176,11 +190,31 @@ pub fn build_scene(doc: &FbxDocument) -> Result<Scene3D> {
         }
         let nid = scene.add_node(node);
         scene.roots.push(nid);
+        // Make the synthetic root visible to the deformer module too,
+        // so a Geometry-only FBX with skin/morph data still wires up.
+        geometry_to_node.insert(geom_id, nid);
     }
 
     // Drop the unused-warning silencer once `model_subtypes` actually
     // gets read (e.g. when LimbNode → Skeleton wiring lands).
     let _ = model_subtypes;
+
+    // Round 2: deformers (Skin / Cluster / BlendShape) and animations.
+    // Deformers must run first — animation morph-weight channels
+    // resolve their target via the per-channel table the deformer
+    // module returns.
+    let deformer_out = extract_deformers(
+        doc,
+        &mut scene,
+        &geometry_meshes,
+        &geometry_corner_indices,
+        &model_nodes,
+        &geometry_to_node,
+    );
+    let animations = extract_animations(doc, &model_nodes, &deformer_out.channel_targets);
+    for anim in animations {
+        scene.add_animation(anim);
+    }
 
     // If somehow no roots and no meshes ended up populated, surface
     // an empty scene rather than failing — this matches the

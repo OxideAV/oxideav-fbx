@@ -20,7 +20,7 @@
 //!   *Elements* overview. Documents the `Objects` / `Connections`
 //!   shape used by the object-graph walker in [`scene`].
 //!
-//! # What's covered (round 1)
+//! # What's covered
 //!
 //! - Binary container reader: header + Node Record tree, full
 //!   property type-code dispatch (`Y` `C` `I` `F` `D` `L` for
@@ -34,16 +34,28 @@
 //! - Mesh extraction: `Vertices` + `PolygonVertexIndex` →
 //!   per-corner [`oxideav_mesh3d::Primitive`] of
 //!   [`oxideav_mesh3d::Topology::Triangles`] (ngons fan-triangulated).
-//!   First [`LayerElementNormal`] / [`LayerElementUV`] flattened
-//!   when the mapping mode is `ByPolygonVertex` or `ByVertex`.
+//!   First `LayerElementNormal` / `LayerElementUV` flattened when the
+//!   mapping mode is `ByPolygonVertex` or `ByVertex`.
+//! - **Animation** (round 2) — `AnimationStack` / `AnimationLayer` /
+//!   `AnimationCurveNode` / `AnimationCurve` map to one
+//!   [`oxideav_mesh3d::Animation`] per stack with channels for
+//!   `Lcl Translation`, `Lcl Rotation` (XYZ-Euler-degrees → quaternion),
+//!   `Lcl Scaling`, and morph-target `DeformPercent`. See [`animation`].
+//! - **Deformers** (round 2) — `Deformer{Skin}` + `Deformer{Cluster}`
+//!   produce [`oxideav_mesh3d::Skeleton`] + [`oxideav_mesh3d::Skin`];
+//!   `Deformer{BlendShape}` + `BlendShapeChannel` + `Geometry{Shape}`
+//!   produce [`oxideav_mesh3d::MorphTarget`]s. See [`deformer`].
 //!
-//! # What's NOT covered (round 1)
+//! # What's NOT covered
 //!
 //! - **ASCII FBX** — input not starting with the binary magic
 //!   returns [`oxideav_mesh3d::Error::Unsupported`].
 //! - **Encoder** — bytes-out is a separate round.
-//! - Skin / Cluster (deformer) wiring, AnimationStack / Layer /
-//!   Curve, BlendShape / BlendShapeChannel.
+//! - Animation: per-layer compositing, cubic / step / TCB
+//!   interpolation, pivot / pre-rotation / post-rotation chains.
+//! - Skin: `SKINNING_METHOD_DUAL_QUATERNION` produces plain LBS
+//!   buffers (the doc notes this is safe to ignore in most cases).
+//! - BlendShape: in-between keyframes are collapsed to `target_shape`.
 //! - Material / Texture / Video — parsed into [`FbxDocument`] but
 //!   not surfaced on [`Scene3D`].
 //! - Coordinate-system / unit-scale conversion — files travel with
@@ -68,8 +80,10 @@
 #![forbid(unsafe_code)]
 #![warn(missing_debug_implementations)]
 
+pub mod animation;
 pub mod binary;
 pub mod decoder;
+pub mod deformer;
 pub mod geometry;
 pub mod scene;
 
