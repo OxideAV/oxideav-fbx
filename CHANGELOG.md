@@ -9,6 +9,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Round 4 — opt-in deflate (`Encoding == 1`) for writer array properties.
+  - New `WriterOptions` struct + `write_document_with_options(&doc, &opts)`
+    entry point. `WriterOptions::compress_arrays_at(threshold)` switches
+    array properties whose raw payload (`ArrayLength * elemSize`) is at
+    least `threshold` bytes from the round-3 `Encoding == 0` (raw) form
+    to `Encoding == 1` (zlib deflate) per Alexander Gessler / Blender
+    Foundation, *FBX Binary File Format Specification* §"Array types"
+    (the only two `Encoding` values the doc enumerates).
+  - `WriterOptions::compression_level(level)` forwards to
+    `miniz_oxide::deflate::compress_to_vec_zlib`'s level argument
+    (`0..=10`, default `6` to match zlib's `Z_DEFAULT_COMPRESSION`).
+    The encoder writes the post-deflate buffer length into the
+    `CompressedLength` field; `ArrayLength` remains the element count
+    so the existing parser's "inflated array length mismatch" guard
+    still applies.
+  - **Never inflates on purpose**: when deflate would produce a buffer
+    larger than the raw payload, the writer falls back to
+    `Encoding == 0` so the on-disk size cannot regress versus the
+    legacy `write_document` path.
+  - Default `WriterOptions::default()` keeps `compress_arrays = None`,
+    so the existing `write_document` (now a thin
+    `write_document_with_options(doc, &WriterOptions::default())`
+    wrapper) produces byte-identical output to round 3. The
+    `parser_output_writes_back_unchanged` regression test still passes
+    bit-for-bit.
+  - Measured delta on a 32×32 quad-grid fixture (3 072-double
+    `Vertices` array + 3 844-int `PolygonVertexIndex` array):
+    raw 40 346 bytes → compressed 8 326 bytes (≈ 20.6 % of the raw
+    size; `tests/writer_roundtrip.rs::deflate_compressed_grid_round_trips_through_full_decoder`).
+    The compressed output is re-decoded through the full `FbxDecoder`
+    pipeline and verified to round-trip the document tree + the
+    geometric `Scene3D` (mesh count, primitive topology, per-corner
+    position count).
+  - Six new tests in `src/writer.rs::tests`: opt-in shrink behaviour,
+    below-threshold skip, inflate-fallback guard, 64-bit layout under
+    compression, and a default-options byte-for-byte regression
+    against round 3.
+
 - Round 3 — binary writer (decoder/parser round-trip closure).
   - New `writer` module: `write_document(&FbxDocument) -> Result<Vec<u8>>`
     emits the 27-byte header + recursive Node Records + final

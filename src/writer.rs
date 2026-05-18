@@ -25,11 +25,24 @@
 //!
 //! # Array encoding policy
 //!
-//! Arrays are written **uncompressed** (`Encoding == 0`). The Gessler
-//! doc allows both forms; uncompressed is bit-deterministic and
-//! avoids any zlib version / level reproducibility surprise. Readers
-//! that handle zlib-deflated arrays (every conformant parser, per the
-//! type-code dispatch table) will also accept the uncompressed form.
+//! By default arrays are written **uncompressed** (`Encoding == 0`).
+//! The Gessler doc allows both forms; uncompressed is
+//! bit-deterministic and avoids any zlib version / level
+//! reproducibility surprise.
+//!
+//! Callers that want smaller output can opt into zlib-deflate
+//! (`Encoding == 1`) on a per-call basis via
+//! [`write_document_with_options`] + [`WriterOptions::compress_arrays`].
+//! The compressed form is what every Autodesk-exported FBX in the
+//! wild uses for arrays of meaningful size; the Gessler doc
+//! enumerates exactly two values for `Encoding` (0 raw / 1 zlib) and
+//! the post-deflate buffer length is stored verbatim in
+//! `CompressedLength`. Output remains deterministic for a given
+//! `miniz_oxide` version + compression level, but is no longer
+//! guaranteed to match across `miniz_oxide` upgrades — the
+//! round-trip closure through [`crate::binary::parse`] is what
+//! callers should rely on, not byte-exact equality across crate
+//! versions.
 //!
 //! # Version-dependent header widths
 //!
@@ -46,6 +59,61 @@ use crate::binary::{
     FBX_VERSION_64BIT_THRESHOLD,
 };
 
+/// Tunable knobs for [`write_document_with_options`].
+///
+/// All fields are documented to the per-record level of the Gessler
+/// spec they map to; defaults match the legacy [`write_document`]
+/// behaviour (every array uncompressed, no Autodesk footer).
+#[derive(Clone, Debug)]
+pub struct WriterOptions {
+    /// If `Some(threshold)`, array properties whose **raw** payload
+    /// (`ArrayLength * elemSize`) is at least `threshold` bytes are
+    /// written with `Encoding == 1` (zlib deflate) per the Gessler
+    /// spec's array record format. The post-deflate buffer is stored
+    /// in `CompressedLength`. Arrays below the threshold stay
+    /// uncompressed; in particular, arrays where deflate would
+    /// produce a *larger* buffer than the raw payload also fall back
+    /// to `Encoding == 0` so the on-disk size never regresses.
+    ///
+    /// `None` (the default) keeps every array uncompressed, matching
+    /// the round-3 writer behaviour and the legacy
+    /// [`write_document`] entry point.
+    pub compress_arrays: Option<usize>,
+
+    /// zlib compression level forwarded to `miniz_oxide`. `0`
+    /// (`compress_to_vec_zlib` returns a stored block — no deflate)
+    /// through `10` (max compression). Default `6` matches zlib's
+    /// own `Z_DEFAULT_COMPRESSION` constant and is what most FBX
+    /// exporters appear to use in the wild.
+    ///
+    /// Ignored when `compress_arrays` is `None`.
+    pub compression_level: u8,
+}
+
+impl Default for WriterOptions {
+    fn default() -> Self {
+        Self {
+            compress_arrays: None,
+            compression_level: 6,
+        }
+    }
+}
+
+impl WriterOptions {
+    /// Builder helper — enable deflate of array properties whose raw
+    /// payload is at least `threshold` bytes.
+    pub fn compress_arrays_at(mut self, threshold: usize) -> Self {
+        self.compress_arrays = Some(threshold);
+        self
+    }
+
+    /// Builder helper — pick the zlib compression level (0..=10).
+    pub fn compression_level(mut self, level: u8) -> Self {
+        self.compression_level = level;
+        self
+    }
+}
+
 /// Serialise an [`FbxDocument`] to a byte buffer that decodes back
 /// through [`crate::binary::parse`] to an equivalent document.
 ///
@@ -53,7 +121,21 @@ use crate::binary::{
 /// [`FbxDocument::root`] written as a top-level Node Record, capped
 /// by the format's all-zero NULL-record sentinel. **No Autodesk
 /// footer is written** — see the module docs for the rationale.
+///
+/// Arrays are written uncompressed (`Encoding == 0`). Use
+/// [`write_document_with_options`] to opt into deflate of larger
+/// arrays.
 pub fn write_document(doc: &FbxDocument) -> Result<Vec<u8>> {
+    write_document_with_options(doc, &WriterOptions::default())
+}
+
+/// Like [`write_document`] but parameterised by [`WriterOptions`].
+///
+/// Currently the only knob the options struct exposes is
+/// per-array deflate compression (`Encoding == 1`); the document
+/// structure (header, Node Record layout, NULL-record sentinel
+/// placement) is unaffected.
+pub fn write_document_with_options(doc: &FbxDocument, opts: &WriterOptions) -> Result<Vec<u8>> {
     let use_64bit = doc.version >= FBX_VERSION_64BIT_THRESHOLD;
     let mut out = Vec::new();
     // 27-byte header: 20-byte magic + 0x1A 0x00 + version (LE u32).
@@ -63,7 +145,7 @@ pub fn write_document(doc: &FbxDocument) -> Result<Vec<u8>> {
     debug_assert_eq!(out.len(), FBX_HEADER_BYTES);
 
     for child in &doc.root.children {
-        write_node(child, &mut out, use_64bit)?;
+        write_node(child, &mut out, use_64bit, opts)?;
     }
     // Final NULL-record sentinel for the top-level list. The header
     // size matches the file's 32-bit-vs-64-bit Node Record layout.
@@ -76,7 +158,12 @@ pub fn write_document(doc: &FbxDocument) -> Result<Vec<u8>> {
 /// children) into `out`. The per-record EndOffset is back-patched
 /// after the whole record body has been written so its absolute value
 /// is known.
-fn write_node(node: &FbxNode, out: &mut Vec<u8>, use_64bit: bool) -> Result<()> {
+fn write_node(
+    node: &FbxNode,
+    out: &mut Vec<u8>,
+    use_64bit: bool,
+    opts: &WriterOptions,
+) -> Result<()> {
     // Per Gessler's header table:
     //   <= 7400:  EndOffset(u32) | NumProperties(u32) | PropertyListLen(u32) | NameLen(u8)
     //   >= 7500:  EndOffset(u64) | NumProperties(u64) | PropertyListLen(u64) | NameLen(u8)
@@ -107,7 +194,7 @@ fn write_node(node: &FbxNode, out: &mut Vec<u8>, use_64bit: bool) -> Result<()> 
     // Property list — exactly `num_props` records.
     let prop_start = out.len();
     for prop in &node.properties {
-        write_property(prop, out)?;
+        write_property(prop, out, opts)?;
     }
     let prop_list_len = out.len() - prop_start;
 
@@ -118,7 +205,7 @@ fn write_node(node: &FbxNode, out: &mut Vec<u8>, use_64bit: bool) -> Result<()> 
     // what every well-formed exporter writes.)
     if !node.children.is_empty() {
         for child in &node.children {
-            write_node(child, out, use_64bit)?;
+            write_node(child, out, use_64bit, opts)?;
         }
         let null_record_bytes = if use_64bit { 25 } else { 13 };
         out.extend(std::iter::repeat(0u8).take(null_record_bytes));
@@ -143,7 +230,7 @@ fn write_node(node: &FbxNode, out: &mut Vec<u8>, use_64bit: bool) -> Result<()> 
 /// 1-byte type code followed by the per-variant payload per Gessler's
 /// *"Property Record Format"* / *"Array types"* / *"Special types"*
 /// sections.
-fn write_property(prop: &FbxProperty, out: &mut Vec<u8>) -> Result<()> {
+fn write_property(prop: &FbxProperty, out: &mut Vec<u8>, opts: &WriterOptions) -> Result<()> {
     match prop {
         // -- Scalars (Gessler §"Primitive Types") --
         FbxProperty::I16(v) => {
@@ -176,46 +263,49 @@ fn write_property(prop: &FbxProperty, out: &mut Vec<u8>) -> Result<()> {
             out.push(b'L');
             out.extend_from_slice(&v.to_le_bytes());
         }
-        // -- Arrays (Gessler §"Array types"). Always written
-        //    uncompressed: ArrayLength | Encoding=0 | CompressedLength=0
-        //    | raw little-endian element stream. --
+        // -- Arrays (Gessler §"Array types"). Each variant routes
+        //    through `write_array_body`, which picks raw vs deflate
+        //    based on the caller's `WriterOptions` and the per-array
+        //    raw byte size. --
         FbxProperty::F32Array(arr) => {
             out.push(b'f');
-            write_array_header(out, arr.len());
+            let mut raw = Vec::with_capacity(arr.len() * 4);
             for v in arr {
-                out.extend_from_slice(&v.to_le_bytes());
+                raw.extend_from_slice(&v.to_le_bytes());
             }
+            write_array_body(out, arr.len(), &raw, opts);
         }
         FbxProperty::F64Array(arr) => {
             out.push(b'd');
-            write_array_header(out, arr.len());
+            let mut raw = Vec::with_capacity(arr.len() * 8);
             for v in arr {
-                out.extend_from_slice(&v.to_le_bytes());
+                raw.extend_from_slice(&v.to_le_bytes());
             }
+            write_array_body(out, arr.len(), &raw, opts);
         }
         FbxProperty::I32Array(arr) => {
             out.push(b'i');
-            write_array_header(out, arr.len());
+            let mut raw = Vec::with_capacity(arr.len() * 4);
             for v in arr {
-                out.extend_from_slice(&v.to_le_bytes());
+                raw.extend_from_slice(&v.to_le_bytes());
             }
+            write_array_body(out, arr.len(), &raw, opts);
         }
         FbxProperty::I64Array(arr) => {
             out.push(b'l');
-            write_array_header(out, arr.len());
+            let mut raw = Vec::with_capacity(arr.len() * 8);
             for v in arr {
-                out.extend_from_slice(&v.to_le_bytes());
+                raw.extend_from_slice(&v.to_le_bytes());
             }
+            write_array_body(out, arr.len(), &raw, opts);
         }
         FbxProperty::BoolArray(arr) => {
             out.push(b'b');
-            write_array_header(out, arr.len());
             // Each bool occupies one byte (Gessler §"Array types"
             // size table — `b` has elemSize = 1). Same `& 1` canon
             // as the scalar `C` variant.
-            for &v in arr {
-                out.push(if v { 1 } else { 0 });
-            }
+            let raw: Vec<u8> = arr.iter().map(|&v| if v { 1u8 } else { 0u8 }).collect();
+            write_array_body(out, arr.len(), &raw, opts);
         }
         // -- Special types (Gessler §"Special types") --
         FbxProperty::String(bytes) => {
@@ -232,14 +322,48 @@ fn write_property(prop: &FbxProperty, out: &mut Vec<u8>) -> Result<()> {
     Ok(())
 }
 
-/// Write the per-array preamble — `ArrayLength | Encoding | CompressedLength`
-/// — for an uncompressed array of `count` elements. The Gessler doc
-/// permits both the raw (`Encoding == 0`) and zlib-deflated
-/// (`Encoding == 1`) forms; we pick raw for byte-determinism.
-fn write_array_header(out: &mut Vec<u8>, count: usize) {
-    out.extend_from_slice(&(count as u32).to_le_bytes());
-    out.extend_from_slice(&0u32.to_le_bytes()); // Encoding = 0 (raw)
-    out.extend_from_slice(&0u32.to_le_bytes()); // CompressedLength = 0 (unused)
+/// Common array-body emitter: writes the
+/// `ArrayLength | Encoding | CompressedLength | Contents` block. The
+/// caller has already pushed the 1-byte type code. `raw` is the
+/// little-endian element stream (`array_length * elemSize` bytes).
+///
+/// Picks deflate (`Encoding == 1`) when all of:
+///   - `opts.compress_arrays = Some(threshold)`
+///   - `raw.len() >= threshold`
+///   - the deflate output is **strictly smaller** than the raw
+///     payload (the spec allows either form; we never inflate on
+///     purpose).
+///
+/// Otherwise falls back to the deterministic raw form
+/// (`Encoding == 0` / `CompressedLength == 0`).
+fn write_array_body(out: &mut Vec<u8>, count: usize, raw: &[u8], opts: &WriterOptions) {
+    let compressed = match opts.compress_arrays {
+        Some(threshold) if raw.len() >= threshold => {
+            let level = opts.compression_level.min(10);
+            let buf = miniz_oxide::deflate::compress_to_vec_zlib(raw, level);
+            if buf.len() < raw.len() {
+                Some(buf)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    };
+    if let Some(buf) = compressed {
+        // `Encoding == 1`: the post-deflate buffer length goes into
+        // `CompressedLength` per Gessler §"Array types". `ArrayLength`
+        // remains the element count (the parser multiplies by
+        // `elemSize` to validate the post-inflate length).
+        out.extend_from_slice(&(count as u32).to_le_bytes());
+        out.extend_from_slice(&1u32.to_le_bytes());
+        out.extend_from_slice(&(buf.len() as u32).to_le_bytes());
+        out.extend_from_slice(&buf);
+    } else {
+        out.extend_from_slice(&(count as u32).to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes()); // Encoding = 0
+        out.extend_from_slice(&0u32.to_le_bytes()); // CompressedLength = 0
+        out.extend_from_slice(raw);
+    }
 }
 
 /// Write a `u32` length-prefix for an `S` / `R` blob and validate it
@@ -401,5 +525,135 @@ mod tests {
             err.to_string().contains("255"),
             "expected the spec limit in the error: {err}"
         );
+    }
+
+    /// Build a document with one compressible array of f64 zeros and
+    /// helper utilities for the compression tests below.
+    fn build_compressible_doc(version: u32, count: usize) -> FbxDocument {
+        let zeros = vec![0.0_f64; count];
+        FbxDocument {
+            version,
+            root: FbxNode {
+                name: String::new(),
+                properties: Vec::new(),
+                children: vec![FbxNode {
+                    name: "BigArray".into(),
+                    properties: vec![FbxProperty::F64Array(zeros)],
+                    children: Vec::new(),
+                }],
+            },
+        }
+    }
+
+    #[test]
+    fn deflate_opt_in_shrinks_compressible_arrays() {
+        // 1024 doubles of zeros: 8192 raw bytes, deflate → tens of
+        // bytes. With the threshold at 256 the writer must pick the
+        // compressed form and the on-disk size must drop sharply.
+        let doc = build_compressible_doc(7400, 1024);
+        let raw_bytes = write_document(&doc).expect("baseline write");
+        let opts = WriterOptions::default().compress_arrays_at(256);
+        let compressed_bytes = write_document_with_options(&doc, &opts).expect("compressed write");
+        assert!(
+            compressed_bytes.len() < raw_bytes.len(),
+            "deflate failed to shrink (raw {} vs compressed {})",
+            raw_bytes.len(),
+            compressed_bytes.len()
+        );
+        // Round-trips back to the same document.
+        let parsed = binary::parse(&compressed_bytes).expect("compressed decodes");
+        let parsed_arr = match &parsed.root.children[0].properties[0] {
+            FbxProperty::F64Array(arr) => arr.clone(),
+            other => panic!("wrong property variant: {other:?}"),
+        };
+        assert_eq!(parsed_arr.len(), 1024);
+        assert!(parsed_arr.iter().all(|&v| v == 0.0));
+    }
+
+    #[test]
+    fn deflate_threshold_skips_small_arrays() {
+        // A 24-byte array (3 f64) with a 1024-byte threshold must
+        // stay uncompressed — the writer must not pay the 6-byte
+        // zlib header / Adler32 overhead on every tiny array.
+        let doc = FbxDocument {
+            version: 7400,
+            root: FbxNode {
+                name: String::new(),
+                properties: Vec::new(),
+                children: vec![FbxNode {
+                    name: "Tiny".into(),
+                    properties: vec![FbxProperty::F64Array(vec![1.0, 2.0, 3.0])],
+                    children: Vec::new(),
+                }],
+            },
+        };
+        let raw_bytes = write_document(&doc).expect("baseline");
+        let opts = WriterOptions::default().compress_arrays_at(1024);
+        let opt_bytes = write_document_with_options(&doc, &opts).expect("opt write");
+        // Threshold was not crossed -> identical bytes.
+        assert_eq!(raw_bytes, opt_bytes);
+    }
+
+    #[test]
+    fn deflate_falls_back_when_compression_would_grow() {
+        // Three random-ish floats — too small to compress well. With
+        // the threshold at 0 (compress everything), the writer must
+        // still fall back to raw rather than ship a larger payload.
+        let doc = FbxDocument {
+            version: 7400,
+            root: FbxNode {
+                name: String::new(),
+                properties: Vec::new(),
+                children: vec![FbxNode {
+                    name: "Noise".into(),
+                    properties: vec![FbxProperty::F32Array(vec![0.123_f32, 4.56_f32, -7.89_f32])],
+                    children: Vec::new(),
+                }],
+            },
+        };
+        let raw_bytes = write_document(&doc).expect("baseline");
+        let opts = WriterOptions::default()
+            .compress_arrays_at(0)
+            .compression_level(9);
+        let opt_bytes = write_document_with_options(&doc, &opts).expect("opt write");
+        // Falling back to raw means the byte stream matches the
+        // unconditionally-raw output.
+        assert_eq!(raw_bytes, opt_bytes);
+    }
+
+    #[test]
+    fn deflate_round_trips_post_7500_64bit_layout() {
+        // Same compression behaviour must hold under the 64-bit Node
+        // Record layout. 2048 zeros = 16 KiB raw → very compressible.
+        let doc = build_compressible_doc(7700, 2048);
+        let opts = WriterOptions::default().compress_arrays_at(1024);
+        let bytes = write_document_with_options(&doc, &opts).expect("64-bit compressed");
+        let parsed = binary::parse(&bytes).expect("64-bit compressed decodes");
+        assert_eq!(parsed.version, 7700);
+        let arr = match &parsed.root.children[0].properties[0] {
+            FbxProperty::F64Array(arr) => arr.clone(),
+            other => panic!("wrong variant: {other:?}"),
+        };
+        assert_eq!(arr.len(), 2048);
+        assert!(arr.iter().all(|&v| v == 0.0));
+    }
+
+    #[test]
+    fn raw_array_default_unchanged_against_previous_round() {
+        // Bit-for-bit guard: without opting into compression, the
+        // round-3 round-trip closure (synthetic-quad fixture, both
+        // 32-bit and 64-bit layouts) must still produce byte-identical
+        // output. A non-default `compress_arrays = None` keeps the
+        // arrays raw — the only change should be the indirection
+        // through `write_document_with_options`.
+        let doc = build_compressible_doc(7400, 16);
+        let v1 = write_document(&doc).unwrap();
+        let v2 = write_document_with_options(&doc, &WriterOptions::default()).unwrap();
+        assert_eq!(v1, v2);
+        // And one more parse → write cycle through the default path
+        // matches.
+        let parsed = binary::parse(&v1).unwrap();
+        let v3 = write_document(&parsed).unwrap();
+        assert_eq!(v1, v3);
     }
 }

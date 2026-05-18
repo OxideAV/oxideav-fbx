@@ -14,7 +14,8 @@
 //! and post-7500 64-bit).
 
 use oxideav_fbx::{
-    write_document, FbxDecoder, FbxDocument, FbxNode, FbxProperty, FBX_VERSION_64BIT_THRESHOLD,
+    write_document, write_document_with_options, FbxDecoder, FbxDocument, FbxNode, FbxProperty,
+    WriterOptions, FBX_VERSION_64BIT_THRESHOLD,
 };
 use oxideav_mesh3d::{Mesh3DDecoder, Topology};
 
@@ -184,6 +185,141 @@ fn empty_document_round_trips_through_writer() {
     assert_eq!(reparsed.version, 7400);
     assert!(reparsed.root.children.is_empty());
     assert!(scene.meshes.is_empty());
+}
+
+/// Build a quad-style document scaled up to a 1024-vertex grid so
+/// the geometry arrays compress meaningfully. Used by the deflate
+/// round-trip test below.
+fn build_big_grid_document(version: u32, side: usize) -> FbxDocument {
+    let mut vertices = Vec::with_capacity(side * side * 3);
+    for y in 0..side {
+        for x in 0..side {
+            vertices.push(x as f64);
+            vertices.push(y as f64);
+            vertices.push(0.0);
+        }
+    }
+    // Emit quads as triangles: per-row pairs of triangles, last
+    // corner per polygon flagged with the bitwise-NOT
+    // end-of-polygon convention.
+    let mut indices: Vec<i32> = Vec::new();
+    for y in 0..(side - 1) {
+        for x in 0..(side - 1) {
+            let v00 = (y * side + x) as i32;
+            let v10 = v00 + 1;
+            let v11 = v00 + side as i32 + 1;
+            let v01 = v00 + side as i32;
+            indices.push(v00);
+            indices.push(v10);
+            indices.push(v11);
+            indices.push(!v01);
+        }
+    }
+    let geometry = FbxNode {
+        name: "Geometry".into(),
+        properties: vec![
+            FbxProperty::I64(100),
+            FbxProperty::String(b"Grid\x00\x01Geometry".to_vec()),
+            FbxProperty::String(b"Mesh".to_vec()),
+        ],
+        children: vec![
+            FbxNode {
+                name: "Vertices".into(),
+                properties: vec![FbxProperty::F64Array(vertices)],
+                children: Vec::new(),
+            },
+            FbxNode {
+                name: "PolygonVertexIndex".into(),
+                properties: vec![FbxProperty::I32Array(indices)],
+                children: Vec::new(),
+            },
+        ],
+    };
+    let model = FbxNode {
+        name: "Model".into(),
+        properties: vec![
+            FbxProperty::I64(200),
+            FbxProperty::String(b"GridModel\x00\x01Model".to_vec()),
+            FbxProperty::String(b"Mesh".to_vec()),
+        ],
+        children: Vec::new(),
+    };
+    let objects = FbxNode {
+        name: "Objects".into(),
+        properties: Vec::new(),
+        children: vec![geometry, model],
+    };
+    let c_geom_to_model = FbxNode {
+        name: "C".into(),
+        properties: vec![
+            FbxProperty::String(b"OO".to_vec()),
+            FbxProperty::I64(100),
+            FbxProperty::I64(200),
+        ],
+        children: Vec::new(),
+    };
+    let c_model_to_root = FbxNode {
+        name: "C".into(),
+        properties: vec![
+            FbxProperty::String(b"OO".to_vec()),
+            FbxProperty::I64(200),
+            FbxProperty::I64(0),
+        ],
+        children: Vec::new(),
+    };
+    let connections = FbxNode {
+        name: "Connections".into(),
+        properties: Vec::new(),
+        children: vec![c_geom_to_model, c_model_to_root],
+    };
+    FbxDocument {
+        version,
+        root: FbxNode {
+            name: String::new(),
+            properties: Vec::new(),
+            children: vec![objects, connections],
+        },
+    }
+}
+
+/// End-to-end deflate path: a 32×32 quad grid serialised with
+/// `compress_arrays_at(256)` must shrink versus the raw form *and*
+/// still decode through `FbxDecoder` to a geometrically-equivalent
+/// scene.
+#[test]
+fn deflate_compressed_grid_round_trips_through_full_decoder() {
+    let doc = build_big_grid_document(7400, 32);
+    let raw_bytes = write_document(&doc).expect("raw write");
+    let opts = WriterOptions::default().compress_arrays_at(256);
+    let compressed_bytes = write_document_with_options(&doc, &opts).expect("compressed write");
+    // The Vertices array is 32*32*3 = 3072 doubles = 24 KiB raw; a
+    // monotonically-increasing-coordinate grid compresses *very*
+    // well. The compressed file must be strictly smaller.
+    // Measured on the in-tree CI: raw = 40 346 bytes vs compressed
+    // = 8 326 bytes (≈ 20.6 % of the raw size). Assert a generous
+    // upper bound so we'd notice if a future `miniz_oxide` upgrade
+    // regressed the ratio dramatically, without locking the test to
+    // a fragile exact byte count.
+    assert!(
+        compressed_bytes.len() < raw_bytes.len() / 2,
+        "compression should shrink the file to <50% of raw: raw={} compressed={}",
+        raw_bytes.len(),
+        compressed_bytes.len()
+    );
+    // And the geometry must survive the round-trip.
+    let mut dec = FbxDecoder::new();
+    let scene = dec.decode(&compressed_bytes).expect("compressed decodes");
+    let reparsed = dec.last_document.as_ref().unwrap();
+    assert!(
+        nodes_equal(&doc.root, &reparsed.root),
+        "compressed document did not round-trip"
+    );
+    assert_eq!(scene.meshes.len(), 1);
+    let mesh = &scene.meshes[0];
+    assert_eq!(mesh.primitives.len(), 1);
+    assert_eq!(mesh.primitives[0].topology, Topology::Triangles);
+    // 31*31 quads × 2 triangles × 3 corners = 5766 per-corner verts.
+    assert_eq!(mesh.primitives[0].positions.len(), 31 * 31 * 2 * 3);
 }
 
 /// Decode-then-encode-then-decode round-trip from the hand-coded

@@ -105,7 +105,7 @@ pub mod writer;
 
 pub use binary::{FbxDocument, FbxNode, FbxProperty, FBX_MAGIC, FBX_VERSION_64BIT_THRESHOLD};
 pub use decoder::{is_binary_fbx, FbxDecoder};
-pub use writer::write_document;
+pub use writer::{write_document, write_document_with_options, WriterOptions};
 
 /// Format-id string used in the [`oxideav_mesh3d::Mesh3DRegistry`].
 pub const FORMAT_ID: &str = "fbx";

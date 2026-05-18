@@ -47,7 +47,12 @@ clean-room from third-party documentation:
   `D` `L`; arrays `f` `d` `l` `i` `b`; specials `S` `R`) is emitted;
   the 32-bit (pre-7500) vs 64-bit (≥ 7500) Node Record layout is
   auto-selected from `FbxDocument::version`. Arrays are written
-  uncompressed (`Encoding == 0`) for byte-determinism.
+  uncompressed (`Encoding == 0`) for byte-determinism by default;
+  callers that want smaller output can opt in to zlib-deflate via
+  `write_document_with_options(&doc, &WriterOptions::default().compress_arrays_at(256))`
+  (round 4 — `Encoding == 1` per Gessler §"Array types"; a 32×32
+  quad-grid fixture shrinks from 40 346 bytes to 8 326 bytes,
+  ≈ 20.6 % of the raw size).
 
 ## Decode
 
