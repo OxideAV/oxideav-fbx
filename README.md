@@ -41,6 +41,18 @@ clean-room from third-party documentation:
   `Deformer{BlendShape}` + `BlendShapeChannel` + `Geometry{Shape}`
   → `MorphTarget` per channel (sparse `Indexes` deltas expanded to
   per-corner buffers).
+- **Materials / Textures / Video** (round 5) — one
+  `oxideav_mesh3d::Material` per FBX `Material` element (named; PBR
+  factors at glTF defaults pending a `P`-record grammar in docs), one
+  `oxideav_mesh3d::Texture` per `Texture` element (embedded
+  `Video.Content` via `Texture::from_encoded(mime, bytes)` preferred
+  over `RelativeFilename` / `FileName` via `Texture::from_uri`).
+  `Connections` walks wire `Texture -> Material` OP records
+  (`DiffuseColor` / `NormalMap` / `EmissiveColor` plus Maya / 3ds-Max
+  aliases) into typed `base_color_texture` / `normal_texture` /
+  `emissive_texture` / `metallic_roughness_texture` /
+  `occlusion_texture` slots; `Material -> Model` OO records set
+  `Primitive::material` on the bound mesh.
 - **Binary writer** (round 3) — `write_document(&FbxDocument)` round-trips
   the parser's output back to a byte buffer the parser re-reads as an
   equal `FbxDocument`. Every property variant (scalars `Y` `C` `I` `F`
@@ -89,8 +101,14 @@ println!("{} mesh(es), {} node(s)", scene.meshes.len(), scene.nodes.len());
   unless the renderer specifically needs it).
 - BlendShape: in-between keyframes are collapsed to the most-recent
   `Shape` per the doc's `target_shape` simplification.
-- Material / Texture / Video — parsed into the `FbxDocument` but not
-  surfaced on `Scene3D`.
+- Material PBR-factor / colour decode — FBX stores colour + factor
+  channels inside `Properties70 { P: "DiffuseColor", "Color", ... }`
+  records whose grammar isn't transcribed in the currently-staged docs
+  corpus. Round 5 surfaces the `Material` element (name + texture
+  bindings) but leaves the colour factors at the glTF defaults until
+  the `P`-record spec is staged in `docs/3d/fbx/`.
+- Multi-material meshes via `LayerElementMaterial` per-face indices —
+  round 5 ships one material per mesh (`face_material` simplification).
 - Coordinate-system / unit-scale auto-conversion.
 
 ## Standalone build

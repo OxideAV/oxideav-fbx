@@ -51,6 +51,14 @@
 //!   produce [`oxideav_mesh3d::Skeleton`] + [`oxideav_mesh3d::Skin`];
 //!   `Deformer{BlendShape}` + `BlendShapeChannel` + `Geometry{Shape}`
 //!   produce [`oxideav_mesh3d::MorphTarget`]s. See [`deformer`].
+//! - **Materials / Textures / Video** (round 5) —
+//!   `Objects { Material | Texture | Video }` records surface as
+//!   [`oxideav_mesh3d::Material`] / [`oxideav_mesh3d::Texture`] on
+//!   [`Scene3D`]. `Connections OP Texture -> Material(prop_name)`
+//!   wires `DiffuseColor` / `NormalMap` / `EmissiveColor` (plus
+//!   Maya / 3ds-Max exporter aliases) into the typed PBR slots.
+//!   `Material -> Model` OO connections set `Primitive::material`.
+//!   See [`material`].
 //!
 //! # What's NOT covered
 //!
@@ -71,8 +79,12 @@
 //! - Skin: `SKINNING_METHOD_DUAL_QUATERNION` produces plain LBS
 //!   buffers (the doc notes this is safe to ignore in most cases).
 //! - BlendShape: in-between keyframes are collapsed to `target_shape`.
-//! - Material / Texture / Video — parsed into [`FbxDocument`] but
-//!   not surfaced on [`Scene3D`].
+//! - Material PBR colour / factor channels — round 5 surfaces the
+//!   `Material` element name + texture bindings but leaves colour
+//!   factors at the glTF defaults pending an FBX `P`-record
+//!   (Properties70) grammar in `docs/3d/fbx/`.
+//! - Multi-material meshes via `LayerElementMaterial` per-face
+//!   indices — round 5 ships one material per mesh.
 //! - Coordinate-system / unit-scale conversion — files travel with
 //!   their author's axis convention; downstream consumers handle
 //!   re-orientation per the [`Scene3D::up_axis`] /
@@ -100,6 +112,7 @@ pub mod binary;
 pub mod decoder;
 pub mod deformer;
 pub mod geometry;
+pub mod material;
 pub mod scene;
 pub mod writer;
 

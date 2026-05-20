@@ -9,6 +9,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Round 5 — Material / Texture / Video surfacing on `Scene3D`.
+  - New `material` module: `extract_materials(&doc, &mut scene,
+    &model_to_mesh, &model_nodes)` walks the top-level `Objects` records
+    for `Material`, `Texture`, and `Video` element types, then walks
+    `Connections` for the three documented wiring shapes:
+    - `Material -> Model` OO connections assign a surface to a model.
+    - `Texture -> Material` OP connections carry the channel name in
+      `properties[3]` (`"DiffuseColor"`, `"NormalMap"`, `"EmissiveColor"`,
+      plus the Maya/3ds-Max exporter aliases — see
+      `docs/3d/fbx/ufbx/reference.html` §`ufbx_material_fbx_map`).
+    - `Video -> Texture` OO connections wire embedded media into the
+      texture record.
+  - One `oxideav_mesh3d::Material` per FBX `Material` element, with its
+    `name` field populated. PBR factors (`base_color`, `metallic`,
+    `roughness`, `emissive_factor`) stay at the `Material::new()`
+    glTF defaults pending a staged FBX `P`-record (Properties70)
+    grammar in `docs/3d/fbx/` (deferred — the spec is mentioned but
+    not transcribed in the currently-staged Gessler binary doc + ufbx
+    site docs).
+  - One `oxideav_mesh3d::Texture` per FBX `Texture` element. The
+    decoder prefers the embedded `Video.Content` `R`-blob (built via
+    `Texture::from_encoded(mime, bytes)` with the MIME inferred from
+    `Video.Filename` / `Video.RelativeFilename`), falling back to
+    `RelativeFilename` / `FileName` via `Texture::from_uri(uri)` for
+    files that reference external assets.
+  - `Connections OP Texture -> Material(prop_name)` wires the typed
+    `Material::base_color_texture` / `normal_texture` /
+    `emissive_texture` / `metallic_roughness_texture` /
+    `occlusion_texture` slots when `prop_name` matches one of the
+    recognised aliases. Unrecognised channels round-trip via the
+    underlying `FbxDocument` but don't surface a typed binding.
+  - `Connections OO Material -> Model` sets the first connected
+    material on every `Primitive` of the model's mesh
+    (`Primitive::material`). Multi-material meshes via
+    `LayerElementMaterial` per-face indices are NYI — round 5 ships
+    one material per mesh (`face_material` simplification).
+  - Six new unit tests in `src/material.rs::tests`: material name +
+    primitive binding, external-URI texture decode, DiffuseColor OP
+    binding to `base_color_texture`, embedded Video.Content binding
+    via `Texture::from_encoded`, unrecognised-OP-name no-op, and
+    orphan-material (no Model OO) still surfaces in the materials
+    arena. One new integration test in
+    `tests/synthetic_material.rs` exercises the full `FbxDecoder`
+    pipeline end-to-end through a hand-built binary fixture
+    (Geometry + Model + Material + Texture + Video + 5 connection
+    records).
+
 - Round 4 — opt-in deflate (`Encoding == 1`) for writer array properties.
   - New `WriterOptions` struct + `write_document_with_options(&doc, &opts)`
     entry point. `WriterOptions::compress_arrays_at(threshold)` switches

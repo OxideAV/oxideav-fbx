@@ -28,6 +28,7 @@ use crate::animation::extract_animations;
 use crate::binary::{FbxDocument, FbxNode, FbxProperty};
 use crate::deformer::extract_deformers;
 use crate::geometry::extract_geometry_mesh_with_corners;
+use crate::material::extract_materials;
 
 /// Decode the top-level `Objects` / `Connections` records into a
 /// [`Scene3D`].
@@ -215,6 +216,20 @@ pub fn build_scene(doc: &FbxDocument) -> Result<Scene3D> {
     for anim in animations {
         scene.add_animation(anim);
     }
+
+    // Material / Texture / Video extraction. The per-Model -> Mesh
+    // lookup is the inverse of the Geometry -> Model OO walk we did
+    // above — every Model whose node has a `mesh` attribute owns the
+    // mesh that any OO-connected Material binds to.
+    let mut model_to_mesh: HashMap<i64, oxideav_mesh3d::MeshId> = HashMap::new();
+    for (&model_fid, &node_id) in &model_nodes {
+        if let Some(node) = scene.nodes.get(node_id.0 as usize) {
+            if let Some(mid) = node.mesh {
+                model_to_mesh.insert(model_fid, mid);
+            }
+        }
+    }
+    extract_materials(doc, &mut scene, &model_to_mesh, &model_nodes);
 
     // If somehow no roots and no meshes ended up populated, surface
     // an empty scene rather than failing — this matches the
