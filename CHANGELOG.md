@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.2](https://github.com/OxideAV/oxideav-fbx/compare/v0.0.1...v0.0.2) - 2026-05-20
+
+### Other
+
+- Round 5: Material / Texture / Video surfacing on Scene3D
+- Round 4: opt-in zlib deflate (Encoding == 1) for writer arrays
+- Round 3: binary writer (decoder round-trip closure)
+- Round 2: animation + deformer surfacing
+- release v0.0.1 ([#1](https://github.com/OxideAV/oxideav-fbx/pull/1))
+
 ### Added
 
 - Round 5 — Material / Texture / Video surfacing on `Scene3D`.
