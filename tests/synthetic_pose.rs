@@ -245,6 +245,9 @@ fn bind_pose_refines_inverse_bind_and_stashes_node_extras() {
     assert_eq!(arr[7].as_f64(), Some(6.0));
     assert_eq!(arr[11].as_f64(), Some(-2.0));
 
-    // Scene stays internally consistent (skeleton IBM affine etc.).
-    scene.validate().expect("bind-pose scene validates clean");
+    // The refined inverse-bind is affine (last row [0, 0, 0, 1]) — the
+    // skinning math relies on this. Asserted directly here rather than
+    // via `Scene3D::validate()` so the test stays buildable against the
+    // published `oxideav-mesh3d` (whose `validate` arrived post-publish).
+    assert_eq!(ibm[3], [0.0, 0.0, 0.0, 1.0]);
 }
