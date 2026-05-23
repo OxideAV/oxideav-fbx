@@ -53,6 +53,17 @@ clean-room from third-party documentation:
   `emissive_texture` / `metallic_roughness_texture` /
   `occlusion_texture` slots; `Material -> Model` OO records set
   `Primitive::material` on the bound mesh.
+- **Bind pose** (round 97) — `Objects { Pose : "BindPose" }` elements
+  surface each `PoseNode { Node, Matrix }` bone-world matrix onto the
+  bone `Node`'s `extras["fbx:bind_pose"]` (16-double row-major JSON
+  array). When a `Cluster` omitted its `TransformLink` sub-record (so
+  the deformer module defaulted that joint's inverse-bind to identity),
+  the bind pose back-fills it as `inverse(bone_to_world)` — the
+  reference's documented *"FBX only stores world transformations so this
+  is approximated"* case. `Matrix` is a direct `d`-array sub-record, so
+  this stays clear of the still-unstaged `Properties70` `P`-record
+  grammar. Joints that already have a real inverse-bind are untouched;
+  non-bind rest poses (`is_bind_pose == false`) are not promoted.
 - **Binary writer** (round 3) — `write_document(&FbxDocument)` round-trips
   the parser's output back to a byte buffer the parser re-reads as an
   equal `FbxDocument`. Every property variant (scalars `Y` `C` `I` `F`
@@ -110,6 +121,23 @@ println!("{} mesh(es), {} node(s)", scene.meshes.len(), scene.nodes.len());
 - Multi-material meshes via `LayerElementMaterial` per-face indices —
   round 5 ships one material per mesh (`face_material` simplification).
 - Coordinate-system / unit-scale auto-conversion.
+- **Light / Camera node attributes** — DOCS-GAP. The on-disk FBX
+  `NodeAttribute` record name, the `"Light"` / `"Camera"` subtype
+  discriminators, and (critically) every attribute value
+  (`Color` / `Intensity` / `LightType` / `DecayType` / `InnerAngle` /
+  `OuterAngle` for lights; `FieldOfView` / `AspectWidth` /
+  `AspectHeight` / `NearPlane` / `FarPlane` for cameras) live inside
+  `Properties70 { P: name, type, label, flags, value… }` records whose
+  grammar is not transcribed anywhere in the currently-staged
+  `docs/3d/fbx/` corpus — the same gap that defers `Material`
+  colour-factor decode. The ufbx reference documents the *semantic*
+  model (`ufbx_light` / `ufbx_camera`, incl. the `Intensity` 0.01x
+  quirk) but uses ufbx field names, not the raw FBX `P`-record names.
+  Blocked pending a staged FBX `Properties70` `P`-record grammar in
+  `docs/3d/fbx/`.
+- **Pose `bone_to_parent`** — only the directly-stored `bone_to_world`
+  matrix is surfaced; deriving the parent-space form needs the resolved
+  ancestor chain and is left to a downstream consumer.
 
 ## Standalone build
 

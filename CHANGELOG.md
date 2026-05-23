@@ -9,6 +9,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Round 97 — bind-pose (`Pose` element, subtype `"BindPose"`) surfacing
+  on `Scene3D`.
+  - New `pose` module: `extract_poses(&doc, &mut scene, &model_nodes)`
+    walks the top-level `Objects` records for `Pose` elements whose
+    subtype (property[2]) is `"BindPose"` and reads each
+    `PoseNode { Node : i64 <bone Model id>, Matrix : d[16] }`
+    sub-record. `Matrix` is a direct `d`-array (16 doubles, row-major),
+    read with the same shape as the deformer module's `Transform` /
+    `TransformLink` 4x4 reads — it does **not** live inside a
+    `Properties70` `P`-record, so this round stays clear of the
+    still-unstaged FBX `P`-record grammar that gates the `material`
+    colour-factor decode.
+  - Per `docs/3d/fbx/ufbx/reference.html` §`ufbx_pose` /
+    §`ufbx_bone_pose`: a bind pose records each bone's world transform
+    (`bone_to_world`, *"FBX only stores world transformations"*) and
+    sets `is_bind_pose`. The on-disk record name follows the same
+    ufbx-field → FBX-7.x-PascalCase derivation rounds 1–4 used for
+    `Transform` / `TransformLink` / `Indexes` / `Weights`.
+  - Two effects on the decoded `Scene3D`:
+    - Each posed bone's world matrix is stashed into the bone
+      `Node`'s `extras["fbx:bind_pose"]` (16-element `f64` JSON array,
+      row-major), round-tripping the bind pose even for bones that are
+      not part of any `Skeleton` (a `Pose` exported without a skin
+      deformer).
+    - Inverse-bind refinement: a `Skeleton` joint whose cluster did
+      **not** carry an explicit `TransformLink` sub-record (the
+      deformer module defaults that slot to identity, yielding an
+      identity inverse-bind) is back-filled from the bind pose as
+      `inverse(bone_to_world)` — the doc's documented *"approximated
+      from the parent world transform"* case. Joints that already have
+      a real inverse-bind (cluster carried a link matrix) are left
+      untouched.
+  - Called from `scene::build_scene` after `extract_deformers` so the
+    refinement can see the skeletons the deformer module produced.
+  - Six new unit tests in `src/pose.rs::tests`: `Matrix` row-major
+    read, bind-pose-into-node-extras, non-`"BindPose"` subtype ignored,
+    identity-inverse-bind refinement, real-inverse-bind not overwritten,
+    no-`Pose`-element no-op. One new integration test in
+    `tests/synthetic_pose.rs` exercises the full `FbxDecoder` pipeline
+    through a hand-built binary fixture (Geometry + Model + LimbNode +
+    Skin + link-less Cluster + `Pose`/`BindPose` + 6 connections),
+    verifying the refined inverse-bind, the node-extras stash, and a
+    clean `Scene3D::validate()`.
+  - **Not surfaced (DOCS-GAP):** Light / Camera `NodeAttribute`
+    decode. The on-disk `NodeAttribute` record name, the `"Light"` /
+    `"Camera"` subtype discriminators, and every attribute *value*
+    (`Color` / `Intensity` / `LightType` for lights; `FieldOfView` /
+    `AspectWidth` / `NearPlane` for cameras) live inside
+    `Properties70 { P: ... }` records whose grammar is absent from the
+    staged `docs/3d/fbx/` corpus (verified: no `NodeAttribute`,
+    `Properties70`, `"Light"` / `"Camera"` subtype literal appears in
+    any staged doc). `oxideav_mesh3d::Camera` / `Light` + the
+    `Node::camera` / `Node::light` slots are ready; blocked pending a
+    staged FBX `Properties70` `P`-record grammar.
+
 - Round 5 — Material / Texture / Video surfacing on `Scene3D`.
   - New `material` module: `extract_materials(&doc, &mut scene,
     &model_to_mesh, &model_nodes)` walks the top-level `Objects` records

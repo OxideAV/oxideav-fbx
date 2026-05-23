@@ -29,6 +29,7 @@ use crate::binary::{FbxDocument, FbxNode, FbxProperty};
 use crate::deformer::extract_deformers;
 use crate::geometry::extract_geometry_mesh_with_corners;
 use crate::material::extract_materials;
+use crate::pose::extract_poses;
 
 /// Decode the top-level `Objects` / `Connections` records into a
 /// [`Scene3D`].
@@ -230,6 +231,12 @@ pub fn build_scene(doc: &FbxDocument) -> Result<Scene3D> {
         }
     }
     extract_materials(doc, &mut scene, &model_to_mesh, &model_nodes);
+
+    // Bind-pose (Pose / "BindPose") surfacing. Runs after deformers so
+    // the per-joint inverse-bind refinement can see the skeletons the
+    // deformer module produced; the bone-node `extras` stash works for
+    // any Model node regardless of skin presence.
+    extract_poses(doc, &mut scene, &model_nodes);
 
     // If somehow no roots and no meshes ended up populated, surface
     // an empty scene rather than failing — this matches the

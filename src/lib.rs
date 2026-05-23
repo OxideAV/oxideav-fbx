@@ -59,6 +59,13 @@
 //!   Maya / 3ds-Max exporter aliases) into the typed PBR slots.
 //!   `Material -> Model` OO connections set `Primitive::material`.
 //!   See [`material`].
+//! - **Bind pose** (round 97) — `Objects { Pose : "BindPose" }`
+//!   elements with `PoseNode { Node, Matrix }` sub-records surface
+//!   each posed bone's world matrix onto its
+//!   [`oxideav_mesh3d::Node`]'s `extras["fbx:bind_pose"]`, and refine
+//!   any [`oxideav_mesh3d::Skeleton`] inverse-bind matrix the deformer
+//!   module had to default to identity (cluster without a
+//!   `TransformLink`) to `inverse(bone_to_world)`. See [`pose`].
 //!
 //! # What's NOT covered
 //!
@@ -113,6 +120,7 @@ pub mod decoder;
 pub mod deformer;
 pub mod geometry;
 pub mod material;
+pub mod pose;
 pub mod scene;
 pub mod writer;
 
