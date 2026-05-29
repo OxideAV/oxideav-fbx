@@ -9,6 +9,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Round 184 — vertex-colour (`LayerElementColor`) surfacing on
+  `Primitive::colors`.
+  - New `pull_layer_vec4` puller in `geometry.rs` — the 4-component
+    sibling of `pull_layer_vec3` (Normals / Tangents). Reads the
+    `Colors` (`d`-array of RGBA quadruples) sub-record + optional
+    `ColorIndex` (`i`-array) indirection per
+    `docs/3d/fbx/ufbx/elements-meshes.md` §"Attributes". Mapping mode
+    `ByPolygonVertex` and `ByVertex` flatten to one `[f32; 4]` per
+    triangle corner via the same `Triangulation::corner_pvi_index` /
+    `corner_indices` lookup `pull_layer_vec3` uses; reference modes
+    `Direct` and `IndexToDirect` are both supported. The on-disk
+    record name follows the same ufbx-field → FBX-7.x-PascalCase
+    derivation rounds 1–5 used (`vertex_uv` → `LayerElementUV`,
+    `vertex_normal` → `LayerElementNormal`, so `vertex_color` →
+    `LayerElementColor`).
+  - `extract_geometry_mesh_with_corners` walks every
+    `LayerElementColor` sub-record in document order and pushes one
+    per-corner buffer per layer onto `Primitive::colors`, mirroring
+    ufbx's `vertex_color` (first colour set) + `color_sets[1..]`
+    exposure pattern. Layers whose mapping mode the puller doesn't
+    recognise (`AllSame`, `ByPolygon`, `NoMappingInformation`) skip
+    rather than fabricate a misattributed per-corner buffer.
+  - Five new unit tests in `src/geometry.rs::tests`:
+    `layer_color_by_polygon_vertex_direct_flattens_per_corner`,
+    `layer_color_by_vertex_index_to_direct_indirects_through_color_index`,
+    `layer_color_rejects_non_multiple_of_four`,
+    `layer_color_unknown_mapping_returns_none`,
+    `extract_geometry_mesh_surfaces_two_color_sets_in_document_order`.
+    One new integration test in
+    `tests/synthetic_vertex_color.rs` builds a 2-triangle quad with
+    a single `LayerElementColor` sub-record + four RGBA quadruples
+    and asserts the per-corner colour buffer reaches
+    `Primitive::colors[0]` via `FbxDecoder::decode`, with the
+    correct fan-triangulated colour-at-corner assignment.
 - Round 178 — multi-material slot table via `LayerElementMaterial`
   surfacing.
   - `geometry.rs` extends `Triangulation` with

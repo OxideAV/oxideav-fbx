@@ -26,6 +26,11 @@
 //!   mapping mode is `ByPolygonVertex` or `ByVertex` (with optional
 //!   `IndexToDirect` indirection); other mapping modes pass through
 //!   unmodified for now.
+//! - `colors` — every `LayerElementColor` in document order, surfaced
+//!   as RGBA `[f32; 4]` per-corner buffers (one slot per FBX colour
+//!   set, mirroring ufbx's `ufbx_mesh.color_sets`). Mapping / reference
+//!   handling matches Normals (`ByPolygonVertex` / `ByVertex` with
+//!   optional `IndexToDirect` indirection).
 //!
 //! The original shared-vertex buffer is preserved on
 //! `Mesh::extras["fbx:shared_positions"]` (length `3 * V`) so an
@@ -102,6 +107,31 @@ pub fn extract_geometry_mesh_with_corners(
             &triangles,
         )? {
             prim.uvs.push(uvs);
+        }
+    }
+
+    // Vertex colours — every `LayerElementColor` in document order.
+    // Per `docs/3d/fbx/ufbx/elements-meshes.md` §"Attributes" the
+    // `ufbx_mesh.vertex_color` slot exposes the first colour set and
+    // `ufbx_mesh.color_sets` exposes the rest; we mirror that by
+    // surfacing every layer (the order they appear in the FBX node)
+    // as a separate entry in `Primitive::colors`. The on-disk record
+    // name follows the same ufbx-field → FBX-7.x-PascalCase derivation
+    // earlier rounds used (`vertex_uv` → `LayerElementUV`,
+    // `vertex_normal` → `LayerElementNormal`), so `vertex_color` →
+    // `LayerElementColor` with sub-records `Colors` (a `d`-array of
+    // RGBA quadruples) and an optional `ColorIndex` indirection.
+    // Mapping / reference handling is the same as Normals / UVs — the
+    // generic `flatten_layer_vec4` puller below mirrors `pull_layer_vec3`.
+    for layer in geom.children_named("LayerElementColor") {
+        if let Some(colors) = pull_layer_vec4(
+            layer,
+            "Colors",
+            "ColorIndex",
+            triangles.corner_indices.len(),
+            &triangles,
+        )? {
+            prim.colors.push(colors);
         }
     }
 
@@ -488,6 +518,99 @@ fn pull_layer_vec2(
     Ok(Some(out))
 }
 
+/// Generic 4-component `LayerElement*` puller (vertex Colours).
+///
+/// Mirrors [`pull_layer_vec3`] (Normals / Tangents / Bitangents) but
+/// for RGBA quadruples (`d`-array of length `4 * N`). FBX vertex
+/// colours always carry an alpha component per ufbx reference
+/// §`ufbx_color_set.vertex_color` (a `ufbx_vec4` slot); exporters that
+/// only authored RGB pad alpha to `1.0`.
+fn pull_layer_vec4(
+    layer: &FbxNode,
+    data_name: &str,
+    index_name: &str,
+    expected_corners: usize,
+    triangles: &Triangulation,
+) -> Result<Option<Vec<[f32; 4]>>> {
+    let mapping = layer.child("MappingInformationType").and_then(|n| {
+        n.properties
+            .first()
+            .and_then(FbxProperty::as_str)
+            .map(str::to_owned)
+    });
+    let reference = layer.child("ReferenceInformationType").and_then(|n| {
+        n.properties
+            .first()
+            .and_then(FbxProperty::as_str)
+            .map(str::to_owned)
+    });
+    let data_node = match layer.child(data_name) {
+        Some(n) => n,
+        None => return Ok(None),
+    };
+    let raw = match data_node.properties.first() {
+        Some(FbxProperty::F64Array(a)) => a.clone(),
+        Some(FbxProperty::F32Array(a)) => a.iter().map(|&v| v as f64).collect(),
+        _ => return Ok(None),
+    };
+    if raw.len() % 4 != 0 {
+        return Err(Error::invalid(format!(
+            "FBX LayerElement: `{data_name}` length {} not a multiple of 4",
+            raw.len()
+        )));
+    }
+    let quads: Vec<[f32; 4]> = raw
+        .chunks_exact(4)
+        .map(|c| [c[0] as f32, c[1] as f32, c[2] as f32, c[3] as f32])
+        .collect();
+    let index_arr: Option<Vec<i32>> = layer.child(index_name).and_then(|n| {
+        n.properties.first().and_then(|p| match p {
+            FbxProperty::I32Array(a) => Some(a.clone()),
+            _ => None,
+        })
+    });
+    let direct_only = matches!(reference.as_deref(), None | Some("Direct"));
+    let by_polygon_vertex = matches!(mapping.as_deref(), Some("ByPolygonVertex"));
+    let by_vertex = matches!(mapping.as_deref(), Some("ByVertex") | Some("ByVertice"));
+    if !by_polygon_vertex && !by_vertex {
+        // `AllSame` / `ByPolygon` / `NoMappingInformation` are valid
+        // but uncommon for vertex colours; skip rather than fabricate
+        // a per-corner buffer that misattributes the payload.
+        return Ok(None);
+    }
+    let mut out = Vec::with_capacity(expected_corners);
+    for (corner_ix, &shared_ix) in triangles.corner_indices.iter().enumerate() {
+        let lookup = if by_vertex {
+            shared_ix as usize
+        } else {
+            triangles.corner_pvi_index[corner_ix] as usize
+        };
+        let quad_ix = if direct_only {
+            lookup
+        } else if let Some(ix_arr) = index_arr.as_deref() {
+            let i = ix_arr.get(lookup).copied().unwrap_or(-1);
+            if i < 0 {
+                return Err(Error::invalid(format!(
+                    "FBX LayerElement: {index_name} {i} (negative)"
+                )));
+            }
+            i as usize
+        } else {
+            return Err(Error::invalid(format!(
+                "FBX LayerElement: {data_name} ReferenceInformationType==IndexToDirect but no {index_name} sub-record",
+            )));
+        };
+        let quad = quads.get(quad_ix).copied().ok_or_else(|| {
+            Error::invalid(format!(
+                "FBX LayerElement: quad index {quad_ix} out of range for {}-quad array",
+                quads.len()
+            ))
+        })?;
+        out.push(quad);
+    }
+    Ok(Some(out))
+}
+
 /// Pull the per-corner material-slot index buffer from a
 /// `LayerElementMaterial` node.
 ///
@@ -712,5 +835,180 @@ mod tests {
         let tris = triangulate(&pvi).unwrap();
         let layer = make_layer_material_node(vec![0, 1, 2], Some("ByVertex"));
         assert!(pull_layer_material_slots(&layer, &tris).unwrap().is_none());
+    }
+
+    /// Helper to build a synthetic `LayerElementColor` node with a
+    /// `Colors` payload + mapping/reference headers + an optional
+    /// `ColorIndex` indirection. Mirrors the shape every binary FBX
+    /// exporter emits per `docs/3d/fbx/ufbx/elements-meshes.md`.
+    fn make_layer_color_node(
+        colors: Vec<f64>,
+        mapping: &str,
+        reference: &str,
+        index: Option<Vec<i32>>,
+    ) -> FbxNode {
+        let mut layer = FbxNode {
+            name: "LayerElementColor".to_string(),
+            properties: vec![FbxProperty::I32(0)],
+            children: vec![
+                FbxNode {
+                    name: "MappingInformationType".to_string(),
+                    properties: vec![FbxProperty::String(mapping.as_bytes().to_vec())],
+                    children: Vec::new(),
+                },
+                FbxNode {
+                    name: "ReferenceInformationType".to_string(),
+                    properties: vec![FbxProperty::String(reference.as_bytes().to_vec())],
+                    children: Vec::new(),
+                },
+                FbxNode {
+                    name: "Colors".to_string(),
+                    properties: vec![FbxProperty::F64Array(colors)],
+                    children: Vec::new(),
+                },
+            ],
+        };
+        if let Some(ix) = index {
+            layer.children.push(FbxNode {
+                name: "ColorIndex".to_string(),
+                properties: vec![FbxProperty::I32Array(ix)],
+                children: Vec::new(),
+            });
+        }
+        layer
+    }
+
+    #[test]
+    fn layer_color_by_polygon_vertex_direct_flattens_per_corner() {
+        // One triangle, three corners. ByPolygonVertex + Direct => one
+        // RGBA quad per polygon-vertex slot, no indirection.
+        let pvi = vec![0, 1, -3];
+        let tris = triangulate(&pvi).unwrap();
+        let colors = vec![
+            1.0, 0.0, 0.0, 1.0, // corner 0 = red
+            0.0, 1.0, 0.0, 1.0, // corner 1 = green
+            0.0, 0.0, 1.0, 0.5, // corner 2 = semi-transparent blue
+        ];
+        let layer = make_layer_color_node(colors, "ByPolygonVertex", "Direct", None);
+        let out = pull_layer_vec4(&layer, "Colors", "ColorIndex", 3, &tris)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            out,
+            vec![
+                [1.0, 0.0, 0.0, 1.0],
+                [0.0, 1.0, 0.0, 1.0],
+                [0.0, 0.0, 1.0, 0.5]
+            ]
+        );
+    }
+
+    #[test]
+    fn layer_color_by_vertex_index_to_direct_indirects_through_color_index() {
+        // Two-triangle quad, four shared vertices, palette of two
+        // unique colours referenced via ColorIndex per vertex.
+        let pvi = vec![0, 1, 2, -4];
+        let tris = triangulate(&pvi).unwrap();
+        // Palette: black, white.
+        let palette = vec![
+            0.0, 0.0, 0.0, 1.0, // index 0 = opaque black
+            1.0, 1.0, 1.0, 1.0, // index 1 = opaque white
+        ];
+        // Per shared-vertex: v0=0, v1=1, v2=0, v3=1.
+        let index = Some(vec![0i32, 1, 0, 1]);
+        let layer = make_layer_color_node(palette, "ByVertex", "IndexToDirect", index);
+        let out = pull_layer_vec4(&layer, "Colors", "ColorIndex", 6, &tris)
+            .unwrap()
+            .unwrap();
+        // Fan triangulation: (v0,v1,v2) + (v0,v2,v3) =>
+        // [black, white, black, black, black, white].
+        assert_eq!(
+            out,
+            vec![
+                [0.0, 0.0, 0.0, 1.0],
+                [1.0, 1.0, 1.0, 1.0],
+                [0.0, 0.0, 0.0, 1.0],
+                [0.0, 0.0, 0.0, 1.0],
+                [0.0, 0.0, 0.0, 1.0],
+                [1.0, 1.0, 1.0, 1.0],
+            ]
+        );
+    }
+
+    #[test]
+    fn layer_color_rejects_non_multiple_of_four() {
+        // Colors with 5 doubles is not a valid RGBA stream.
+        let pvi = vec![0, 1, -3];
+        let tris = triangulate(&pvi).unwrap();
+        let layer = make_layer_color_node(
+            vec![1.0, 0.0, 0.0, 1.0, 0.5],
+            "ByPolygonVertex",
+            "Direct",
+            None,
+        );
+        let err = pull_layer_vec4(&layer, "Colors", "ColorIndex", 3, &tris).unwrap_err();
+        assert!(format!("{err}").contains("not a multiple of 4"));
+    }
+
+    #[test]
+    fn layer_color_unknown_mapping_returns_none() {
+        // AllSame / ByPolygon on vertex colours are uncommon and not
+        // currently flattened — they pass through as "no surfacing"
+        // instead of fabricating a per-corner buffer that misattributes
+        // the payload.
+        let pvi = vec![0, 1, -3];
+        let tris = triangulate(&pvi).unwrap();
+        let layer = make_layer_color_node(vec![0.25, 0.5, 0.75, 1.0], "AllSame", "Direct", None);
+        assert!(pull_layer_vec4(&layer, "Colors", "ColorIndex", 3, &tris)
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn extract_geometry_mesh_surfaces_two_color_sets_in_document_order() {
+        // Triangle with two LayerElementColor sub-records — verify
+        // both reach `Primitive::colors` in the order they appear in
+        // the FBX `Geometry` node (mirroring ufbx's
+        // `vertex_color` (first) + `color_sets[1..]` exposure).
+        let triangle = FbxNode {
+            name: "Geometry".to_string(),
+            properties: vec![
+                FbxProperty::I64(1),
+                FbxProperty::String(b"Geometry::tri\x00\x01Mesh".to_vec()),
+                FbxProperty::String(b"Mesh".to_vec()),
+            ],
+            children: vec![
+                FbxNode {
+                    name: "Vertices".to_string(),
+                    properties: vec![FbxProperty::F64Array(vec![
+                        0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0,
+                    ])],
+                    children: Vec::new(),
+                },
+                FbxNode {
+                    name: "PolygonVertexIndex".to_string(),
+                    properties: vec![FbxProperty::I32Array(vec![0, 1, -3])],
+                    children: Vec::new(),
+                },
+                make_layer_color_node(
+                    vec![1.0, 0.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0],
+                    "ByPolygonVertex",
+                    "Direct",
+                    None,
+                ),
+                make_layer_color_node(
+                    vec![0.0, 0.0, 0.0, 1.0, 0.5, 0.5, 0.5, 1.0, 1.0, 1.0, 1.0, 1.0],
+                    "ByPolygonVertex",
+                    "Direct",
+                    None,
+                ),
+            ],
+        };
+        let (mesh, _) = extract_geometry_mesh_with_corners(&triangle, None).unwrap();
+        let prim = &mesh.primitives[0];
+        assert_eq!(prim.colors.len(), 2, "both color sets should surface");
+        assert_eq!(prim.colors[0][0], [1.0, 0.0, 0.0, 1.0]);
+        assert_eq!(prim.colors[1][0], [0.0, 0.0, 0.0, 1.0]);
+        assert_eq!(prim.colors[1][2], [1.0, 1.0, 1.0, 1.0]);
     }
 }

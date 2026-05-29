@@ -53,6 +53,14 @@ clean-room from third-party documentation:
   `emissive_texture` / `metallic_roughness_texture` /
   `occlusion_texture` slots; `Material -> Model` OO records set
   `Primitive::material` on the bound mesh.
+- **Vertex colours** (round 184) — every `LayerElementColor` sub-record
+  on a `Geometry` element is surfaced as a separate per-corner RGBA
+  buffer on `Primitive::colors` (one slot per FBX colour set,
+  mirroring ufbx's `vertex_color` first slot + `color_sets[1..]`
+  exposure). Mapping / reference handling matches Normals
+  (`ByPolygonVertex` / `ByVertex` with optional `IndexToDirect`
+  indirection); the `d`-array `Colors` payload is 4-component RGBA per
+  ufbx reference §`ufbx_color_set.vertex_color`.
 - **Multi-material slot table** (round 178) — `LayerElementMaterial`
   per-polygon slot indices (`MappingInformationType=ByPolygon`) +
   every `Material -> Model` OO connection in slot order land on
