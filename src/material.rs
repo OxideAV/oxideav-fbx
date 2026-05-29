@@ -67,9 +67,14 @@
 //!   which is left for the encoder side of a future round).
 //! - `Connections OO Material -> Model` sets the first connected
 //!   material on every [`oxideav_mesh3d::Primitive`] of the model's
-//!   mesh (`Primitive::material`). Multi-material meshes via
-//!   `LayerElementMaterial` per-face indices are NYI — round 5 ships
-//!   one material per mesh per `face_material` simplification.
+//!   mesh (`Primitive::material`). When more than one `Material` is
+//!   OO-connected to the same `Model`, the full slot table lands on
+//!   `Primitive::extras["fbx:material_slots"]` (round 178) — the
+//!   per-corner indices into this table that
+//!   [`crate::geometry::pull_layer_material_slots`] stashes on
+//!   `Primitive::extras["fbx:face_material_slots"]` give a downstream
+//!   consumer everything it needs to split the primitive into one
+//!   per-material primitive without re-walking the FBX document.
 
 use std::collections::HashMap;
 
@@ -291,26 +296,58 @@ pub fn extract_materials(
         }
     }
 
-    // 6) Attach the first material connected to each Model to that
-    //    model's mesh primitives. Multi-material meshes
-    //    (`LayerElementMaterial` per-face) are NYI — round 5 ships
-    //    one material per mesh.
+    // 6) Attach the materials connected to each Model to that model's
+    //    mesh primitives.
+    //
+    //    Single-material case: every primitive's `material` slot is
+    //    set to the first (and only) connected material. This matches
+    //    the simple FBX-export shape every legacy renderer expects.
+    //
+    //    Multi-material case (round 178): a `Model` may receive more
+    //    than one `Material -> Model` OO connection, per ufbx
+    //    reference §`ufbx_node.materials`. The N connected materials
+    //    occupy slots 0..N in connection order. The per-corner
+    //    material-slot indices that `geometry::pull_layer_material_slots`
+    //    stashed onto `Primitive::extras["fbx:face_material_slots"]`
+    //    key into this same slot vector. We surface the slot table on
+    //    `Primitive::extras["fbx:material_slots"]` as a JSON array of
+    //    `MaterialId.0` numbers so a downstream consumer can split the
+    //    primitive on material boundaries; the legacy
+    //    `Primitive::material` field stays set to slot 0 for
+    //    single-binding renderers.
     for (model_fid, fbx_material_ids) in &model_to_materials {
         let mesh_id = match model_to_mesh.get(model_fid) {
             Some(&m) => m,
             None => continue,
         };
-        let first = match fbx_material_ids.first() {
-            Some(&f) => f,
-            None => continue,
-        };
-        let mat_id = match material_lookup.get(&first) {
-            Some(&m) => m,
-            None => continue,
-        };
+        let mat_slots: Vec<oxideav_mesh3d::MaterialId> = fbx_material_ids
+            .iter()
+            .filter_map(|fid| material_lookup.get(fid).copied())
+            .collect();
+        if mat_slots.is_empty() {
+            continue;
+        }
         if let Some(mesh) = scene.meshes.get_mut(mesh_id.0 as usize) {
             for prim in &mut mesh.primitives {
-                prim.material = Some(mat_id);
+                // Single-binding back-compat: default to slot 0.
+                prim.material = Some(mat_slots[0]);
+                // Always record the slot table when the model carries
+                // more than one connected material — even if the
+                // geometry's LayerElementMaterial mapping mode is
+                // `AllSame`, downstream consumers may want to walk
+                // every connected material (e.g. an editor surfacing
+                // unused secondary slots).
+                if mat_slots.len() > 1 {
+                    prim.extras.insert(
+                        "fbx:material_slots".to_string(),
+                        serde_json::Value::Array(
+                            mat_slots
+                                .iter()
+                                .map(|m| serde_json::Value::Number(serde_json::Number::from(m.0)))
+                                .collect(),
+                        ),
+                    );
+                }
             }
         }
     }

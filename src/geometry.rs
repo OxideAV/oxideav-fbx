@@ -105,6 +105,43 @@ pub fn extract_geometry_mesh_with_corners(
         }
     }
 
+    // LayerElementMaterial — surface per-polygon material slot
+    // indices on `Primitive::extras` per
+    // `docs/3d/fbx/ufbx/elements-meshes.md` §"Materials": the
+    // `Materials` (`i` array) sub-record carries one slot index per
+    // polygon (when `MappingInformationType=ByPolygon`) or one slot
+    // index for the whole mesh (when `MappingInformationType=AllSame`,
+    // also the FBX default per ufbx reference §`ufbx_mesh.face_material`).
+    // The per-corner expanded form lands on `fbx:face_material_slots`
+    // so a downstream consumer can split the primitive on material
+    // boundaries without re-deriving the triangulation; the
+    // `fbx:material_mapping` key captures the original mapping mode
+    // for diagnostics.
+    if let Some(layer) = geom.children_named("LayerElementMaterial").next() {
+        if let Some(per_corner_slots) = pull_layer_material_slots(layer, &triangles)? {
+            // Per-corner buffer (length == corner_indices.len()).
+            prim.extras.insert(
+                "fbx:face_material_slots".to_string(),
+                Value::Array(
+                    per_corner_slots
+                        .iter()
+                        .map(|&s| Value::Number(serde_json::Number::from(s)))
+                        .collect(),
+                ),
+            );
+            // Record the source mapping for downstream consumers.
+            if let Some(mapping) = layer.child("MappingInformationType").and_then(|n| {
+                n.properties
+                    .first()
+                    .and_then(FbxProperty::as_str)
+                    .map(str::to_owned)
+            }) {
+                prim.extras
+                    .insert("fbx:material_mapping".to_string(), Value::String(mapping));
+            }
+        }
+    }
+
     // Attach the original shared-vertex buffer to `Primitive::extras`
     // so consumers can reconstruct the FBX vertex layout. (`Mesh`
     // itself has no extras slot — it's a thin name + primitives bag.)
@@ -188,6 +225,16 @@ pub(crate) struct Triangulation {
     /// `LayerElement*` records). Same length as
     /// [`Self::corner_indices`].
     pub corner_pvi_index: Vec<u32>,
+    /// Per-triangle index into the original polygon array (i.e. for
+    /// `tri_polygon_index[t]`, which polygon in the source mesh this
+    /// triangle was fanned from). Length = `corner_indices.len() / 3`.
+    /// Used to expand `LayerElementMaterial` (which is keyed
+    /// `ByPolygon`) into per-corner material-slot indices.
+    pub tri_polygon_index: Vec<u32>,
+    /// Total polygon count in the source mesh — matches the number of
+    /// negative end-of-polygon markers in `PolygonVertexIndex`. Used to
+    /// validate `LayerElementMaterial` mapping-mode payloads.
+    pub polygon_count: u32,
 }
 
 /// Fan-triangulate the `PolygonVertexIndex` array. Decodes the
@@ -196,7 +243,9 @@ pub(crate) struct Triangulation {
 fn triangulate(pvi: &[i32]) -> Result<Triangulation> {
     let mut corner_indices = Vec::new();
     let mut corner_pvi_index = Vec::new();
+    let mut tri_polygon_index = Vec::new();
     let mut polygon_start = 0;
+    let mut polygon_count: u32 = 0;
     for (i, &raw) in pvi.iter().enumerate() {
         let is_end = raw < 0;
         if is_end {
@@ -218,7 +267,9 @@ fn triangulate(pvi: &[i32]) -> Result<Triangulation> {
                 corner_indices.push(decode_pvi(pvi[a_pvi]));
                 corner_indices.push(decode_pvi(pvi[b_pvi]));
                 corner_indices.push(decode_pvi(pvi[c_pvi]));
+                tri_polygon_index.push(polygon_count);
             }
+            polygon_count += 1;
             polygon_start = i + 1;
         }
     }
@@ -230,6 +281,8 @@ fn triangulate(pvi: &[i32]) -> Result<Triangulation> {
     Ok(Triangulation {
         corner_indices,
         corner_pvi_index,
+        tri_polygon_index,
+        polygon_count,
     })
 }
 
@@ -435,6 +488,87 @@ fn pull_layer_vec2(
     Ok(Some(out))
 }
 
+/// Pull the per-corner material-slot index buffer from a
+/// `LayerElementMaterial` node.
+///
+/// FBX `LayerElementMaterial` (per ufbx
+/// `elements-meshes.md` §"Materials") carries:
+///
+/// - `Materials` — `i` array. Length depends on `MappingInformationType`:
+///   - `AllSame` (the default): exactly one entry — that slot applies
+///     to every polygon. The buffer often holds the single value `0`.
+///   - `ByPolygon`: one entry per polygon (length ==
+///     `Triangulation::polygon_count`). Slot indices key
+///     `Material -> Model` OO connection slots in the order that ufbx
+///     reference §`ufbx_mesh.materials` documents.
+/// - `MappingInformationType` — string (the two values above are the
+///   ones ufbx reference §`ufbx_mesh_part`/§`ufbx_mesh.materials`
+///   documents for materials).
+/// - `ReferenceInformationType` — string. For materials, the
+///   `IndexToDirect` form is what every binary FBX exporter actually
+///   emits (the slot indices themselves are the "direct" payload —
+///   ufbx documents this with `index_type == UFBX_INDEX_TYPE_DIRECT`).
+///   `Direct` and missing-reference accepted as synonyms.
+///
+/// Returned buffer is one `u32` slot index per triangle corner
+/// (length == `triangles.corner_indices.len()`), expanded from the
+/// per-polygon payload via `triangles.tri_polygon_index`.
+fn pull_layer_material_slots(
+    layer: &FbxNode,
+    triangles: &Triangulation,
+) -> Result<Option<Vec<u32>>> {
+    let mapping = layer.child("MappingInformationType").and_then(|n| {
+        n.properties
+            .first()
+            .and_then(FbxProperty::as_str)
+            .map(str::to_owned)
+    });
+    let data_node = match layer.child("Materials") {
+        Some(n) => n,
+        None => return Ok(None),
+    };
+    let raw: Vec<i32> = match data_node.properties.first() {
+        Some(FbxProperty::I32Array(a)) => a.clone(),
+        Some(FbxProperty::I64Array(a)) => a.iter().map(|&v| v as i32).collect(),
+        _ => return Ok(None),
+    };
+    if raw.is_empty() {
+        return Ok(None);
+    }
+    let all_same = matches!(mapping.as_deref(), Some("AllSame")) || raw.len() == 1;
+    let by_polygon = matches!(mapping.as_deref(), Some("ByPolygon"));
+    let n_corners = triangles.corner_indices.len();
+    let n_tris = triangles.tri_polygon_index.len();
+    debug_assert_eq!(n_corners, n_tris * 3);
+    if all_same {
+        let slot = raw[0].max(0) as u32;
+        return Ok(Some(vec![slot; n_corners]));
+    }
+    if by_polygon {
+        if raw.len() != triangles.polygon_count as usize {
+            return Err(Error::invalid(format!(
+                "FBX LayerElementMaterial: Materials length {} but polygon count {} (ByPolygon mapping)",
+                raw.len(),
+                triangles.polygon_count
+            )));
+        }
+        let mut out = Vec::with_capacity(n_corners);
+        for &poly_ix in &triangles.tri_polygon_index {
+            let s = raw.get(poly_ix as usize).copied().unwrap_or(0).max(0) as u32;
+            // Three corners per triangle.
+            out.push(s);
+            out.push(s);
+            out.push(s);
+        }
+        return Ok(Some(out));
+    }
+    // Unknown mapping mode (NoMappingInformation, ByVertex on
+    // materials — ufbx documents these as exporter quirks). Skip,
+    // matching ufbx's "fall back to all-same" tolerance per
+    // `elements-meshes.md` §"Materials".
+    Ok(None)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -471,5 +605,112 @@ mod tests {
     fn rejects_polygon_with_too_few_vertices() {
         let pvi = vec![0, -2];
         assert!(triangulate(&pvi).is_err());
+    }
+
+    #[test]
+    fn triangulation_tracks_polygon_index() {
+        // Three triangles + one quad = 4 polygons.
+        // Quad fans into two triangles => 5 triangles total.
+        let pvi = vec![
+            // Triangle 0
+            0, 1, -3, // Triangle 1
+            4, 5, -7, // Quad polygon 2 (fans into 2 tris)
+            8, 9, 10, -12, // Triangle 3
+            13, 14, -16,
+        ];
+        let tris = triangulate(&pvi).unwrap();
+        assert_eq!(tris.polygon_count, 4);
+        assert_eq!(tris.tri_polygon_index, vec![0, 1, 2, 2, 3]);
+        assert_eq!(tris.corner_indices.len(), 5 * 3);
+    }
+
+    fn make_layer_material_node(materials_arr: Vec<i32>, mapping: Option<&str>) -> FbxNode {
+        let mut layer = FbxNode {
+            name: "LayerElementMaterial".to_string(),
+            properties: vec![FbxProperty::I32(0)],
+            children: Vec::new(),
+        };
+        if let Some(m) = mapping {
+            layer.children.push(FbxNode {
+                name: "MappingInformationType".to_string(),
+                properties: vec![FbxProperty::String(m.as_bytes().to_vec())],
+                children: Vec::new(),
+            });
+            layer.children.push(FbxNode {
+                name: "ReferenceInformationType".to_string(),
+                properties: vec![FbxProperty::String(b"IndexToDirect".to_vec())],
+                children: Vec::new(),
+            });
+        }
+        layer.children.push(FbxNode {
+            name: "Materials".to_string(),
+            properties: vec![FbxProperty::I32Array(materials_arr)],
+            children: Vec::new(),
+        });
+        layer
+    }
+
+    #[test]
+    fn layer_material_all_same_broadcasts_single_slot() {
+        let pvi = vec![0, 1, -3, 4, 5, -7];
+        let tris = triangulate(&pvi).unwrap();
+        assert_eq!(tris.polygon_count, 2);
+        let layer = make_layer_material_node(vec![3], Some("AllSame"));
+        let slots = pull_layer_material_slots(&layer, &tris).unwrap().unwrap();
+        // Two triangles, three corners each, every slot is 3.
+        assert_eq!(slots, vec![3, 3, 3, 3, 3, 3]);
+    }
+
+    #[test]
+    fn layer_material_by_polygon_per_polygon_payload() {
+        // Polygon 0 (triangle) -> slot 0
+        // Polygon 1 (quad)     -> slot 1 (two fan triangles)
+        // Polygon 2 (triangle) -> slot 0
+        let pvi = vec![0, 1, -3, 4, 5, 6, -8, 9, 10, -12];
+        let tris = triangulate(&pvi).unwrap();
+        assert_eq!(tris.polygon_count, 3);
+        let layer = make_layer_material_node(vec![0, 1, 0], Some("ByPolygon"));
+        let slots = pull_layer_material_slots(&layer, &tris).unwrap().unwrap();
+        // Triangle 0 (poly 0, slot 0): 0,0,0
+        // Triangle 1 (poly 1, slot 1): 1,1,1
+        // Triangle 2 (poly 1, slot 1): 1,1,1
+        // Triangle 3 (poly 2, slot 0): 0,0,0
+        assert_eq!(slots, vec![0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0]);
+    }
+
+    #[test]
+    fn layer_material_by_polygon_length_mismatch_errors() {
+        // Two polygons but Materials carries three entries.
+        let pvi = vec![0, 1, -3, 4, 5, -7];
+        let tris = triangulate(&pvi).unwrap();
+        let layer = make_layer_material_node(vec![0, 1, 0], Some("ByPolygon"));
+        let err = pull_layer_material_slots(&layer, &tris).unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("ByPolygon"),
+            "expected ByPolygon length mismatch error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn layer_material_single_entry_treated_as_all_same() {
+        // Materials with one entry and no mapping mode header is the
+        // exporter shorthand for AllSame per ufbx-doc tolerance.
+        let pvi = vec![0, 1, -3, 4, 5, -7];
+        let tris = triangulate(&pvi).unwrap();
+        let layer = make_layer_material_node(vec![2], None);
+        let slots = pull_layer_material_slots(&layer, &tris).unwrap().unwrap();
+        assert_eq!(slots, vec![2; 6]);
+    }
+
+    #[test]
+    fn layer_material_unknown_mapping_returns_none() {
+        // ByVertex on materials is exporter-quirk territory; per ufbx
+        // we tolerate it as "no surfacing", letting the connection
+        // table do its default first-material-only wiring.
+        let pvi = vec![0, 1, -3];
+        let tris = triangulate(&pvi).unwrap();
+        let layer = make_layer_material_node(vec![0, 1, 2], Some("ByVertex"));
+        assert!(pull_layer_material_slots(&layer, &tris).unwrap().is_none());
     }
 }

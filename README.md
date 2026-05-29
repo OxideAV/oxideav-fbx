@@ -53,6 +53,13 @@ clean-room from third-party documentation:
   `emissive_texture` / `metallic_roughness_texture` /
   `occlusion_texture` slots; `Material -> Model` OO records set
   `Primitive::material` on the bound mesh.
+- **Multi-material slot table** (round 178) — `LayerElementMaterial`
+  per-polygon slot indices (`MappingInformationType=ByPolygon`) +
+  every `Material -> Model` OO connection in slot order land on
+  `Primitive::extras` (`fbx:face_material_slots` / `fbx:material_slots` /
+  `fbx:material_mapping`), preserving the full per-face material
+  payload alongside the legacy single-binding `Primitive::material`
+  (which stays at slot 0 for round-5 single-binding consumers).
 - **Bind pose** (round 97) — `Objects { Pose : "BindPose" }` elements
   surface each `PoseNode { Node, Matrix }` bone-world matrix onto the
   bone `Node`'s `extras["fbx:bind_pose"]` (16-double row-major JSON
@@ -119,7 +126,19 @@ println!("{} mesh(es), {} node(s)", scene.meshes.len(), scene.nodes.len());
   bindings) but leaves the colour factors at the glTF defaults until
   the `P`-record spec is staged in `docs/3d/fbx/`.
 - Multi-material meshes via `LayerElementMaterial` per-face indices —
-  round 5 ships one material per mesh (`face_material` simplification).
+  round 178 surfaces the FBX `LayerElementMaterial` payload:
+  `MappingInformationType=ByPolygon` per-polygon slot indices land on
+  `Primitive::extras["fbx:face_material_slots"]` (one `u32` per
+  triangle corner, fanned through the same triangulation the position
+  buffer uses); `AllSame` broadcasts a single slot. Every `Material ->
+  Model` OO connection in slot order lands on
+  `Primitive::extras["fbx:material_slots"]` (a JSON array of
+  `MaterialId.0`s) so a downstream consumer can split the primitive
+  into one Primitive-per-slot; `Primitive::material` stays at slot 0
+  for single-binding renderers (the round-5 default). Splitting the
+  per-corner attribute buffers (positions / normals / UVs / skin /
+  morph) into N parts is the consumer's job — the slot table + the
+  per-corner index buffer are the only inputs that decision needs.
 - Coordinate-system / unit-scale auto-conversion.
 - **Light / Camera node attributes** — DOCS-GAP. The on-disk FBX
   `NodeAttribute` record name, the `"Light"` / `"Camera"` subtype

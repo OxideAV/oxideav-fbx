@@ -9,6 +9,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Round 178 — multi-material slot table via `LayerElementMaterial`
+  surfacing.
+  - `geometry.rs` extends `Triangulation` with
+    `tri_polygon_index: Vec<u32>` (per-triangle index into the source
+    polygon array) and `polygon_count: u32` (negative-end-marker count
+    in `PolygonVertexIndex`). Fan triangulation now records which
+    source polygon each emitted triangle came from, so per-polygon
+    layer payloads can be expanded to per-corner buffers without a
+    second pass over the geometry.
+  - New `pull_layer_material_slots(layer, &triangles)`: reads the FBX
+    `LayerElementMaterial` sub-record per
+    `docs/3d/fbx/ufbx/elements-meshes.md` §"Materials" + ufbx
+    reference §`ufbx_mesh.face_material`. Supports both
+    `MappingInformationType=AllSame` (single broadcast slot — the FBX
+    default, also the exporter shorthand of a one-entry `Materials`
+    array with no mapping mode header) and
+    `MappingInformationType=ByPolygon` (one slot per source polygon,
+    expanded to one slot per triangle corner via
+    `Triangulation::tri_polygon_index`). Unknown mapping modes
+    (`ByVertex` on materials etc.) return `None`, falling through to
+    the legacy single-binding wiring per ufbx's "fall back to all-same"
+    tolerance.
+  - The per-corner slot index buffer lands on
+    `Primitive::extras["fbx:face_material_slots"]` as a JSON array of
+    `u32`s (length == `corner_indices.len()`); the original mapping
+    mode lands on `Primitive::extras["fbx:material_mapping"]` for
+    diagnostics.
+  - `material.rs` widens the per-Model material wiring to record every
+    `Material -> Model` OO connection in slot order: the resulting
+    slot table lands on `Primitive::extras["fbx:material_slots"]` as a
+    JSON array of `MaterialId.0`s (a key that indexes the same slot
+    space as `fbx:face_material_slots`). Single-binding renderers see
+    no change — `Primitive::material` still defaults to slot 0, and
+    the table is only written when the model carries more than one
+    connected material.
+  - Six new unit tests in `src/geometry.rs::tests`:
+    `triangulation_tracks_polygon_index`,
+    `layer_material_all_same_broadcasts_single_slot`,
+    `layer_material_by_polygon_per_polygon_payload`,
+    `layer_material_by_polygon_length_mismatch_errors`,
+    `layer_material_single_entry_treated_as_all_same`,
+    `layer_material_unknown_mapping_returns_none`. One new integration
+    test `tests/synthetic_multi_material.rs::multi_material_by_polygon_surfaces_slot_table_and_per_face_indices`
+    exercises a 2-triangle / 2-material synthetic binary FBX through
+    `FbxDecoder::decode`, asserting the slot table, the per-corner
+    index buffer, the mapping-mode crumb, and the single-binding
+    fallback are all present on the decoded `Primitive`.
 - Round 97 — bind-pose (`Pose` element, subtype `"BindPose"`) surfacing
   on `Scene3D`.
   - New `pose` module: `extract_poses(&doc, &mut scene, &model_nodes)`
