@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.2](https://github.com/OxideAV/oxideav-fbx/compare/v0.0.1...v0.0.2) - 2026-05-30
+
+### Other
+
+- Round 191: Properties70 P-record decoder + Material PBR factor decode
+- Round 184: vertex colours (LayerElementColor) on Primitive::colors
+- Round 178: multi-material slot table via LayerElementMaterial
+- drop Scene3D::validate() from pose test (published mesh3d lacks it)
+- Round 97: bind-pose (Pose / "BindPose") surfacing on Scene3D
+- Round 5: Material / Texture / Video surfacing on Scene3D
+- Round 4: opt-in zlib deflate (Encoding == 1) for writer arrays
+- Round 3: binary writer (decoder round-trip closure)
+- Round 2: animation + deformer surfacing
+- release v0.0.1 ([#1](https://github.com/OxideAV/oxideav-fbx/pull/1))
+
 ### Added
 
 - Round 191 — `Properties70` `P`-record decoder + Material PBR
