@@ -86,10 +86,15 @@
 //! - Skin: `SKINNING_METHOD_DUAL_QUATERNION` produces plain LBS
 //!   buffers (the doc notes this is safe to ignore in most cases).
 //! - BlendShape: in-between keyframes are collapsed to `target_shape`.
-//! - Material PBR colour / factor channels — round 5 surfaces the
-//!   `Material` element name + texture bindings but leaves colour
-//!   factors at the glTF defaults pending an FBX `P`-record
-//!   (Properties70) grammar in `docs/3d/fbx/`.
+//! - Material PBR colour / factor channels (round 191) — decode the
+//!   element's `Properties70` `P`-record block via [`properties70`]
+//!   and apply `DiffuseColor` / `DiffuseFactor` / `Opacity` /
+//!   `EmissiveColor` / `EmissiveFactor` / `Shininess` /
+//!   `ReflectionFactor` onto the matching [`oxideav_mesh3d::Material`]
+//!   channels. The Blender writeup is binary-only and didn't cover
+//!   the `P`-record grammar; the typed [`properties70::PropertyMap`]
+//!   here is derived from the observer-doc at
+//!   `docs/3d/fbx/fbx-binary-properties70.md` §4.
 //! - Multi-material meshes via `LayerElementMaterial` per-face
 //!   indices — round 5 ships one material per mesh.
 //! - Coordinate-system / unit-scale conversion — files travel with
@@ -121,6 +126,7 @@ pub mod deformer;
 pub mod geometry;
 pub mod material;
 pub mod pose;
+pub mod properties70;
 pub mod scene;
 pub mod writer;
 

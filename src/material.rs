@@ -42,13 +42,18 @@
 //! # What this round surfaces
 //!
 //! - One [`oxideav_mesh3d::Material`] per FBX `Material` element, with
-//!   its `name` field populated from the FBX element-name. PBR factors
-//!   stay at the [`oxideav_mesh3d::Material::new`] defaults — FBX
-//!   stores its colour / factor channels inside `Properties70 { P:
-//!   "DiffuseColor", "Color", ... }` records whose grammar isn't in the
-//!   currently-staged docs corpus. Once an FBX `P`-record grammar is
-//!   staged in `docs/3d/fbx/`, the factor / colour decode can be wired
-//!   in as a follow-up round without changing this module's shape.
+//!   its `name` field populated from the FBX element-name.
+//!   PBR factors / colours are decoded from the element's
+//!   `Properties70` `P`-record block via
+//!   [`crate::properties70::PropertyMap`]:
+//!   `DiffuseColor` × `DiffuseFactor` → `base_color` rgb,
+//!   `Opacity` → `base_color[3]` + `AlphaMode::Blend` when < 1,
+//!   `EmissiveColor` × `EmissiveFactor` → `emissive_factor`,
+//!   `Shininess` (Phong exponent) → `roughness` via
+//!   `sqrt(2/(n+2))`, `ReflectionFactor` → `metallic`, and
+//!   `ShadingModel` → `Material::extras["fbx:shading_model"]`. See
+//!   `docs/3d/fbx/fbx-binary-properties70.md` §4 for the `P`-record
+//!   grammar this consumes.
 //! - One [`oxideav_mesh3d::Texture`] per FBX `Texture` element, built
 //!   from the `RelativeFilename` sub-record (fallback: `FileName`) via
 //!   [`oxideav_mesh3d::Texture::from_uri`]. When the texture is
@@ -78,9 +83,12 @@
 
 use std::collections::HashMap;
 
-use oxideav_mesh3d::{Material, MaterialId, MeshId, NodeId, Scene3D, Texture, TextureId};
+use oxideav_mesh3d::{
+    AlphaMode, Material, MaterialId, MeshId, NodeId, Scene3D, Texture, TextureId,
+};
 
 use crate::binary::{FbxDocument, FbxNode, FbxProperty};
+use crate::properties70::PropertyMap;
 
 /// Walk the top-level `Objects` + `Connections` records to populate
 /// `Scene3D::materials` + `Scene3D::textures` and wire them into the
@@ -222,9 +230,20 @@ pub fn extract_materials(
         texture_lookup.insert(tid, tex_id);
     }
 
-    // 4) Materialise Material elements. Properties70 colour / factor
-    //    channels stay at the glTF defaults pending a docs-side grammar
-    //    for the `P` records (see module preamble).
+    // 4) Materialise Material elements. The `Properties70` `P`-record
+    //    grammar (now staged in `docs/3d/fbx/fbx-binary-properties70.md`
+    //    §4) lets us decode the real PBR factors: `DiffuseColor` /
+    //    `Diffuse` (vec3) → `base_color` rgb; `DiffuseFactor` (scalar)
+    //    multiplies into that rgb; `Opacity` (scalar, 1.0 = opaque) →
+    //    `base_color[3]` + `AlphaMode::Blend` when < 1; `EmissiveColor`
+    //    (vec3) + `EmissiveFactor` (scalar) → `emissive_factor`;
+    //    `Shininess` / `ShininessExponent` (Phong specular exponent)
+    //    → `roughness` via a 1 − tanh(N/96) mapping;
+    //    `ReflectionFactor` → `metallic` (FBX Phong/Lambert has no
+    //    proper metallic channel, but ReflectionFactor is the closest
+    //    legacy-shader analogue). `ShadingModel` is captured into
+    //    `Material::extras` for downstream consumers that need the
+    //    raw FBX shader-kind hint.
     let mut material_lookup: HashMap<i64, MaterialId> = HashMap::new();
     let mut material_ids: Vec<i64> = fbx_materials.keys().copied().collect();
     material_ids.sort_unstable();
@@ -235,6 +254,7 @@ pub fn extract_materials(
         };
         let mut mat = Material::new();
         mat.name = element_name(mat_node);
+        apply_properties70(mat_node, &mut mat);
         let mat_id = scene.add_material(mat);
         material_lookup.insert(mid, mat_id);
     }
@@ -365,6 +385,120 @@ fn element_name(node: &FbxNode) -> Option<String> {
         std::str::from_utf8(&raw[..sep]).ok().map(str::to_owned)
     } else {
         std::str::from_utf8(raw).ok().map(str::to_owned)
+    }
+}
+
+/// Decode the FBX `Material`'s `Properties70` `P`-record block per
+/// `docs/3d/fbx/fbx-binary-properties70.md` §4 and populate the
+/// matching channels on the typed [`Material`].
+///
+/// The mapping is the same one the ufbx reference documents in
+/// §`ufbx_material_fbx`: diffuse colour × diffuse factor → base
+/// colour; opacity → base-colour alpha (+ alpha mode); emissive colour
+/// × emissive factor → emissive factor; specular shininess → roughness
+/// (via the standard Blinn-Phong → GGX conversion `roughness ≈
+/// sqrt(2 / (shininess + 2))`); reflection factor → metallic; raw
+/// `ShadingModel` string captured into `extras["fbx:shading_model"]`
+/// so downstream consumers can distinguish phong / lambert / unknown.
+fn apply_properties70(node: &FbxNode, mat: &mut Material) {
+    let pm = PropertyMap::from_element(node);
+    if pm.is_empty() {
+        // Also accept a top-level `ShadingModel` leaf — the docs
+        // show it lives in `Properties70` for newer exporters but
+        // sometimes is a direct child for older FBX-2014 files.
+        if let Some(shading) = read_string_child(node, "ShadingModel") {
+            mat.extras.insert(
+                "fbx:shading_model".into(),
+                serde_json::Value::String(shading),
+            );
+        }
+        return;
+    }
+
+    // Diffuse colour × DiffuseFactor → base_color rgb.
+    //
+    // ufbx reference: `ufbx_material_fbx.diffuse_color` and
+    // `.diffuse_factor`. `DiffuseColor` is the canonical name; some
+    // exporters also write `Diffuse` (already-baked rgb × factor).
+    let mut diffuse_rgb = pm
+        .as_vec3("DiffuseColor")
+        .or_else(|| pm.as_vec3("Diffuse"))
+        .map(|v| [v[0] as f32, v[1] as f32, v[2] as f32]);
+    if let (Some(rgb), Some(factor)) = (diffuse_rgb.as_mut(), pm.as_f64("DiffuseFactor")) {
+        let f = factor as f32;
+        for c in rgb.iter_mut() {
+            *c *= f;
+        }
+    }
+    if let Some(rgb) = diffuse_rgb {
+        mat.base_color = [rgb[0], rgb[1], rgb[2], mat.base_color[3]];
+    }
+
+    // Opacity → base-colour alpha. FBX defaults to 1.0; only switch
+    // to AlphaMode::Blend when the file explicitly says < 1.
+    if let Some(opacity) = pm.as_f64("Opacity") {
+        let a = (opacity as f32).clamp(0.0, 1.0);
+        mat.base_color[3] = a;
+        if a < 1.0 {
+            mat.alpha_mode = AlphaMode::Blend;
+        }
+    }
+
+    // Emissive colour × EmissiveFactor → emissive_factor rgb.
+    let mut emissive_rgb = pm
+        .as_vec3("EmissiveColor")
+        .map(|v| [v[0] as f32, v[1] as f32, v[2] as f32]);
+    if let (Some(rgb), Some(factor)) = (emissive_rgb.as_mut(), pm.as_f64("EmissiveFactor")) {
+        let f = factor as f32;
+        for c in rgb.iter_mut() {
+            *c *= f;
+        }
+    }
+    if let Some(rgb) = emissive_rgb {
+        mat.emissive_factor = rgb;
+    }
+
+    // Specular shininess → roughness.
+    //
+    // The Blinn-Phong specular exponent `n` (FBX `Shininess` /
+    // `ShininessExponent` per ufbx §`ufbx_material_fbx.specular_exponent`)
+    // converts to GGX-style roughness via the well-known relation
+    // `roughness ≈ sqrt(2 / (n + 2))` — bright/mirror Phong (n→∞)
+    // collapses to roughness → 0, matte Phong (n→0) goes to roughness
+    // → 1. Cap on input to avoid NaN on n < 0.
+    if let Some(n) = pm
+        .as_f64("Shininess")
+        .or_else(|| pm.as_f64("ShininessExponent"))
+    {
+        let n = n.max(0.0) as f32;
+        let r = (2.0 / (n + 2.0)).sqrt().clamp(0.0, 1.0);
+        mat.roughness = r;
+    }
+
+    // ReflectionFactor → metallic. FBX legacy shaders have no proper
+    // metallic channel; `ReflectionFactor` is the closest analogue in
+    // both Phong and Lambert per ufbx reference. Phong defaults to a
+    // matte-dielectric look (metallic = 0) when ReflectionFactor is
+    // unset; we honour that by NOT touching `mat.metallic` here unless
+    // the file supplies the value.
+    if let Some(rf) = pm.as_f64("ReflectionFactor") {
+        mat.metallic = (rf as f32).clamp(0.0, 1.0);
+    }
+
+    // ShadingModel → extras["fbx:shading_model"]. Captured raw so
+    // downstream consumers can branch on `"phong"` / `"lambert"` /
+    // `"Maya|standardSurface"` / etc. without re-walking the document.
+    //
+    // Per the docs §4 sample, ShadingModel may live as a direct-child
+    // leaf (`box.fbx` Material →`ShadingModel: "phong"`) OR as a
+    // Properties70 P-record on newer exporters — accept either.
+    let shading = pm
+        .as_str("ShadingModel")
+        .map(str::to_owned)
+        .or_else(|| read_string_child(node, "ShadingModel"));
+    if let Some(s) = shading {
+        mat.extras
+            .insert("fbx:shading_model".into(), serde_json::Value::String(s));
     }
 }
 
@@ -677,6 +811,265 @@ mod tests {
         assert!(scene.materials[0].base_color_texture.is_none());
         assert!(scene.materials[0].normal_texture.is_none());
         assert!(scene.materials[0].emissive_texture.is_none());
+    }
+
+    /// Build a `Material` element with a populated `Properties70`
+    /// block so the §4 grammar tests can exercise the PBR factor
+    /// path end-to-end through `extract_materials`.
+    fn material_elem_with_props(id: i64, name: &str, props70: Vec<FbxNode>) -> FbxNode {
+        let mut concat = name.as_bytes().to_vec();
+        concat.extend_from_slice(b"\x00\x01Material");
+        FbxNode {
+            name: "Material".into(),
+            properties: vec![
+                FbxProperty::I64(id),
+                FbxProperty::String(concat),
+                FbxProperty::String(b"".to_vec()),
+            ],
+            children: vec![FbxNode {
+                name: "Properties70".into(),
+                properties: Vec::new(),
+                children: props70,
+            }],
+        }
+    }
+
+    /// Build one `P` node from the §4 grammar: `(name, type, label,
+    /// flags, value...)`.
+    fn p_node(name: &str, ty: &str, label: &str, flags: &str, vals: Vec<FbxProperty>) -> FbxNode {
+        let mut props = vec![
+            FbxProperty::String(name.as_bytes().to_vec()),
+            FbxProperty::String(ty.as_bytes().to_vec()),
+            FbxProperty::String(label.as_bytes().to_vec()),
+            FbxProperty::String(flags.as_bytes().to_vec()),
+        ];
+        props.extend(vals);
+        FbxNode {
+            name: "P".into(),
+            properties: props,
+            children: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn properties70_diffuse_color_factor_applied_to_base_color() {
+        let mut scene = Scene3D::new();
+        let model_to_mesh: HashMap<i64, MeshId> = HashMap::new();
+        let model_nodes: HashMap<i64, NodeId> = HashMap::new();
+
+        // DiffuseColor (0.8,0.4,0.2) × DiffuseFactor 0.5 → (0.4,0.2,0.1).
+        let doc = make_doc(
+            vec![material_elem_with_props(
+                300,
+                "Wood",
+                vec![
+                    p_node(
+                        "DiffuseColor",
+                        "Color",
+                        "",
+                        "A",
+                        vec![
+                            FbxProperty::F64(0.8),
+                            FbxProperty::F64(0.4),
+                            FbxProperty::F64(0.2),
+                        ],
+                    ),
+                    p_node(
+                        "DiffuseFactor",
+                        "Number",
+                        "",
+                        "A",
+                        vec![FbxProperty::F64(0.5)],
+                    ),
+                ],
+            )],
+            vec![],
+        );
+        extract_materials(&doc, &mut scene, &model_to_mesh, &model_nodes);
+
+        let mat = &scene.materials[0];
+        let expected = [0.8f32 * 0.5, 0.4 * 0.5, 0.2 * 0.5];
+        for (i, exp) in expected.iter().enumerate() {
+            assert!(
+                (mat.base_color[i] - exp).abs() < 1e-6,
+                "base_color[{i}] {} != {}",
+                mat.base_color[i],
+                exp
+            );
+        }
+    }
+
+    #[test]
+    fn properties70_opacity_sets_alpha_and_blend_mode() {
+        let mut scene = Scene3D::new();
+        let model_to_mesh: HashMap<i64, MeshId> = HashMap::new();
+        let model_nodes: HashMap<i64, NodeId> = HashMap::new();
+        let doc = make_doc(
+            vec![material_elem_with_props(
+                300,
+                "Glass",
+                vec![p_node(
+                    "Opacity",
+                    "double",
+                    "Number",
+                    "A",
+                    vec![FbxProperty::F64(0.25)],
+                )],
+            )],
+            vec![],
+        );
+        extract_materials(&doc, &mut scene, &model_to_mesh, &model_nodes);
+        let mat = &scene.materials[0];
+        assert!((mat.base_color[3] - 0.25).abs() < 1e-6);
+        assert!(matches!(mat.alpha_mode, AlphaMode::Blend));
+    }
+
+    #[test]
+    fn properties70_emissive_color_factor_applied() {
+        let mut scene = Scene3D::new();
+        let model_to_mesh: HashMap<i64, MeshId> = HashMap::new();
+        let model_nodes: HashMap<i64, NodeId> = HashMap::new();
+        // EmissiveColor (1,0.5,0.0) × EmissiveFactor 2.0 → (2.0,1.0,0.0).
+        let doc = make_doc(
+            vec![material_elem_with_props(
+                300,
+                "Lamp",
+                vec![
+                    p_node(
+                        "EmissiveColor",
+                        "Color",
+                        "",
+                        "A",
+                        vec![
+                            FbxProperty::F64(1.0),
+                            FbxProperty::F64(0.5),
+                            FbxProperty::F64(0.0),
+                        ],
+                    ),
+                    p_node(
+                        "EmissiveFactor",
+                        "Number",
+                        "",
+                        "A",
+                        vec![FbxProperty::F64(2.0)],
+                    ),
+                ],
+            )],
+            vec![],
+        );
+        extract_materials(&doc, &mut scene, &model_to_mesh, &model_nodes);
+        let mat = &scene.materials[0];
+        let expected = [2.0f32, 1.0, 0.0];
+        for (i, exp) in expected.iter().enumerate() {
+            assert!(
+                (mat.emissive_factor[i] - exp).abs() < 1e-6,
+                "emissive_factor[{i}] {} != {}",
+                mat.emissive_factor[i],
+                exp
+            );
+        }
+    }
+
+    #[test]
+    fn properties70_shininess_converts_to_roughness() {
+        // Shininess = 0 → roughness = sqrt(2/2) = 1 (fully matte).
+        let mut scene = Scene3D::new();
+        let model_to_mesh: HashMap<i64, MeshId> = HashMap::new();
+        let model_nodes: HashMap<i64, NodeId> = HashMap::new();
+        let doc = make_doc(
+            vec![material_elem_with_props(
+                300,
+                "Matte",
+                vec![p_node(
+                    "Shininess",
+                    "double",
+                    "",
+                    "A",
+                    vec![FbxProperty::F64(0.0)],
+                )],
+            )],
+            vec![],
+        );
+        extract_materials(&doc, &mut scene, &model_to_mesh, &model_nodes);
+        assert!((scene.materials[0].roughness - 1.0).abs() < 1e-6);
+
+        // Shininess = 98 → roughness ≈ sqrt(2/100) ≈ 0.1414.
+        let mut scene2 = Scene3D::new();
+        let doc2 = make_doc(
+            vec![material_elem_with_props(
+                300,
+                "Glossy",
+                vec![p_node(
+                    "Shininess",
+                    "double",
+                    "",
+                    "A",
+                    vec![FbxProperty::F64(98.0)],
+                )],
+            )],
+            vec![],
+        );
+        extract_materials(&doc2, &mut scene2, &model_to_mesh, &model_nodes);
+        let expected = (2.0_f32 / 100.0).sqrt();
+        assert!((scene2.materials[0].roughness - expected).abs() < 1e-6);
+    }
+
+    #[test]
+    fn properties70_reflection_factor_sets_metallic() {
+        let mut scene = Scene3D::new();
+        let model_to_mesh: HashMap<i64, MeshId> = HashMap::new();
+        let model_nodes: HashMap<i64, NodeId> = HashMap::new();
+        let doc = make_doc(
+            vec![material_elem_with_props(
+                300,
+                "Chrome",
+                vec![p_node(
+                    "ReflectionFactor",
+                    "Number",
+                    "",
+                    "A",
+                    vec![FbxProperty::F64(0.85)],
+                )],
+            )],
+            vec![],
+        );
+        extract_materials(&doc, &mut scene, &model_to_mesh, &model_nodes);
+        assert!((scene.materials[0].metallic - 0.85).abs() < 1e-6);
+    }
+
+    #[test]
+    fn shading_model_top_level_leaf_captured_in_extras() {
+        // The docs §6 explicitly note `ShadingModel` may live as a
+        // direct child leaf (`box.fbx` → `ShadingModel: "phong"`) rather
+        // than inside Properties70 — accept either.
+        let mut scene = Scene3D::new();
+        let model_to_mesh: HashMap<i64, MeshId> = HashMap::new();
+        let model_nodes: HashMap<i64, NodeId> = HashMap::new();
+
+        let mat_node = {
+            let mut name = b"Phong_Material".to_vec();
+            name.extend_from_slice(b"\x00\x01Material");
+            FbxNode {
+                name: "Material".into(),
+                properties: vec![
+                    FbxProperty::I64(300),
+                    FbxProperty::String(name),
+                    FbxProperty::String(b"".to_vec()),
+                ],
+                children: vec![FbxNode {
+                    name: "ShadingModel".into(),
+                    properties: vec![FbxProperty::String(b"phong".to_vec())],
+                    children: Vec::new(),
+                }],
+            }
+        };
+        let doc = make_doc(vec![mat_node], vec![]);
+        extract_materials(&doc, &mut scene, &model_to_mesh, &model_nodes);
+        let mat = &scene.materials[0];
+        assert_eq!(
+            mat.extras.get("fbx:shading_model").and_then(|v| v.as_str()),
+            Some("phong")
+        );
     }
 
     #[test]

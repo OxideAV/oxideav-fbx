@@ -9,6 +9,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Round 191 — `Properties70` `P`-record decoder + Material PBR
+  factor decode.
+  - New `properties70` module exposes a typed `PropertyMap` decoded
+    from the five-field `P`-record grammar staged in
+    `docs/3d/fbx/fbx-binary-properties70.md` §4
+    (`name`, `typeName`, `label`, `flags`, `value...`). Supports
+    `Compound` / scalar (`int` / `enum` / `double` / `Number` /
+    `KTime` / `ULongLong` / `KString` / `bool`) / vec3
+    (`ColorRGB` / `Color` / `Vector3D` / `Vector` /
+    `Lcl Translation` / `Lcl Scaling`) value shapes per the
+    `(NumProperties − 4)`-count branch rules in the docs §4 sample.
+    Mixed `bool`-typed payloads with `I` / `L` wire codes (older
+    FBX-2014 exporters) honour the `typeName` for unambiguous decode.
+  - `material::apply_properties70` populates the matching channels on
+    each FBX `Material` element's typed `oxideav_mesh3d::Material`:
+    `DiffuseColor` × `DiffuseFactor` → `base_color` rgb;
+    `Opacity` → `base_color[3]` + `AlphaMode::Blend` when < 1;
+    `EmissiveColor` × `EmissiveFactor` → `emissive_factor`;
+    `Shininess` / `ShininessExponent` (Blinn-Phong specular exponent)
+    → `roughness` via `sqrt(2 / (n + 2))`; `ReflectionFactor` →
+    `metallic`; `ShadingModel` (top-level leaf or Properties70
+    P-record — docs §6 documents both placements) →
+    `Material::extras["fbx:shading_model"]`.
+  - 10 new unit tests across `src/properties70.rs` (`decode_scalar_*`,
+    `decode_vec3_color`, `decode_kstring`, `decode_ktime_long`,
+    `decode_compound_no_value`, `from_element_finds_properties70_child`,
+    `missing_properties70_returns_empty_map`,
+    `bool_typed_payload_with_int_wire`, `lcl_translation_triple`)
+    and `src/material.rs::tests` (`properties70_diffuse_color_factor_applied_to_base_color`,
+    `properties70_opacity_sets_alpha_and_blend_mode`,
+    `properties70_emissive_color_factor_applied`,
+    `properties70_shininess_converts_to_roughness`,
+    `properties70_reflection_factor_sets_metallic`,
+    `shading_model_top_level_leaf_captured_in_extras`).
+    `cargo test -p oxideav-fbx` 71 unit tests + 17 integration tests
+    pass.
+  - Unblocks the "Material PBR-factor / colour decode" gap that was
+    `Lacks`-tailed since round 5. The `Light` / `Camera` NodeAttribute
+    gap that depended on the same `Properties70` grammar is now
+    decodable but kept for a follow-up round (needs separate
+    NodeAttribute element-graph plumbing).
+
 - Round 184 — vertex-colour (`LayerElementColor`) surfacing on
   `Primitive::colors`.
   - New `pull_layer_vec4` puller in `geometry.rs` — the 4-component

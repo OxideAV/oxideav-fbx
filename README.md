@@ -41,9 +41,15 @@ clean-room from third-party documentation:
   `Deformer{BlendShape}` + `BlendShapeChannel` + `Geometry{Shape}`
   → `MorphTarget` per channel (sparse `Indexes` deltas expanded to
   per-corner buffers).
-- **Materials / Textures / Video** (round 5) — one
-  `oxideav_mesh3d::Material` per FBX `Material` element (named; PBR
-  factors at glTF defaults pending a `P`-record grammar in docs), one
+- **Materials / Textures / Video** (round 5, factor decode round 191)
+  — one `oxideav_mesh3d::Material` per FBX `Material` element with
+  PBR factors decoded from `Properties70` `P`-records per
+  `docs/3d/fbx/fbx-binary-properties70.md` §4: `DiffuseColor` ×
+  `DiffuseFactor` → `base_color` rgb, `Opacity` → `base_color[3]` +
+  `AlphaMode::Blend` (< 1), `EmissiveColor` × `EmissiveFactor` →
+  `emissive_factor`, `Shininess` → `roughness` via
+  `sqrt(2 / (n + 2))`, `ReflectionFactor` → `metallic`,
+  `ShadingModel` → `Material::extras["fbx:shading_model"]`. One
   `oxideav_mesh3d::Texture` per `Texture` element (embedded
   `Video.Content` via `Texture::from_encoded(mime, bytes)` preferred
   over `RelativeFilename` / `FileName` via `Texture::from_uri`).
@@ -127,12 +133,11 @@ println!("{} mesh(es), {} node(s)", scene.meshes.len(), scene.nodes.len());
   unless the renderer specifically needs it).
 - BlendShape: in-between keyframes are collapsed to the most-recent
   `Shape` per the doc's `target_shape` simplification.
-- Material PBR-factor / colour decode — FBX stores colour + factor
-  channels inside `Properties70 { P: "DiffuseColor", "Color", ... }`
-  records whose grammar isn't transcribed in the currently-staged docs
-  corpus. Round 5 surfaces the `Material` element (name + texture
-  bindings) but leaves the colour factors at the glTF defaults until
-  the `P`-record spec is staged in `docs/3d/fbx/`.
+- Specular workflow — FBX `Specular` / `SpecularFactor` aren't
+  surfaced because the glTF metallic-roughness target has no separate
+  specular colour channel. The values still round-trip through the
+  `FbxDocument` for callers that need them; an FBX `Phong` →
+  `KHR_materials_specular` mapping is a future-round option.
 - Multi-material meshes via `LayerElementMaterial` per-face indices —
   round 178 surfaces the FBX `LayerElementMaterial` payload:
   `MappingInformationType=ByPolygon` per-polygon slot indices land on
