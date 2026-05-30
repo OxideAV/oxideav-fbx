@@ -67,6 +67,18 @@ clean-room from third-party documentation:
   (`ByPolygonVertex` / `ByVertex` with optional `IndexToDirect`
   indirection); the `d`-array `Colors` payload is 4-component RGBA per
   ufbx reference §`ufbx_color_set.vertex_color`.
+- **Multi-UV-set surfacing** (round 194) — every `LayerElementUV`
+  sub-record on a `Geometry` element is now surfaced as a separate
+  per-corner `[f32; 2]` buffer on `Primitive::uvs` (one entry per
+  FBX UV channel, in document order). Per
+  `docs/3d/fbx/ufbx/reference.html` §`ufbx_mesh.uv_sets` /
+  §`ufbx_uv_set`, an FBX mesh may carry multiple UV channels (the
+  canonical diffuse + lightmap pair); the first set is also aliased
+  at `ufbx_mesh.vertex_uv`. Mapping / reference handling reuses the
+  round-1 2-component puller, so `ByPolygonVertex` / `ByVertex` and
+  `Direct` / `IndexToDirect` work for every channel. Round-trip
+  tested against `docs/3d/fbx/fixtures/cubes-ascii-v7500.fbx`
+  ground-truth UV / UVIndex arrays + a two-UV-set synthetic.
 - **Multi-material slot table** (round 178) — `LayerElementMaterial`
   per-polygon slot indices (`MappingInformationType=ByPolygon`) +
   every `Material -> Model` OO connection in slot order land on

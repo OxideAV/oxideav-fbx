@@ -97,8 +97,21 @@ pub fn extract_geometry_mesh_with_corners(
         }
     }
 
-    // UVs — first LayerElementUV only for round 1.
-    if let Some(layer) = geom.children_named("LayerElementUV").next() {
+    // UVs — every `LayerElementUV` in document order.
+    // Per `docs/3d/fbx/ufbx/elements-meshes.md` §"Attributes" the
+    // first UV set is also exposed at `ufbx_mesh.vertex_uv` and the
+    // full list lives at `ufbx_mesh.uv_sets` (a
+    // `ufbx_uv_set_list` per `docs/3d/fbx/ufbx/reference.html`
+    // §`ufbx_mesh.uv_sets` / §`ufbx_uv_set`). We mirror that by
+    // surfacing every `LayerElementUV` record (in the order they
+    // appear inside the FBX `Geometry` node) as a separate entry in
+    // `Primitive::uvs`; `prim.uvs[0]` corresponds to the
+    // `vertex_uv` slot and `prim.uvs[1..]` to additional channels
+    // (lightmap UVs etc.). Same shape as `LayerElementColor`
+    // (rounds-of-180s) — only the data sub-record name and float
+    // arity differ (`UV` is a `d` array of 2-component pairs,
+    // optional `UVIndex` indirection).
+    for layer in geom.children_named("LayerElementUV") {
         if let Some(uvs) = pull_layer_vec2(
             layer,
             "UV",

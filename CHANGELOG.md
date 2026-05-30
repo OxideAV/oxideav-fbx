@@ -7,6 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Round 194 — multi-UV-set surfacing on `Primitive::uvs`.
+  - Every `LayerElementUV` record on a `Geometry` element is now
+    surfaced as a separate per-corner `[f32; 2]` buffer on
+    `Primitive::uvs` (one entry per FBX UV channel, in document
+    order). Mirrors the round-184 multi-channel pattern landed for
+    `LayerElementColor` / `Primitive::colors`. Per
+    `docs/3d/fbx/ufbx/reference.html` §`ufbx_mesh.uv_sets` /
+    §`ufbx_uv_set`, an FBX mesh may carry several UV layers
+    (diffuse + lightmap is the canonical pair) and the first set is
+    additionally aliased at `ufbx_mesh.vertex_uv`; we surface every
+    set without aliasing — `prim.uvs[0]` is the `vertex_uv`-equivalent
+    first set and `prim.uvs[1..]` are the additional channels.
+  - Decode shape is unchanged from round 1: the existing 2-component
+    `pull_layer_vec2` puller honours
+    `MappingInformationType ∈ {ByPolygonVertex, ByVertex}` and
+    `ReferenceInformationType ∈ {Direct, IndexToDirect}` per
+    `docs/3d/fbx/ufbx/elements-meshes.md` §"Attributes" and the
+    `LayerElement*` sub-discriminator rules in
+    `docs/3d/fbx/fbx-binary-properties70.md` §6. The only delta is
+    swapping `.children_named("LayerElementUV").next()` for the
+    full iterator.
+  - New `tests/synthetic_uv.rs` carries two integration tests:
+    1. `single_uv_set_matches_cubes_ascii_fixture` constructs a
+       synthetic binary FBX whose `Vertices` / `PolygonVertexIndex`
+       / `LayerElementUV` arrays are the same byte-values as the
+       first mesh in the staged
+       `docs/3d/fbx/fixtures/cubes-ascii-v7500.fbx` ASCII fixture
+       (8 unique positions, 24 PVI with bitwise-NOT quad-end
+       markers, 14 unique UV pairs, 24 UVIndex slots,
+       `ByPolygonVertex` / `IndexToDirect`), decodes it through
+       `FbxDecoder`, and asserts the reconstructed UV array has
+       the expected 36-corner length (6 quads × 2 triangles × 3),
+       that hand-checked spot-values match (corners 0–5 + last)
+       and that every emitted UV pair is one of the 14 ground-truth
+       values from the fixture.
+    2. `two_uv_sets_surface_in_document_order` adds a second
+       `LayerElementUV` (layer index 1, all-zero U, arithmetic
+       V-ramp, reversed UVIndex) to the same cube and asserts both
+       channels populate `prim.uvs[0]` and `prim.uvs[1]` correctly.
+  - Test count: 88 → 90 integration (+2); unit unchanged at 71.
+
 ## [0.0.2](https://github.com/OxideAV/oxideav-fbx/compare/v0.0.1...v0.0.2) - 2026-05-30
 
 ### Other
