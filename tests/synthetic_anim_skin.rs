@@ -16,8 +16,8 @@ use oxideav_mesh3d::{AnimationProperty, AnimationValues, Interpolation, Mesh3DDe
 const NULL_RECORD_BYTES_32: usize = 13;
 
 /// Same `Rec` builder as the round-1 fixture — duplicated here to
-/// keep the fixtures self-contained per ufbx-doc convention (each
-/// integration test is its own file).
+/// keep each integration test file self-contained (cargo compiles
+/// every `tests/*.rs` as its own crate).
 struct Rec {
     name: String,
     props: Vec<u8>,

@@ -132,8 +132,9 @@ fn prop_i32_array(out: &mut Vec<u8>, arr: &[i32]) {
 // (the first `Geometry` block, lines 251-311 of the fixture).
 // ---------------------------------------------------------------------------
 
-/// 8 unique cube corner positions (24 floats). Verbatim from the
-/// fixture's `Vertices: *24 { a: -0.5,-0.5,0.5,…,0.5,-0.5,-0.5 }`.
+/// 8 unique cube corner positions (24 floats). Copied byte-for-byte
+/// from the staged-docs fixture's
+/// `Vertices: *24 { a: -0.5,-0.5,0.5,…,0.5,-0.5,-0.5 }`.
 const CUBE_VERTICES: &[f64] = &[
     -0.5, -0.5, 0.5, 0.5, -0.5, 0.5, -0.5, 0.5, 0.5, 0.5, 0.5, 0.5, -0.5, 0.5, -0.5, 0.5, 0.5,
     -0.5, -0.5, -0.5, -0.5, 0.5, -0.5, -0.5,
@@ -142,13 +143,14 @@ const CUBE_VERTICES: &[f64] = &[
 /// 24 polygon-vertex indices (6 quads × 4 corners; last per polygon
 /// is bitwise-NOT'd to mark quad end per
 /// `docs/3d/fbx/fbx-binary-properties70.md` §"PolygonVertexIndex").
-/// Verbatim from the fixture's `PolygonVertexIndex: *24 { a:
-/// 0,1,3,-3,2,3,5,-5,…,6,0,2,-5 }`.
+/// Copied byte-for-byte from the staged-docs fixture's
+/// `PolygonVertexIndex: *24 { a: 0,1,3,-3,2,3,5,-5,…,6,0,2,-5 }`.
 const CUBE_PVI: &[i32] = &[
     0, 1, 3, -3, 2, 3, 5, -5, 4, 5, 7, -7, 6, 7, 1, -1, 1, 7, 5, -4, 6, 0, 2, -5,
 ];
 
-/// 14 unique UV pairs (28 floats). Verbatim from the fixture's
+/// 14 unique UV pairs (28 floats). Copied byte-for-byte from the
+/// staged-docs fixture's
 /// `UV: *28 { a: 0.375,0,0.625,0,…,0.125,0,0.125,0.25 }`.
 const CUBE_UV_RAW: &[f64] = &[
     0.375, 0.0, 0.625, 0.0, 0.375, 0.25, 0.625, 0.25, 0.375, 0.5, 0.625, 0.5, 0.375, 0.75, 0.625,
@@ -156,8 +158,8 @@ const CUBE_UV_RAW: &[f64] = &[
 ];
 
 /// 24 indices into `CUBE_UV_RAW` (one per polygon-vertex corner).
-/// Verbatim from the fixture's `UVIndex: *24 { a:
-/// 0,1,3,2,2,3,5,4,4,5,7,6,6,7,9,8,1,10,11,3,12,0,2,13 }`.
+/// Copied byte-for-byte from the staged-docs fixture's
+/// `UVIndex: *24 { a: 0,1,3,2,2,3,5,4,4,5,7,6,6,7,9,8,1,10,11,3,12,0,2,13 }`.
 const CUBE_UV_INDEX: &[i32] = &[
     0, 1, 3, 2, 2, 3, 5, 4, 4, 5, 7, 6, 6, 7, 9, 8, 1, 10, 11, 3, 12, 0, 2, 13,
 ];

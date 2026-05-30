@@ -82,9 +82,10 @@ pub fn extract_geometry_mesh_with_corners(
         ]);
     }
 
-    // Normals — first LayerElementNormal only (ufbx-doc convention:
-    // multi-layer normals are unusual in practice; surface the first
-    // and stash the rest in `extras` for a follow-up round).
+    // Normals — first LayerElementNormal only (multi-layer normals
+    // are unusual in practice per
+    // `docs/3d/fbx/ufbx/elements-meshes.md` §"Attributes"; surface
+    // the first and stash the rest in `extras` for a follow-up round).
     if let Some(layer) = geom.children_named("LayerElementNormal").next() {
         if let Some(normals) = pull_layer_vec3(
             layer,
@@ -831,7 +832,8 @@ mod tests {
     #[test]
     fn layer_material_single_entry_treated_as_all_same() {
         // Materials with one entry and no mapping mode header is the
-        // exporter shorthand for AllSame per ufbx-doc tolerance.
+        // exporter shorthand for AllSame per
+        // `docs/3d/fbx/ufbx/elements-meshes.md` §"Materials".
         let pvi = vec![0, 1, -3, 4, 5, -7];
         let tris = triangulate(&pvi).unwrap();
         let layer = make_layer_material_node(vec![2], None);
