@@ -887,7 +887,7 @@ mod tests {
     fn fixture_cubes_ascii_v7500_round_trips_structure() {
         // Parse the staged ASCII fixture and assert top-level
         // structure matches §7 of the grammar doc.
-        let bytes = include_bytes!("../../../docs/3d/fbx/fixtures/cubes-ascii-v7500.fbx");
+        let bytes = include_bytes!("../tests/fixtures/cubes-ascii-v7500.fbx");
         let doc = parse(bytes).unwrap();
         assert_eq!(doc.version, 7500);
         // §7 sections expected.
@@ -961,7 +961,7 @@ mod tests {
     fn fixture_geometry_decodes_through_scene_builder() {
         // End-to-end: parse(ASCII) -> scene::build_scene gives a
         // populated Scene3D with at least one mesh.
-        let bytes = include_bytes!("../../../docs/3d/fbx/fixtures/cubes-ascii-v7500.fbx");
+        let bytes = include_bytes!("../tests/fixtures/cubes-ascii-v7500.fbx");
         let doc = parse(bytes).unwrap();
         let scene = crate::scene::build_scene(&doc).expect("scene builder");
         assert!(!scene.meshes.is_empty(), "expected at least one mesh");

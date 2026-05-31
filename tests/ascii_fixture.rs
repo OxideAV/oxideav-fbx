@@ -9,7 +9,7 @@
 use oxideav_fbx::{is_ascii_fbx, FbxDecoder};
 use oxideav_mesh3d::Mesh3DDecoder;
 
-const FIXTURE: &[u8] = include_bytes!("../../../docs/3d/fbx/fixtures/cubes-ascii-v7500.fbx");
+const FIXTURE: &[u8] = include_bytes!("fixtures/cubes-ascii-v7500.fbx");
 
 #[test]
 fn sniffer_recognises_ascii_fixture() {
