@@ -9,6 +9,67 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Round 200 — **ASCII FBX reader** (the headline `oxideav-fbx` "lacks"
+  bullet for ~15 rounds).
+  - New `ascii` module exposes `is_ascii_fbx(&[u8]) -> bool` (banner
+    sniff) and `parse(&[u8]) -> Result<FbxDocument>` (full grammar).
+    Produces the **same** typed `FbxDocument` / `FbxNode` /
+    `FbxProperty` tree the `binary` reader produces, so every
+    downstream consumer (`scene::build_scene` / geometry /
+    material / animation / deformer / pose / properties70) handles
+    ASCII inputs without further work.
+  - `FbxDecoder::decode` now dispatches to either `binary::parse` or
+    `ascii::parse` based on the leading bytes (binary `Kaydara FBX
+    Binary  \0` magic vs. `; FBX <ver>` banner comment, optionally
+    after a UTF-8 BOM). Bytes matching neither return a single
+    sniff-failure error rather than the prior wholesale ASCII
+    rejection. Grammar source is the observer trace in
+    `docs/3d/fbx/fbx-ascii-grammar.md` (#5; observer-derived from
+    the staged `docs/3d/fbx/fixtures/cubes-ascii-v7500.fbx`
+    fixture; no FBX-implementation source consulted).
+  - Coverage:
+    - Comments (`;` to end-of-line, full-line + trailing forms).
+    - Node-with-body (`Key: <value-list>? { ... }`) and leaf-node
+      (`Key: <value-list>`) forms per §3.
+    - Object opening lines `UID, "ClassTag::Name", "SubType"` per
+      §7c, surfaced as 3-property `[I64, String, String]` — the
+      exact shape `crate::scene` reads from the binary side.
+    - Typed-array shorthand `Key: *N { a: v1,v2,... }` per §6.
+      Element typing: float-shaped tokens (`.` / `e` / `E`)
+      promote the whole array to `F64Array`; otherwise the array
+      narrows to `I32Array` when every element fits in `i32`
+      (matches the binary `i` variant the geometry puller of
+      `PolygonVertexIndex` / `UVIndex` / `Materials` requires
+      verbatim), or falls back to `I64Array` when any element
+      overflows (matches the binary `l` variant the animation
+      module's `KeyTime` puller accepts).
+    - Scalar value lexing per §5: signed integers, decimal /
+      exponent floats, double-quoted strings (backslashes
+      preserved literally per §5), bare-letter `T` / `F`
+      booleans. `T` / `F` are bare booleans **only** when the
+      next byte is not an identifier-continuation character (the
+      `TimeMode`-keyword regression is guarded).
+    - UTF-8 strings preserved byte-for-byte (the fixture's
+      Cyrillic `Model::Куб1` survives the round-trip).
+    - `FBXVersion: 7500` inside `FBXHeaderExtension` surfaces as
+      `FbxDocument::version`; defaults to `7400` if absent. UTF-8
+      BOM at file start is stripped.
+  - 15 new unit tests in `src/ascii.rs` cover the grammar's
+    minimal shell, object opening lines, typed arrays (floats +
+    ints + i32→i64 fall-back + trailing-brace-space + count
+    mismatch), bare-boolean disambiguation, `P:`-record decoding
+    with `Compound` / scalar / vec3 / backslash-path payloads,
+    comment placement, value-then-body node form, and a full
+    end-to-end decode of the staged
+    `docs/3d/fbx/fixtures/cubes-ascii-v7500.fbx` fixture through
+    both the document walker AND `scene::build_scene`. 2 new
+    `decoder::tests` add the ASCII-dispatch path + the
+    neither-binary-nor-ASCII sniff failure.
+  - 3 new integration tests in `tests/ascii_fixture.rs` re-exercise
+    the public sniff / decode entry points on the same fixture;
+    the legacy `synthetic_quad::ascii_input_returns_unsupported`
+    is updated to reflect the new accept-then-validate path.
+  - Test count: 71 → 87 unit (+16), 90 → 93 integration (+3).
 - Round 194 — multi-UV-set surfacing on `Primitive::uvs`.
   - Every `LayerElementUV` record on a `Geometry` element is now
     surfaced as a separate per-corner `[f32; 2]` buffer on

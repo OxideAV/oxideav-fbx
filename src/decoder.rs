@@ -2,11 +2,16 @@
 //!
 //! Sniffs the 20-byte `Kaydara FBX Binary` magic; routes to
 //! [`crate::binary::parse`] + [`crate::scene::build_scene`] when it
-//! matches. ASCII FBX is documented as "explicitly NYI in r1" and
-//! returns [`Error::Unsupported`].
+//! matches. When the bytes start with the `; FBX <version>` ASCII
+//! banner comment instead, routes to [`crate::ascii::parse`] (added
+//! in round 200) and feeds the resulting [`FbxDocument`] into the
+//! same scene builder — the two front-ends produce interchangeable
+//! tree shapes. Bytes matching neither form return
+//! [`Error::Unsupported`].
 
 use oxideav_mesh3d::{Error, Mesh3DDecoder, Result, Scene3D};
 
+use crate::ascii;
 use crate::binary::{self, FbxDocument, FBX_MAGIC};
 use crate::scene;
 
@@ -29,10 +34,15 @@ impl FbxDecoder {
 
 impl Mesh3DDecoder for FbxDecoder {
     fn decode(&mut self, bytes: &[u8]) -> Result<Scene3D> {
-        if !is_binary_fbx(bytes) {
-            return Err(Error::unsupported("ASCII FBX is not yet supported"));
-        }
-        let doc = binary::parse(bytes)?;
+        let doc = if is_binary_fbx(bytes) {
+            binary::parse(bytes)?
+        } else if ascii::is_ascii_fbx(bytes) {
+            ascii::parse(bytes)?
+        } else {
+            return Err(Error::unsupported(
+                "input is neither binary FBX (Kaydara magic) nor ASCII FBX (`; FBX` banner)",
+            ));
+        };
         let scene = scene::build_scene(&doc)?;
         self.last_document = Some(doc);
         Ok(scene)
@@ -62,10 +72,33 @@ mod tests {
     }
 
     #[test]
-    fn ascii_decode_returns_unsupported() {
+    fn ascii_input_decodes_via_ascii_front_end() {
+        // Minimal ASCII shell that survives scene::build_scene.
+        let src = b"; FBX 7.5.0 project file\n\
+                    FBXHeaderExtension:  {\n\
+                    \tFBXVersion: 7500\n\
+                    }\n\
+                    Objects:  {\n\
+                    }\n\
+                    Connections:  {\n\
+                    }\n";
         let mut dec = FbxDecoder::new();
-        let err = dec.decode(b"; FBX 7.4.0\n").unwrap_err();
+        let scene = dec.decode(src).expect("ASCII parse + scene build");
+        // No meshes in this empty Objects section — but the decoder
+        // accepted the input and produced a Scene3D rather than
+        // returning Unsupported.
+        let _ = scene;
+        assert_eq!(dec.last_document.as_ref().map(|d| d.version), Some(7500));
+    }
+
+    #[test]
+    fn neither_binary_nor_ascii_returns_unsupported() {
+        let mut dec = FbxDecoder::new();
+        let err = dec.decode(b"this is not FBX at all").unwrap_err();
         let s = err.to_string();
-        assert!(s.contains("ASCII"), "expected ASCII-mention in error: {s}");
+        assert!(
+            s.contains("ASCII") || s.contains("Kaydara") || s.contains("neither"),
+            "expected sniff failure message, got: {s}"
+        );
     }
 }

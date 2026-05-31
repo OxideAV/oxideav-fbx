@@ -273,10 +273,33 @@ fn synthetic_quad_post_7500_layout_decodes() {
 }
 
 #[test]
-fn ascii_input_returns_unsupported() {
-    let ascii = b"; FBX 7.4.0 project file\nFBXHeaderExtension:  {\n";
+fn ascii_input_routes_to_ascii_parser() {
+    // Round 200: ASCII FBX is now a first-class front-end. A
+    // well-formed ASCII shell with closing braces decodes to an
+    // empty Scene3D rather than returning Unsupported. A truncated
+    // input (missing its closing `}`) still fails — but with a
+    // structured grammar diagnostic, not the old wholesale rejection.
+    let ascii = b"; FBX 7.4.0 project file\n\
+                  FBXHeaderExtension:  {\n\
+                  \tFBXVersion: 7400\n\
+                  }\n\
+                  Objects:  {\n\
+                  }\n\
+                  Connections:  {\n\
+                  }\n";
     let mut dec = FbxDecoder::new();
-    let err = dec.decode(ascii).expect_err("ASCII rejected");
+    let scene = dec.decode(ascii).expect("ASCII shell decodes");
+    assert!(scene.meshes.is_empty());
+    assert_eq!(dec.last_document.as_ref().map(|d| d.version), Some(7400));
+
+    // Truncated ASCII still errors — but with a grammar-aware message.
+    let truncated = b"; FBX 7.4.0 project file\nFBXHeaderExtension:  {\n";
+    let err = dec
+        .decode(truncated)
+        .expect_err("truncated ASCII should fail");
     let s = err.to_string();
-    assert!(s.contains("ASCII"), "got error: {s}");
+    assert!(
+        s.contains("ascii FBX") || s.contains("EOF"),
+        "expected grammar-aware diagnostic, got: {s}"
+    );
 }

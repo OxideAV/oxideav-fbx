@@ -67,14 +67,20 @@
 //!   module had to default to identity (cluster without a
 //!   `TransformLink`) to `inverse(bone_to_world)`. See [`pose`].
 //!
-//! # What's NOT covered
+//! - **ASCII FBX reader** (round 200) — input matching the
+//!   `; FBX <version>` banner comment (observer grammar in
+//!   `docs/3d/fbx/fbx-ascii-grammar.md`) is now routed through
+//!   [`ascii::parse`] to produce the same typed [`FbxDocument`] tree
+//!   the binary reader produces, so every downstream consumer
+//!   ([`scene`] / [`geometry`] / [`material`] / [`animation`] /
+//!   [`deformer`] / [`pose`] / [`properties70`]) handles ASCII inputs
+//!   transparently. Validated against the staged
+//!   `docs/3d/fbx/fixtures/cubes-ascii-v7500.fbx` fixture (8
+//!   top-level sections, 4 Geometry + 4 Model + 2 Material +
+//!   AnimationStack / AnimationLayer all surface; first mesh's
+//!   `Vertices: *24` decodes to a 24-double `F64Array`).
 //!
-//! - **ASCII FBX** — input not starting with the binary magic
-//!   returns [`oxideav_mesh3d::Error::Unsupported`]. The staged
-//!   reference corpus deliberately omits an ASCII grammar source
-//!   (Blender's writeup is binary-only and the original Kaydara FBX
-//!   6.x ASCII documentation is no longer on the public web); see
-//!   `docs/3d/fbx/README.md` §"What's covered (and what isn't)".
+//! # What's NOT covered
 //! - **Scene-graph encoder (`Scene3D` → FBX bytes)** — bytes-out at
 //!   the [`oxideav_mesh3d::Mesh3DEncoder`] level is a separate round.
 //!   This round only ships the lower-level [`writer::write_document`]
@@ -120,6 +126,7 @@
 #![warn(missing_debug_implementations)]
 
 pub mod animation;
+pub mod ascii;
 pub mod binary;
 pub mod decoder;
 pub mod deformer;
@@ -130,6 +137,7 @@ pub mod properties70;
 pub mod scene;
 pub mod writer;
 
+pub use ascii::is_ascii_fbx;
 pub use binary::{FbxDocument, FbxNode, FbxProperty, FBX_MAGIC, FBX_VERSION_64BIT_THRESHOLD};
 pub use decoder::{is_binary_fbx, FbxDecoder};
 pub use writer::{write_document, write_document_with_options, WriterOptions};

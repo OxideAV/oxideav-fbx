@@ -124,12 +124,26 @@ println!("{} mesh(es), {} node(s)", scene.meshes.len(), scene.nodes.len());
 
 ## Lacks
 
-- ASCII FBX — input not starting with the `Kaydara FBX Binary` magic
-  returns `Error::Unsupported("ASCII FBX is not yet supported")`. The
-  staged docs corpus deliberately omits an ASCII grammar source
-  (Blender's writeup is binary-only and the original Kaydara FBX 6.x
-  ASCII documentation is no longer on the public web — see
-  `docs/3d/fbx/README.md` §"What's covered (and what isn't)").
+- **ASCII FBX reader** (round 200) — input starting with the
+  `; FBX <version>` banner comment (observer grammar in
+  `docs/3d/fbx/fbx-ascii-grammar.md`) is now routed through
+  `ascii::parse`, which produces the **same** typed `FbxDocument` tree
+  the binary reader produces; every downstream consumer (scene /
+  geometry / material / animation / deformer / pose / properties70)
+  handles ASCII inputs transparently. Validated end-to-end against
+  the staged `docs/3d/fbx/fixtures/cubes-ascii-v7500.fbx` fixture
+  (8 top-level §7 sections; 4 Geometry + 4 Model + 2 Material +
+  AnimationStack + AnimationLayer; first mesh's `Vertices: *24`
+  decodes to a 24-double `F64Array`; UTF-8 / Cyrillic
+  `Model::Куб1` name preserved). Typed-array bodies (`Key: *N { a:
+  v1,v2,... }`) narrow integer arrays to `I32Array` when every
+  element fits (matching the binary `i` variant the geometry puller
+  needs verbatim for `PolygonVertexIndex` / `UVIndex` / `Materials`)
+  and fall back to `I64Array` when any element overflows (matching
+  the binary `l` variant the animation module's KTime puller
+  accepts). Bytes matching neither the binary magic nor the ASCII
+  banner return a single sniff-failure error rather than the prior
+  blanket ASCII rejection. ASCII **writer** still NYI.
 - `Mesh3DEncoder` (Scene3D → bytes) — `write_document` operates on the
   parsed `FbxDocument` tree only; building a fresh `FbxDocument` from a
   `Scene3D` (the inverse of `scene::build_scene`) is a follow-up round.
