@@ -79,6 +79,19 @@
 //!   top-level sections, 4 Geometry + 4 Model + 2 Material +
 //!   AnimationStack / AnimationLayer all surface; first mesh's
 //!   `Vertices: *24` decodes to a 24-double `F64Array`).
+//! - **Lights / Cameras** (round 207) —
+//!   `Objects { NodeAttribute }` records with subtype `"Light"` /
+//!   `"Camera"` decode through [`lights_cameras`] into
+//!   [`oxideav_mesh3d::Light`] / [`oxideav_mesh3d::Camera`] bound to
+//!   the owning `Model` node via the `NodeAttribute -> Model` `OO`
+//!   connection. The well-known `P`-record names this round consumes
+//!   (`Color` / `Intensity` / `LightType` / `DecayType` /
+//!   `InnerAngle` / `OuterAngle` for lights; `CameraProjectionType` /
+//!   `FieldOfViewY` / `FieldOfView` / `AspectWidth` / `AspectHeight` /
+//!   `NearPlane` / `FarPlane` / `OrthoZoom` for cameras) are taken
+//!   from `docs/3d/fbx/ufbx/reference.html` §`ufbx_light` /
+//!   §`ufbx_camera`; the §6 NodeAttribute discriminator + §4 P-record
+//!   grammar live in `docs/3d/fbx/fbx-binary-properties70.md`.
 //!
 //! # What's NOT covered
 //! - **Scene-graph encoder (`Scene3D` → FBX bytes)** — bytes-out at
@@ -131,6 +144,9 @@ pub mod binary;
 pub mod decoder;
 pub mod deformer;
 pub mod geometry;
+/// `NodeAttribute` (`Light` / `Camera`) surfacing onto [`oxideav_mesh3d`]
+/// (round 207).
+pub mod lights_cameras;
 pub mod material;
 pub mod pose;
 pub mod properties70;

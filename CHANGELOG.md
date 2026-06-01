@@ -9,6 +9,65 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Round 207 — **Light / Camera `NodeAttribute` surfacing** (the
+  long-standing DOCS-GAP "Light / Camera node attributes" bullet on
+  the README "Lacks" list).
+  - New `lights_cameras` module exposes
+    `extract_lights_and_cameras(&FbxDocument, &mut Scene3D,
+    &HashMap<i64, NodeId>)`. Walks the top-level
+    `Objects { NodeAttribute }` records whose third-property subtype
+    string (per `docs/3d/fbx/fbx-binary-properties70.md` §6) is
+    `"Light"` or `"Camera"`, decodes the inner `Properties70` block
+    via the existing `crate::properties70::PropertyMap`, and binds
+    the result onto the owning `Model`'s scene-graph
+    `Node::light` / `Node::camera` via the `NodeAttribute -> Model`
+    `OO` connection.
+  - **Light decode** — `LightType` (per ufbx §`ufbx_light_type`:
+    0=Point, 1=Directional, 2=Spot, 3=Area, 4=Volume) picks the
+    `oxideav_mesh3d::Light` variant. `Color` × `Intensity` populate
+    the variant's color + intensity, with the documented
+    `intensity × 0.01` scale applied per
+    `docs/3d/fbx/ufbx/reference.html` §`ufbx_light.intensity`.
+    `DecayType != 0` promotes `DecayStart` to the light's `range`;
+    `Spot` reads `InnerAngle` / `OuterAngle` (full-cone degrees) and
+    converts to mesh3d's half-cone radians convention. `CastShadows`
+    + the raw `DecayType` int are stashed on the owning
+    `Node::extras` (`fbx:cast_shadows` / `fbx:decay_type`). Area
+    (3) and Volume (4) lights fall back to `Light::Point` and tag
+    `Node::extras["fbx:light_type"]` so the lossy mapping is
+    recoverable.
+  - **Camera decode** — `CameraProjectionType` picks `Perspective`
+    (0) / `Orthographic` (1). `FieldOfViewY` maps directly to
+    mesh3d's `yfov` (degrees → radians); `FieldOfView` /
+    `FieldOfViewX` (horizontal) is converted via the aspect ratio
+    per `§ufbx_aperture_mode_horizontal` as
+    `yfov = 2 * atan(tan(xfov/2) / aspect)`. `NearPlane` / `FarPlane`
+    populate `znear` / `zfar`; `AspectWidth` / `AspectHeight` collapse
+    to the `aspect_ratio` field, and the absolute pair round-trips
+    through `Node::extras["fbx:camera_resolution"]` (per
+    `§ufbx_aspect_mode_fixed_resolution`, where the same fields can
+    carry pixel resolution). Orthographic cameras read `OrthoZoom`
+    as the vertical half-extent and derive `xmag` via the aspect
+    ratio.
+  - All P-record property names are taken verbatim from
+    `docs/3d/fbx/ufbx/reference.html` §`ufbx_light` / §`ufbx_camera`
+    / §`ufbx_aperture_mode` / §`ufbx_aspect_mode`; the §6
+    NodeAttribute discriminator and §4 P-record grammar live in
+    `docs/3d/fbx/fbx-binary-properties70.md`. No FBX-implementation
+    source consulted (not the Autodesk FBX SDK, assimp's FBX
+    importer, Blender `io_scene_fbx`, nor `ufbx`'s C source).
+  - 9 new unit tests in `src/lights_cameras.rs` cover each light
+    variant (Point + Directional + Spot cone math + Area→Point
+    kind-tag fallback), each camera projection (FoVY-priority
+    Perspective + horizontal-FoV-derives-yfov + Orthographic), and
+    both negative paths (missing owning Model → silent ignore;
+    non-Light/non-Camera subtype → skipped). 1 new integration test
+    in `tests/synthetic_light_camera.rs` assembles a binary v7400
+    FBX with one Light + one Camera `NodeAttribute`, runs it
+    through the public `FbxDecoder::decode` path, and asserts the
+    bound `Scene3D::lights` / `.cameras` arenas + the owning node's
+    `Node::light` / `.camera` / `.extras` payload.
+  - Test count: 87 → 96 unit (+9), 13 → 14 integration (+1).
 - Round 200 — **ASCII FBX reader** (the headline `oxideav-fbx` "lacks"
   bullet for ~15 rounds).
   - New `ascii` module exposes `is_ascii_fbx(&[u8]) -> bool` (banner

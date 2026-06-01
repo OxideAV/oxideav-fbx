@@ -97,6 +97,37 @@ clean-room from third-party documentation:
   this stays clear of the still-unstaged `Properties70` `P`-record
   grammar. Joints that already have a real inverse-bind are untouched;
   non-bind rest poses (`is_bind_pose == false`) are not promoted.
+- **Lights / Cameras** (round 207) — `Objects { NodeAttribute }` records
+  whose subtype string (third property — see
+  `docs/3d/fbx/fbx-binary-properties70.md` §6) is `"Light"` or
+  `"Camera"` are decoded into [`oxideav_mesh3d::Light`] /
+  [`oxideav_mesh3d::Camera`] and bound onto the owning
+  `Model`'s scene-graph `Node::light` / `Node::camera` via the
+  `NodeAttribute -> Model` `OO` connection. Inner `Properties70`
+  blocks are decoded with the existing `crate::properties70`
+  machinery; the well-known `P`-record names this round consumes
+  (sourced verbatim from `docs/3d/fbx/ufbx/reference.html`
+  §`ufbx_light` / §`ufbx_camera` / §`ufbx_aperture_mode` /
+  §`ufbx_aspect_mode`) are:
+  - **Light**: `Color` × `Intensity` (with the documented 0.01x
+    scale per §`ufbx_light.intensity`) → typed `Point` / `Directional`
+    / `Spot` variant selected by `LightType` (0/1/2; 3 Area + 4
+    Volume fall back to `Point` with `Node::extras["fbx:light_type"]`
+    set to `"Area"` / `"Volume"` so the lossy mapping is recoverable).
+    `DecayType != 0` promotes `DecayStart` to the light's `range`;
+    `Spot` reads `InnerAngle` / `OuterAngle` (full-cone degrees) and
+    converts to mesh3d's half-cone radians convention.
+  - **Camera**: `CameraProjectionType` picks `Perspective` (0) /
+    `Orthographic` (1). `FieldOfViewY` maps directly to mesh3d's
+    `yfov` (degrees → radians); `FieldOfView` / `FieldOfViewX`
+    (horizontal) is converted via the aspect ratio per
+    §`ufbx_aperture_mode_horizontal` — `yfov = 2 * atan(tan(xfov/2)/aspect)`.
+    `NearPlane` / `FarPlane` populate `znear` / `zfar`; `AspectWidth`
+    / `AspectHeight` collapse to the `aspect_ratio` field, and the
+    absolute pair round-trips through
+    `Node::extras["fbx:camera_resolution"]`. Orthographic cameras
+    read `OrthoZoom` as the vertical half-extent + derive `xmag` via
+    the aspect ratio.
 - **Binary writer** (round 3) — `write_document(&FbxDocument)` round-trips
   the parser's output back to a byte buffer the parser re-reads as an
   equal `FbxDocument`. Every property variant (scalars `Y` `C` `I` `F`
@@ -179,20 +210,22 @@ println!("{} mesh(es), {} node(s)", scene.meshes.len(), scene.nodes.len());
   morph) into N parts is the consumer's job — the slot table + the
   per-corner index buffer are the only inputs that decision needs.
 - Coordinate-system / unit-scale auto-conversion.
-- **Light / Camera node attributes** — DOCS-GAP. The on-disk FBX
-  `NodeAttribute` record name, the `"Light"` / `"Camera"` subtype
-  discriminators, and (critically) every attribute value
-  (`Color` / `Intensity` / `LightType` / `DecayType` / `InnerAngle` /
-  `OuterAngle` for lights; `FieldOfView` / `AspectWidth` /
-  `AspectHeight` / `NearPlane` / `FarPlane` for cameras) live inside
-  `Properties70 { P: name, type, label, flags, value… }` records whose
-  grammar is not transcribed anywhere in the currently-staged
-  `docs/3d/fbx/` corpus — the same gap that defers `Material`
-  colour-factor decode. The ufbx reference documents the *semantic*
-  model (`ufbx_light` / `ufbx_camera`, incl. the `Intensity` 0.01x
-  quirk) but uses ufbx field names, not the raw FBX `P`-record names.
-  Blocked pending a staged FBX `Properties70` `P`-record grammar in
-  `docs/3d/fbx/`.
+- **Light / Camera animation channels** — `AnimationCurveNode`
+  records targeting the light/camera `Color` / `Intensity` /
+  `FieldOfView` `P`-records round-trip through the `FbxDocument` but
+  the [`oxideav_mesh3d::Animation`] channel set only models
+  `Lcl Translation` / `Lcl Rotation` / `Lcl Scaling` / morph
+  `DeformPercent`. Wiring light/camera-attribute curves into
+  `AnimationTarget` is a follow-up round; the static surfacing landed
+  in round 207.
+- **Light / Camera aperture & film-back metadata** —
+  `FilmWidth` / `FilmHeight` / `FocalLength` /
+  `UFBX_LIGHT_AREA_SHAPE_*` / aperture-format presets don't fit the
+  glTF-style `Camera::{Perspective, Orthographic}` /
+  `Light::{Point, Directional, Spot}` enum surface; they round-trip
+  through the `FbxDocument` for callers that need them. Area-light
+  shape is tagged on the owning `Node::extras["fbx:light_type"]` so
+  the lossy `Area`→`Point` collapse is recoverable.
 - **Pose `bone_to_parent`** — only the directly-stored `bone_to_world`
   matrix is surfaced; deriving the parent-space form needs the resolved
   ancestor chain and is left to a downstream consumer.

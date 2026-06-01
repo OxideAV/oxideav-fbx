@@ -28,6 +28,7 @@ use crate::animation::extract_animations;
 use crate::binary::{FbxDocument, FbxNode, FbxProperty};
 use crate::deformer::extract_deformers;
 use crate::geometry::extract_geometry_mesh_with_corners;
+use crate::lights_cameras::extract_lights_and_cameras;
 use crate::material::extract_materials;
 use crate::pose::extract_poses;
 
@@ -237,6 +238,14 @@ pub fn build_scene(doc: &FbxDocument) -> Result<Scene3D> {
     // deformer module produced; the bone-node `extras` stash works for
     // any Model node regardless of skin presence.
     extract_poses(doc, &mut scene, &model_nodes);
+
+    // Round 207 — NodeAttribute (Light / Camera) surfacing. Walks
+    // `Objects { NodeAttribute }` records whose subtype string is
+    // "Light" or "Camera" (per `docs/3d/fbx/fbx-binary-properties70.md`
+    // §6), decodes the inner `Properties70` block via
+    // `crate::properties70`, and binds the result onto the owning
+    // `Model`'s scene-graph `Node::light` / `Node::camera`.
+    extract_lights_and_cameras(doc, &mut scene, &model_nodes);
 
     // If somehow no roots and no meshes ended up populated, surface
     // an empty scene rather than failing — this matches the
