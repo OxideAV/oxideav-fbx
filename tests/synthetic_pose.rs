@@ -251,3 +251,152 @@ fn bind_pose_refines_inverse_bind_and_stashes_node_extras() {
     // published `oxideav-mesh3d` (whose `validate` arrived post-publish).
     assert_eq!(ibm[3], [0.0, 0.0, 0.0, 1.0]);
 }
+
+/// Round 226 — bind-pose parent-space (`bone_to_parent`) derivation
+/// surfacing.
+///
+/// Builds a two-bone chain (parent at world translation (10, 0, 0),
+/// child at world translation (10, 5, 0)) with a `Pose: BindPose`
+/// element posing both bones. After decode every posed bone carries
+/// both `fbx:bind_pose` (world matrix, round 97) AND
+/// `fbx:bind_pose_parent_local` (parent-space form derived from the
+/// scene-graph parent chain, round 226):
+///
+/// * the parent bone has the implicit-root parent → parent-local
+///   equals world;
+/// * the child bone's parent-local is `inverse(parent_world) *
+///   child_world` — for pure translations that's the difference, i.e.
+///   a translation of (0, 5, 0).
+///
+/// Per `docs/3d/fbx/ufbx/reference.html` §`ufbx_bone_pose.bone_to_parent`:
+/// *"Matrix from node local space to parent space. FBX only stores
+/// world transformations so this is approximated from the parent
+/// world transform."*
+#[test]
+fn bind_pose_parent_local_chains_through_scene_graph() {
+    // Parent bone (id 300) at world (10, 0, 0); child bone (id 301)
+    // at world (10, 5, 0). The Connections wire 301 → 300 → root so
+    // the scene-graph parent map links them.
+    let bone_parent = limb_node(300, b"Root");
+    let bone_child = limb_node(301, b"Tip");
+    // Skin so that the geometry is bound to both joints — keeps the
+    // fixture similar in shape to the first test, exercising the same
+    // pose-after-deformer ordering inside `scene::build_scene`.
+    let cluster_parent = cluster_no_link(401, &[0, 1], &[0.5, 0.5]);
+    let cluster_child = cluster_no_link(402, &[2, 3], &[0.5, 0.5]);
+    let skin = skin_deformer(500);
+    let parent_world: [f64; 16] = [
+        1.0, 0.0, 0.0, 10.0, //
+        0.0, 1.0, 0.0, 0.0, //
+        0.0, 0.0, 1.0, 0.0, //
+        0.0, 0.0, 0.0, 1.0,
+    ];
+    let child_world: [f64; 16] = [
+        1.0, 0.0, 0.0, 10.0, //
+        0.0, 1.0, 0.0, 5.0, //
+        0.0, 0.0, 1.0, 0.0, //
+        0.0, 0.0, 0.0, 1.0,
+    ];
+    let pose = Rec::new("Pose")
+        .with_prop_i64(900)
+        .with_prop_string(b"BindPose\x00\x01Pose")
+        .with_prop_string(b"BindPose")
+        .with_child(
+            Rec::new("PoseNode")
+                .with_child(Rec::new("Node").with_prop_i64(300))
+                .with_child(Rec::new("Matrix").with_prop_f64_array(&parent_world)),
+        )
+        .with_child(
+            Rec::new("PoseNode")
+                .with_child(Rec::new("Node").with_prop_i64(301))
+                .with_child(Rec::new("Matrix").with_prop_f64_array(&child_world)),
+        );
+
+    let objects = Rec::new("Objects")
+        .with_child(quad_geometry())
+        .with_child(quad_model())
+        .with_child(bone_parent)
+        .with_child(bone_child)
+        .with_child(cluster_parent)
+        .with_child(cluster_child)
+        .with_child(skin)
+        .with_child(pose);
+    let connections = Rec::new("Connections")
+        .with_child(connection(b"OO", 100, 200)) // Geometry → Model
+        .with_child(connection(b"OO", 200, 0)) // Model → root
+        .with_child(connection(b"OO", 300, 0)) // Root bone → root
+        .with_child(connection(b"OO", 301, 300)) // Tip bone → Root bone (scene-graph parent)
+        .with_child(connection(b"OO", 500, 100)) // Skin → Geometry
+        .with_child(connection(b"OO", 401, 500)) // Parent cluster → Skin
+        .with_child(connection(b"OO", 402, 500)) // Child cluster → Skin
+        .with_child(connection(b"OO", 401, 300)) // Parent cluster → root bone
+        .with_child(connection(b"OO", 402, 301)); // Child cluster → tip bone
+
+    let bytes = assemble(7400, vec![objects, connections]);
+    let mut dec = FbxDecoder::new();
+    let scene = dec.decode(&bytes).expect("two-bone fixture decodes");
+
+    // Bind-pose world matrix must be on both bones (round 97).
+    let posed_nodes: Vec<&oxideav_mesh3d::Node> = scene
+        .nodes
+        .iter()
+        .filter(|n| n.extras.contains_key("fbx:bind_pose"))
+        .collect();
+    assert_eq!(posed_nodes.len(), 2, "two bones posed");
+
+    // Both bones must carry the parent-local form (round 226).
+    let parent_local_count = scene
+        .nodes
+        .iter()
+        .filter(|n| n.extras.contains_key("fbx:bind_pose_parent_local"))
+        .count();
+    assert_eq!(parent_local_count, 2, "two bones have parent-local form");
+
+    // Identify the bones by their world translation column: the root
+    // bone has translation (10, 0, 0), the tip has (10, 5, 0).
+    let mut root_bone_local: Option<&serde_json::Value> = None;
+    let mut tip_bone_local: Option<&serde_json::Value> = None;
+    for node in &scene.nodes {
+        let Some(world) = node.extras.get("fbx:bind_pose") else {
+            continue;
+        };
+        let arr = world.as_array().expect("array");
+        let ty = arr[7].as_f64().expect("y-translation");
+        let local = node
+            .extras
+            .get("fbx:bind_pose_parent_local")
+            .expect("posed bone has parent-local");
+        if ty == 0.0 {
+            root_bone_local = Some(local);
+        } else if (ty - 5.0).abs() < 1e-5 {
+            tip_bone_local = Some(local);
+        }
+    }
+    let root_local = root_bone_local
+        .expect("root bone matched")
+        .as_array()
+        .unwrap();
+    let tip_local = tip_bone_local
+        .expect("tip bone matched")
+        .as_array()
+        .unwrap();
+
+    // Root bone: parent is the implicit scene root (identity world),
+    // so parent-local == world. Translation column = (10, 0, 0).
+    assert!((root_local[3].as_f64().unwrap() - 10.0).abs() < 1e-5);
+    assert!(root_local[7].as_f64().unwrap().abs() < 1e-5);
+    assert!(root_local[11].as_f64().unwrap().abs() < 1e-5);
+
+    // Tip bone: parent-local = inverse(parent_world) * child_world.
+    // For pure translations, that's translation by the difference:
+    // (10 - 10, 5 - 0, 0 - 0) = (0, 5, 0).
+    assert!(tip_local[3].as_f64().unwrap().abs() < 1e-5);
+    assert!((tip_local[7].as_f64().unwrap() - 5.0).abs() < 1e-5);
+    assert!(tip_local[11].as_f64().unwrap().abs() < 1e-5);
+    // Linear part is identity for pure-translation composition.
+    assert!((tip_local[0].as_f64().unwrap() - 1.0).abs() < 1e-5);
+    assert!((tip_local[5].as_f64().unwrap() - 1.0).abs() < 1e-5);
+    assert!((tip_local[10].as_f64().unwrap() - 1.0).abs() < 1e-5);
+    // Last row affine.
+    assert_eq!(tip_local[15].as_f64(), Some(1.0));
+}

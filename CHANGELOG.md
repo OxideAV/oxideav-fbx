@@ -9,6 +9,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Round 226 — **bind-pose `bone_to_parent` derivation** (closes the
+  round-97 "Pose `bone_to_parent`" entry on the README "Lacks" list).
+  - Once `extract_poses` has stashed every `PoseNode { Matrix }`
+    world matrix onto its bone's `extras["fbx:bind_pose"]` (round 97)
+    and refined every identity-defaulted skeleton inverse-bind, the
+    new step builds the scene-graph parent map from
+    `scene.nodes[*].children` (back-pointers aren't stored on
+    `oxideav_mesh3d::Node`, so the parent index is materialised on
+    the fly), then for every posed bone derives
+    `bone_to_parent = inverse(parent_bone_to_world) * bone_to_world`
+    and writes the result onto the bone's
+    `node.extras["fbx:bind_pose_parent_local"]` (16-double row-major
+    JSON array, mirroring the existing `fbx:bind_pose` shape).
+  - **Implicit-root convention** — a posed bone whose scene-graph
+    parent has no bind pose (e.g. a root bone parented directly to
+    the scene root, or to an un-posed `Null` Model) receives
+    `bone_to_parent == bone_to_world`. This corresponds to the parent
+    world transform being the identity, the natural extension of
+    the doc's *"approximated from the parent world transform"*
+    statement to the no-parent edge case.
+  - Matches ufbx `ufbx_bone_pose.bone_to_parent` documented in
+    `docs/3d/fbx/ufbx/reference.html` §`ufbx_bone_pose`: *"Matrix
+    from node local space to parent space. FBX only stores world
+    transformations so this is approximated from the parent world
+    transform."* No new on-disk reading — the derivation runs
+    entirely on the already-decoded bind-pose set and the
+    `scene::build_scene` scene-graph parentage.
+  - 6 new unit tests in `src/pose.rs::tests`: `mat4_mul` identity /
+    translation-composition correctness, root-bone parent-local
+    equals world, child-bone parent-local equals inverse-parent ×
+    child, child with unposed parent falls back to world, no-pose
+    no-op for the parent-local pass. 1 new integration test in
+    `tests/synthetic_pose.rs::bind_pose_parent_local_chains_through_scene_graph`
+    builds a two-bone chain (parent at world (10, 0, 0), child at
+    (10, 5, 0)) with a `Pose: BindPose` posing both bones and the
+    `Connections` wiring `301 → 300 → root`; asserts the parent
+    bone's parent-local equals its world, and the child's
+    parent-local resolves to a translation of (0, 5, 0).
+  - Test count: 126 → 132 unit (+6), 25 → 26 integration (+1).
+  - References: `docs/3d/fbx/ufbx/reference.html` §`ufbx_bone_pose`
+    (the `bone_to_world` + `bone_to_parent` field definitions + the
+    *"FBX only stores world transformations so this is approximated
+    from the parent world transform"* note).
+
 - Round 219 — **`GlobalSettings` element decode** (advances the
   "Coordinate-system / unit-scale auto-conversion" README "Lacks"
   tail to the *decoded but not auto-converted* state).

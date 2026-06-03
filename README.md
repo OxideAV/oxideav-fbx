@@ -109,17 +109,27 @@ clean-room from third-party documentation:
   the FBX-int → `Axis` variant table is absent from the staged docs,
   so `Scene3D::up_axis` / `front_axis` stay at the `Scene3D::new`
   defaults pending a follow-up grammar staging.
-- **Bind pose** (round 97) — `Objects { Pose : "BindPose" }` elements
-  surface each `PoseNode { Node, Matrix }` bone-world matrix onto the
-  bone `Node`'s `extras["fbx:bind_pose"]` (16-double row-major JSON
-  array). When a `Cluster` omitted its `TransformLink` sub-record (so
-  the deformer module defaulted that joint's inverse-bind to identity),
-  the bind pose back-fills it as `inverse(bone_to_world)` — the
-  reference's documented *"FBX only stores world transformations so this
-  is approximated"* case. `Matrix` is a direct `d`-array sub-record, so
+- **Bind pose** (round 97; parent-local form added round 226) —
+  `Objects { Pose : "BindPose" }` elements surface each
+  `PoseNode { Node, Matrix }` bone-world matrix onto the bone `Node`'s
+  `extras["fbx:bind_pose"]` (16-double row-major JSON array). When a
+  `Cluster` omitted its `TransformLink` sub-record (so the deformer
+  module defaulted that joint's inverse-bind to identity), the bind
+  pose back-fills it as `inverse(bone_to_world)` — the reference's
+  documented *"FBX only stores world transformations so this is
+  approximated"* case. `Matrix` is a direct `d`-array sub-record, so
   this stays clear of the still-unstaged `Properties70` `P`-record
   grammar. Joints that already have a real inverse-bind are untouched;
   non-bind rest poses (`is_bind_pose == false`) are not promoted.
+  Round 226 additionally derives the parent-space form
+  `bone_to_parent = inverse(parent_bone_to_world) * bone_to_world` for
+  every posed bone whose parent in the scene graph is also posed,
+  surfaced as `node.extras["fbx:bind_pose_parent_local"]` (16-double
+  row-major JSON array). Root bones whose parent has no bind pose
+  receive `bone_to_parent == bone_to_world` (implicit-root convention,
+  parent world = identity). This matches the ufbx
+  `ufbx_bone_pose.bone_to_parent` field documented as *"approximated
+  from the parent world transform"*.
 - **Lights / Cameras** (round 207) — `Objects { NodeAttribute }` records
   whose subtype string (third property — see
   `docs/3d/fbx/fbx-binary-properties70.md` §6) is `"Light"` or
@@ -284,9 +294,6 @@ println!("{} mesh(es), {} node(s)", scene.meshes.len(), scene.nodes.len());
   through the `FbxDocument` for callers that need them. Area-light
   shape is tagged on the owning `Node::extras["fbx:light_type"]` so
   the lossy `Area`→`Point` collapse is recoverable.
-- **Pose `bone_to_parent`** — only the directly-stored `bone_to_world`
-  matrix is surfaced; deriving the parent-space form needs the resolved
-  ancestor chain and is left to a downstream consumer.
 
 ## Standalone build
 

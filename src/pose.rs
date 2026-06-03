@@ -54,6 +54,20 @@
 //!   doc's *"FBX only stores world transformations so this is
 //!   approximated"* case — a `Pose`-only rig with no per-cluster link
 //!   matrix still gets a usable inverse-bind matrix.
+//! - `bone_to_parent` (the doc's parent-space approximation, round
+//!   226) — once every posed bone's world matrix is stashed and the
+//!   scene-graph parent map is materialised from
+//!   [`oxideav_mesh3d::Node::children`], every posed bone whose parent
+//!   is *also* posed receives a derived
+//!   `node.extras["fbx:bind_pose_parent_local"]` entry (16-element
+//!   `f64` JSON array, row-major) computed as
+//!   `inverse(parent_bone_to_world) * bone_to_world`. This is the
+//!   doc's documented form: ufbx `ufbx_bone_pose.bone_to_parent` is
+//!   *"approximated from the parent world transform"*. Posed bones
+//!   whose parent has no bind pose (e.g. a bone parented directly to
+//!   the scene root, or to a non-skinned `Null` Model) receive
+//!   `bone_to_parent == bone_to_world` — the implicit-root case where
+//!   the parent's world transform is the identity.
 //!
 //! # Not surfaced
 //!
@@ -61,10 +75,6 @@
 //!   documents only the bind-pose flag's meaning; arbitrary rest poses
 //!   round-trip through the [`crate::FbxDocument`] but aren't promoted
 //!   onto [`Scene3D`].
-//! - `bone_to_parent` (the doc's parent-space approximation) — we
-//!   surface only the directly-stored world matrix; deriving the
-//!   parent-space form needs the full ancestor chain and is left to a
-//!   downstream consumer that already has the resolved scene graph.
 
 use std::collections::HashMap;
 
@@ -89,6 +99,13 @@ const IDENTITY_4X4: [[f32; 4]; 4] = [
 /// 2. Back-fill any [`oxideav_mesh3d::Skeleton`] inverse-bind matrix
 ///    that is still the deformer module's identity default with
 ///    `inverse(bone_to_world)` from the bind pose.
+/// 3. Derive the parent-space form of each bind-pose entry
+///    (`fbx:bind_pose_parent_local`) by composing
+///    `inverse(parent_bone_to_world) * bone_to_world` once the full
+///    set of posed bones is known and the scene-graph parent map has
+///    been materialised. Posed bones whose parent has no bind pose
+///    use the implicit-root convention (parent world = identity), so
+///    the derived parent-space form equals the world matrix.
 ///
 /// `model_nodes` is the FBX `Model` id → [`NodeId`] table the scene
 /// builder already produced; `PoseNode.Node` references a `Model` id,
@@ -173,6 +190,83 @@ pub fn extract_poses(doc: &FbxDocument, scene: &mut Scene3D, model_nodes: &HashM
             }
         }
     }
+
+    // 3) Derive the parent-space form `bone_to_parent` for every
+    //    posed bone. The doc (ufbx_bone_pose) declares
+    //    bone_to_parent *"approximated from the parent world transform"*.
+    //    Mechanism:
+    //      a. Build a child → parent index from `scene.nodes[*].children`
+    //         so each posed bone's ancestor chain is known.
+    //      b. For each posed bone, look up the parent node's bind-pose
+    //         world. When the parent is posed,
+    //         `bone_to_parent = inverse(parent_world) * bone_to_world`.
+    //         When the parent has no bind pose (root bone or a non-
+    //         posed Null parent) use the implicit-root convention:
+    //         parent world = identity, so `bone_to_parent ==
+    //         bone_to_world`.
+    derive_bone_to_parent(scene, &bind_pose_by_node);
+}
+
+/// Derive `node.extras["fbx:bind_pose_parent_local"]` for every posed
+/// bone whose `node.extras["fbx:bind_pose"]` was stashed in step 1.
+///
+/// Builds the scene-graph parent map from `scene.nodes[*].children` —
+/// [`oxideav_mesh3d::Node`] stores child IDs but not back-pointers, so
+/// the parent index is materialised on the fly. Top-level bones whose
+/// parent is the scene root (i.e. not in any node's `children` list)
+/// use the implicit-root convention (parent world = identity).
+fn derive_bone_to_parent(scene: &mut Scene3D, bind_pose_by_node: &HashMap<NodeId, [[f32; 4]; 4]>) {
+    if bind_pose_by_node.is_empty() {
+        return;
+    }
+    // Build child NodeId → parent NodeId.
+    let mut parent_of: HashMap<NodeId, NodeId> = HashMap::new();
+    for (idx, node) in scene.nodes.iter().enumerate() {
+        let parent = NodeId(idx as u32);
+        for &child in &node.children {
+            // First parent wins on the (malformed) duplicate-edge case;
+            // the rest of the crate already tolerates that shape.
+            parent_of.entry(child).or_insert(parent);
+        }
+    }
+
+    for (&bone_node, world) in bind_pose_by_node {
+        let parent_world = parent_of
+            .get(&bone_node)
+            .and_then(|p| bind_pose_by_node.get(p))
+            .copied()
+            .unwrap_or(IDENTITY_4X4);
+        let bone_to_parent = if is_identity(&parent_world) {
+            // Common case: parent has identity world. The result is
+            // just bone_to_world — preserved verbatim (skipping the
+            // matmul also keeps it byte-stable for the round-tripper).
+            *world
+        } else {
+            let parent_inv = invert_affine(&parent_world);
+            mat4_mul(&parent_inv, world)
+        };
+        if let Some(node) = scene.nodes.get_mut(bone_node.0 as usize) {
+            node.extras.insert(
+                "fbx:bind_pose_parent_local".to_string(),
+                mat4_to_json(&bone_to_parent),
+            );
+        }
+    }
+}
+
+/// Row-major 4x4 multiply, `a * b`.
+fn mat4_mul(a: &[[f32; 4]; 4], b: &[[f32; 4]; 4]) -> [[f32; 4]; 4] {
+    let mut out = [[0.0f32; 4]; 4];
+    for r in 0..4 {
+        for c in 0..4 {
+            let mut s = 0.0f32;
+            for k in 0..4 {
+                s += a[r][k] * b[k][c];
+            }
+            out[r][c] = s;
+        }
+    }
+    out
 }
 
 /// Read the `PoseNode { Node : i64 }` direct child as the referenced
@@ -476,5 +570,193 @@ mod tests {
         assert!(!scene.nodes[n0.0 as usize]
             .extras
             .contains_key("fbx:bind_pose"));
+    }
+
+    #[test]
+    fn mat4_mul_identity_is_a_noop() {
+        let m = [
+            [1.0, 2.0, 3.0, 4.0],
+            [5.0, 6.0, 7.0, 8.0],
+            [9.0, 10.0, 11.0, 12.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ];
+        let id = IDENTITY_4X4;
+        let l = mat4_mul(&id, &m);
+        let r = mat4_mul(&m, &id);
+        assert_eq!(l, m);
+        assert_eq!(r, m);
+    }
+
+    #[test]
+    fn mat4_mul_two_translations_compose() {
+        let a = [
+            [1.0, 0.0, 0.0, 4.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ];
+        let b = [
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 3.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ];
+        let prod = mat4_mul(&a, &b);
+        // a * b applies b first then a: translation column should be
+        // (4, 3, 0) — i.e. row-major translations sum in the last column.
+        assert_eq!(prod[0][3], 4.0);
+        assert_eq!(prod[1][3], 3.0);
+        assert_eq!(prod[2][3], 0.0);
+        assert_eq!(prod[3], [0.0, 0.0, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn root_bone_bind_pose_parent_local_equals_world() {
+        // A bone with no parented ancestor (its node never appears in
+        // any other node's `children`) sees the implicit-root parent
+        // = identity, so bone_to_parent == bone_to_world.
+        let mut scene = Scene3D::new();
+        let bone_node = scene.add_node(oxideav_mesh3d::Node::new());
+        scene.roots.push(bone_node);
+        let mut model_nodes = HashMap::new();
+        model_nodes.insert(100i64, bone_node);
+
+        let world = [
+            1.0, 0.0, 0.0, 7.0, 0.0, 1.0, 0.0, 8.0, 0.0, 0.0, 1.0, 9.0, 0.0, 0.0, 0.0, 1.0,
+        ];
+        let pose = bind_pose_element(900, "BindPose", vec![pose_node(100, world)]);
+        let doc = doc_with_pose(pose);
+        extract_poses(&doc, &mut scene, &model_nodes);
+
+        let extras = &scene.nodes[bone_node.0 as usize].extras;
+        let v = extras
+            .get("fbx:bind_pose_parent_local")
+            .expect("root bone has parent-local entry");
+        let arr = v.as_array().expect("array");
+        assert_eq!(arr.len(), 16);
+        assert_eq!(arr[3].as_f64(), Some(7.0));
+        assert_eq!(arr[7].as_f64(), Some(8.0));
+        assert_eq!(arr[11].as_f64(), Some(9.0));
+    }
+
+    #[test]
+    fn child_bone_bind_pose_parent_local_is_inverse_parent_times_world() {
+        // Parent bone at world translation (10, 0, 0); child bone at
+        // world translation (10, 5, 0). bone_to_parent for the child
+        // should be a pure (0, 5, 0) translation.
+        let mut scene = Scene3D::new();
+        let parent_node = scene.add_node(oxideav_mesh3d::Node::new());
+        let child_node = scene.add_node(oxideav_mesh3d::Node::new());
+        scene.nodes[parent_node.0 as usize]
+            .children
+            .push(child_node);
+        scene.roots.push(parent_node);
+
+        let mut model_nodes = HashMap::new();
+        model_nodes.insert(100i64, parent_node);
+        model_nodes.insert(101i64, child_node);
+
+        let parent_world = [
+            1.0, 0.0, 0.0, 10.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+        ];
+        let child_world = [
+            1.0, 0.0, 0.0, 10.0, 0.0, 1.0, 0.0, 5.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+        ];
+        let pose = bind_pose_element(
+            900,
+            "BindPose",
+            vec![pose_node(100, parent_world), pose_node(101, child_world)],
+        );
+        let doc = doc_with_pose(pose);
+        extract_poses(&doc, &mut scene, &model_nodes);
+
+        // Parent: its parent in the scene graph is the implicit root,
+        // so parent-local == world.
+        let p_extras = &scene.nodes[parent_node.0 as usize].extras;
+        let p_arr = p_extras["fbx:bind_pose_parent_local"]
+            .as_array()
+            .expect("parent has parent-local");
+        assert_eq!(p_arr[3].as_f64(), Some(10.0));
+        assert_eq!(p_arr[7].as_f64(), Some(0.0));
+
+        // Child: bone_to_parent = inverse(parent_world) * child_world.
+        // For pure translations: inverse(t_p) * t_c = translation by
+        // (c.tx - p.tx, c.ty - p.ty, c.tz - p.tz) = (0, 5, 0).
+        let c_extras = &scene.nodes[child_node.0 as usize].extras;
+        let c_arr = c_extras["fbx:bind_pose_parent_local"]
+            .as_array()
+            .expect("child has parent-local");
+        // Row 0 col 3 is X translation.
+        assert!((c_arr[3].as_f64().unwrap() - 0.0).abs() < 1e-5);
+        assert!((c_arr[7].as_f64().unwrap() - 5.0).abs() < 1e-5);
+        assert!((c_arr[11].as_f64().unwrap() - 0.0).abs() < 1e-5);
+        // Linear part stays identity for pure-translation composition.
+        assert!((c_arr[0].as_f64().unwrap() - 1.0).abs() < 1e-5);
+        assert!((c_arr[5].as_f64().unwrap() - 1.0).abs() < 1e-5);
+        assert!((c_arr[10].as_f64().unwrap() - 1.0).abs() < 1e-5);
+        // Last row stays [0, 0, 0, 1].
+        assert_eq!(c_arr[12].as_f64(), Some(0.0));
+        assert_eq!(c_arr[13].as_f64(), Some(0.0));
+        assert_eq!(c_arr[14].as_f64(), Some(0.0));
+        assert_eq!(c_arr[15].as_f64(), Some(1.0));
+    }
+
+    #[test]
+    fn child_bone_with_unposed_parent_falls_back_to_world() {
+        // Child posed; its parent node has no bind pose. The implicit-
+        // root convention applies: parent world = identity, so
+        // bone_to_parent == bone_to_world.
+        let mut scene = Scene3D::new();
+        let parent_node = scene.add_node(oxideav_mesh3d::Node::new());
+        let child_node = scene.add_node(oxideav_mesh3d::Node::new());
+        scene.nodes[parent_node.0 as usize]
+            .children
+            .push(child_node);
+        scene.roots.push(parent_node);
+
+        let mut model_nodes = HashMap::new();
+        model_nodes.insert(101i64, child_node);
+
+        let child_world = [
+            1.0, 0.0, 0.0, 2.0, 0.0, 1.0, 0.0, 3.0, 0.0, 0.0, 1.0, 4.0, 0.0, 0.0, 0.0, 1.0,
+        ];
+        let pose = bind_pose_element(900, "BindPose", vec![pose_node(101, child_world)]);
+        let doc = doc_with_pose(pose);
+        extract_poses(&doc, &mut scene, &model_nodes);
+
+        let c_arr = scene.nodes[child_node.0 as usize].extras["fbx:bind_pose_parent_local"]
+            .as_array()
+            .expect("child has parent-local");
+        assert_eq!(c_arr[3].as_f64(), Some(2.0));
+        assert_eq!(c_arr[7].as_f64(), Some(3.0));
+        assert_eq!(c_arr[11].as_f64(), Some(4.0));
+    }
+
+    #[test]
+    fn no_pose_element_skips_parent_local_derivation() {
+        // Without any bind pose, no fbx:bind_pose_parent_local extras
+        // should be written on any node.
+        let mut scene = Scene3D::new();
+        let n0 = scene.add_node(oxideav_mesh3d::Node::new());
+        let mut model_nodes = HashMap::new();
+        model_nodes.insert(100i64, n0);
+
+        let root = FbxNode {
+            name: String::new(),
+            properties: Vec::new(),
+            children: vec![FbxNode {
+                name: "Objects".to_string(),
+                properties: Vec::new(),
+                children: Vec::new(),
+            }],
+        };
+        let doc = FbxDocument {
+            version: 7400,
+            root,
+        };
+        extract_poses(&doc, &mut scene, &model_nodes);
+        assert!(!scene.nodes[n0.0 as usize]
+            .extras
+            .contains_key("fbx:bind_pose_parent_local"));
     }
 }
