@@ -59,6 +59,20 @@
 //!   Maya / 3ds-Max exporter aliases) into the typed PBR slots.
 //!   `Material -> Model` OO connections set `Primitive::material`.
 //!   See [`material`].
+//! - **GlobalSettings** (round 219) — the top-level `GlobalSettings`
+//!   node's `Properties70` block is decoded via the round-191
+//!   `PropertyMap`; every well-known `P`-record from the
+//!   cubes-ascii-v7500.fbx fixture (`UpAxis` / `UpAxisSign` /
+//!   `FrontAxis` / `FrontAxisSign` / `CoordAxis` / `CoordAxisSign` /
+//!   `OriginalUpAxis*` / `UnitScaleFactor` / `OriginalUnitScaleFactor`
+//!   / `AmbientColor` / `DefaultCamera` / `TimeMode` / `TimeProtocol`
+//!   / `SnapOnFrameMode` / `TimeSpanStart` / `TimeSpanStop` /
+//!   `CustomFrameRate` / `CurrentTimeMarker`) lands on
+//!   `Scene3D::extras` under the `"fbx:<snake_case>"` key convention.
+//!   `UnitScaleFactor` is additionally translated to `Scene3D::unit`:
+//!   `100.0 → Unit::Centimetres` and `1.0 → Unit::Metres` per the
+//!   `unit_meters` documentation in
+//!   `docs/3d/fbx/ufbx/elements-nodes.md`. See [`globals`].
 //! - **Bind pose** (round 97) — `Objects { Pose : "BindPose" }`
 //!   elements with `PoseNode { Node, Matrix }` sub-records surface
 //!   each posed bone's world matrix onto its
