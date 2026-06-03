@@ -9,6 +9,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Round 213 — **ASCII FBX writer** (closes the round-200 "ASCII
+  writer NYI" tail). New `ascii_writer` module exposes
+  `write_ascii_document(&FbxDocument)` and
+  `write_ascii_document_with_options(&doc, &AsciiWriterOptions)`.
+  Emits the document back as ASCII text per the observer grammar at
+  `docs/3d/fbx/fbx-ascii-grammar.md`:
+  - §1 / §7a — two-line banner `; FBX <maj>.<min>.<patch> project
+    file` + `; ----` (optional via
+    `AsciiWriterOptions::emit_banner(false)`; the inner
+    `FBXHeaderExtension { FBXVersion }` leaf is the parser's
+    canonical version source, banner digits are informational).
+  - §3 / §3a / §4 — body-form `Key:  { ... }` (two-space quirk for
+    empty value-lists; single-space for non-empty) vs leaf-form
+    `Key: <values>`; TAB-per-depth indentation.
+  - §5 — scalar lexical forms: integer / full-precision f64 via
+    Rust's `{:?}` shortest-round-trip formatter / `"..."` strings
+    with backslashes copied through literally (per the §5 path
+    string example) / bare `T` / `F` booleans.
+  - §6 — typed array shorthand `Key: *N { a: v1,v2,... }` for every
+    numeric-array variant (`F32Array`, `F64Array`, `I32Array`,
+    `I64Array`, `BoolArray` rendered as `0` / `1`).
+  - Round-trip closure `parse(write(parse(src))) == parse(src)`
+    holds at the typed-tree level (the writer is canonical at the
+    AST level; ASCII permits many lexically-distinct printings of
+    the same tree). Validated against the staged
+    `docs/3d/fbx/fixtures/cubes-ascii-v7500.fbx` fixture (full §7
+    section coverage, both float and int typed arrays, Cyrillic
+    identifiers, backslash paths).
+  - Edge cases: empty arrays narrow to `I32Array([])` on re-read
+    (grammar §6 carries no type evidence in zero-element form);
+    binary-only `Raw` blobs surface a clean `Error::invalid`
+    (grammar §5 has no `R` form); strings carrying an interior `"`
+    or newline are rejected (grammar §5 strings stay on one line
+    and use no escape mechanism).
+  - 14 new module-level tests covering each grammar rule, an
+    end-to-end fixture round-trip, and every error path.
+  - New public exports: `ascii_writer::write_ascii_document`,
+    `write_ascii_document_with_options`, `AsciiWriterOptions`.
+
 - Round 207 — **Light / Camera `NodeAttribute` surfacing** (the
   long-standing DOCS-GAP "Light / Camera node attributes" bullet on
   the README "Lacks" list).

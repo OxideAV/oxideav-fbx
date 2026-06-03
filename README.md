@@ -140,6 +140,31 @@ clean-room from third-party documentation:
   (round 4 — `Encoding == 1` per Gessler §"Array types"; a 32×32
   quad-grid fixture shrinks from 40 346 bytes to 8 326 bytes,
   ≈ 20.6 % of the raw size).
+- **ASCII writer** (round 213) — `write_ascii_document(&FbxDocument)`
+  emits the document back as ASCII text per the observer grammar at
+  `docs/3d/fbx/fbx-ascii-grammar.md`. Output starts with the two-line
+  `; FBX <maj>.<min>.<patch> project file` + `; ----` banner (§1 /
+  §7a); every child of `FbxDocument::root` renders at depth 0 with
+  TAB-per-depth indentation (§4); leaf nodes drop body braces (§3);
+  body nodes reproduce the SDK's observed `Key:  {` two-space quirk
+  for empty value-lists and `Key: v1, v2 {` single-space form for
+  non-empty (§3a). Scalars render in their grammar §5 forms
+  (integers, full-precision f64 via Rust's `{:?}` shortest-round-trip
+  formatter, `"..."` strings with backslashes passed through
+  literally, bare `T` / `F` booleans). Typed arrays use the §6
+  shorthand `Key: *N { a: v1,v2,... }` for every numeric-array
+  variant (`F32Array`, `F64Array`, `I32Array`, `I64Array`,
+  `BoolArray` as `0` / `1`). Round-trip closure
+  `parse(write(parse(src))) == parse(src)` holds at the typed-tree
+  level for the staged `docs/3d/fbx/fixtures/cubes-ascii-v7500.fbx`
+  fixture (8 top-level §7 sections, 4 Geometry + 4 Model + 2
+  Material objects, both float and int typed arrays, Cyrillic
+  identifiers, backslash paths). Output is valid UTF-8 by
+  construction. `R` raw blobs (binary-only `R` properties) and
+  strings carrying interior `"` or newline have no ASCII grammar
+  form and surface a clean `Error::invalid` rather than silently
+  produce broken text. Banner toggle via
+  `write_ascii_document_with_options(&doc, &AsciiWriterOptions::default().emit_banner(false))`.
 
 ## Decode
 
@@ -174,7 +199,8 @@ println!("{} mesh(es), {} node(s)", scene.meshes.len(), scene.nodes.len());
   the binary `l` variant the animation module's KTime puller
   accepts). Bytes matching neither the binary magic nor the ASCII
   banner return a single sniff-failure error rather than the prior
-  blanket ASCII rejection. ASCII **writer** still NYI.
+  blanket ASCII rejection. ASCII writer landed in round 213
+  (see "ASCII writer" above).
 - `Mesh3DEncoder` (Scene3D → bytes) — `write_document` operates on the
   parsed `FbxDocument` tree only; building a fresh `FbxDocument` from a
   `Scene3D` (the inverse of `scene::build_scene`) is a follow-up round.

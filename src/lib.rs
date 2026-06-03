@@ -79,6 +79,15 @@
 //!   top-level sections, 4 Geometry + 4 Model + 2 Material +
 //!   AnimationStack / AnimationLayer all surface; first mesh's
 //!   `Vertices: *24` decodes to a 24-double `F64Array`).
+//! - **ASCII FBX writer** (round 213) — [`ascii_writer::write_ascii_document`]
+//!   emits an [`FbxDocument`] back as ASCII text per the observer
+//!   grammar at `docs/3d/fbx/fbx-ascii-grammar.md`. The round-trip
+//!   closure `parse(write(parse(src))) == parse(src)` holds at the
+//!   typed-tree level for the staged
+//!   `docs/3d/fbx/fixtures/cubes-ascii-v7500.fbx` fixture (full §7
+//!   section coverage, both float / int typed arrays, Cyrillic
+//!   identifiers, backslash paths). Banner toggle via
+//!   [`ascii_writer::AsciiWriterOptions::emit_banner`].
 //! - **Lights / Cameras** (round 207) —
 //!   `Objects { NodeAttribute }` records with subtype `"Light"` /
 //!   `"Camera"` decode through [`lights_cameras`] into
@@ -140,6 +149,7 @@
 
 pub mod animation;
 pub mod ascii;
+pub mod ascii_writer;
 pub mod binary;
 pub mod decoder;
 pub mod deformer;
@@ -154,6 +164,9 @@ pub mod scene;
 pub mod writer;
 
 pub use ascii::is_ascii_fbx;
+pub use ascii_writer::{
+    write_ascii_document, write_ascii_document_with_options, AsciiWriterOptions,
+};
 pub use binary::{FbxDocument, FbxNode, FbxProperty, FBX_MAGIC, FBX_VERSION_64BIT_THRESHOLD};
 pub use decoder::{is_binary_fbx, FbxDecoder};
 pub use writer::{write_document, write_document_with_options, WriterOptions};
