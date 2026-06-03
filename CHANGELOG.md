@@ -29,11 +29,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     world transform being the identity, the natural extension of
     the doc's *"approximated from the parent world transform"*
     statement to the no-parent edge case.
-  - Matches ufbx `ufbx_bone_pose.bone_to_parent` documented in
-    `docs/3d/fbx/ufbx/reference.html` §`ufbx_bone_pose`: *"Matrix
-    from node local space to parent space. FBX only stores world
-    transformations so this is approximated from the parent world
-    transform."* No new on-disk reading — the derivation runs
+  - Per `docs/3d/fbx/ufbx/reference.html` §`ufbx_bone_pose`,
+    `bone_to_parent` is documented as: *"Matrix from node local
+    space to parent space. FBX only stores world transformations so
+    this is approximated from the parent world transform."* No new
+    on-disk reading — the derivation runs
     entirely on the already-decoded bind-pose set and the
     `scene::build_scene` scene-graph parentage.
   - 6 new unit tests in `src/pose.rs::tests`: `mat4_mul` identity /

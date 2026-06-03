@@ -127,8 +127,8 @@ clean-room from third-party documentation:
   surfaced as `node.extras["fbx:bind_pose_parent_local"]` (16-double
   row-major JSON array). Root bones whose parent has no bind pose
   receive `bone_to_parent == bone_to_world` (implicit-root convention,
-  parent world = identity). This matches the ufbx
-  `ufbx_bone_pose.bone_to_parent` field documented as *"approximated
+  parent world = identity). Per `docs/3d/fbx/ufbx/reference.html`
+  §`ufbx_bone_pose`, `bone_to_parent` is documented as *"approximated
   from the parent world transform"*.
 - **Lights / Cameras** (round 207) — `Objects { NodeAttribute }` records
   whose subtype string (third property — see
