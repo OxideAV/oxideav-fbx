@@ -154,6 +154,10 @@ pub mod binary;
 pub mod decoder;
 pub mod deformer;
 pub mod geometry;
+/// `GlobalSettings` element decoder — scene-wide axis / unit / time /
+/// ambient settings surfaced onto [`oxideav_mesh3d::Scene3D`] (round
+/// 219).
+pub mod globals;
 /// `NodeAttribute` (`Light` / `Camera`) surfacing onto [`oxideav_mesh3d`]
 /// (round 207).
 pub mod lights_cameras;

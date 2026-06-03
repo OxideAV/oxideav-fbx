@@ -86,6 +86,29 @@ clean-room from third-party documentation:
   `fbx:material_mapping`), preserving the full per-face material
   payload alongside the legacy single-binding `Primitive::material`
   (which stays at slot 0 for round-5 single-binding consumers).
+- **GlobalSettings** (round 219) — the top-level `GlobalSettings`
+  node's `Properties70` block is decoded via the round-191
+  `PropertyMap`; every well-known `P`-record from the
+  cubes-ascii-v7500.fbx fixture (`UpAxis` / `UpAxisSign` / `FrontAxis`
+  / `FrontAxisSign` / `CoordAxis` / `CoordAxisSign` /
+  `OriginalUpAxis*` / `UnitScaleFactor` / `OriginalUnitScaleFactor` /
+  `AmbientColor` / `DefaultCamera` / `TimeMode` / `TimeProtocol` /
+  `SnapOnFrameMode` / `TimeSpanStart` / `TimeSpanStop` /
+  `CustomFrameRate` / `CurrentTimeMarker`) lands on `Scene3D::extras`
+  under the `"fbx:<snake_case>"` key convention. `UnitScaleFactor` is
+  additionally translated to `Scene3D::unit`: `100.0` →
+  `Unit::Centimetres` and `1.0` → `Unit::Metres` per the two values
+  explicitly documented in `docs/3d/fbx/ufbx/elements-nodes.md` (the
+  *"FBX files usually default to centimeters
+  (`ufbx_scene_settings.unit_meters = 0.01`)"* + *"meter units
+  (`ufbx_scene_settings.unit_meters = 1.0`)"* statements). Other
+  `UnitScaleFactor` values surface the raw factor on
+  `extras["fbx:unit_scale_factor"]` without claiming a typed
+  `Unit` mapping the docs don't provide. Axis ints (`UpAxis = 1`,
+  `FrontAxis = 2`, `CoordAxis = 0`) round-trip through `extras` but
+  the FBX-int → `Axis` variant table is absent from the staged docs,
+  so `Scene3D::up_axis` / `front_axis` stay at the `Scene3D::new`
+  defaults pending a follow-up grammar staging.
 - **Bind pose** (round 97) — `Objects { Pose : "BindPose" }` elements
   surface each `PoseNode { Node, Matrix }` bone-world matrix onto the
   bone `Node`'s `extras["fbx:bind_pose"]` (16-double row-major JSON
@@ -235,7 +258,16 @@ println!("{} mesh(es), {} node(s)", scene.meshes.len(), scene.nodes.len());
   per-corner attribute buffers (positions / normals / UVs / skin /
   morph) into N parts is the consumer's job — the slot table + the
   per-corner index buffer are the only inputs that decision needs.
-- Coordinate-system / unit-scale auto-conversion.
+- Coordinate-system / unit-scale **auto-conversion** —
+  `GlobalSettings` is *decoded* by round 219 (see "GlobalSettings"
+  above) so the file's authored axis convention + unit factor land
+  on `Scene3D::unit` (for the canonical 1.0 / 100.0 cases) +
+  `Scene3D::extras`. Actually *transforming* the geometry into a
+  target frame (e.g. rebuilding every `Primitive::positions` /
+  `Transform::Trs` into a right-handed Y-up metre space when the
+  source file is left-handed Z-up centimetres) is a separate
+  follow-up — the `Scene3D` shape doesn't yet have a non-trivial
+  axis-conversion primitive.
 - **Light / Camera animation channels** — `AnimationCurveNode`
   records targeting the light/camera `Color` / `Intensity` /
   `FieldOfView` `P`-records round-trip through the `FbxDocument` but

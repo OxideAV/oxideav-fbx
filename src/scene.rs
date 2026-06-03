@@ -28,6 +28,7 @@ use crate::animation::extract_animations;
 use crate::binary::{FbxDocument, FbxNode, FbxProperty};
 use crate::deformer::extract_deformers;
 use crate::geometry::extract_geometry_mesh_with_corners;
+use crate::globals::extract_global_settings;
 use crate::lights_cameras::extract_lights_and_cameras;
 use crate::material::extract_materials;
 use crate::pose::extract_poses;
@@ -36,6 +37,16 @@ use crate::pose::extract_poses;
 /// [`Scene3D`].
 pub fn build_scene(doc: &FbxDocument) -> Result<Scene3D> {
     let mut scene = Scene3D::new();
+
+    // Round 219 — GlobalSettings P-record decode. Runs first so any
+    // downstream module that wants to consult the surfaced
+    // `Scene3D::extras` / `Scene3D::unit` finds them populated.
+    // Per `docs/3d/fbx/fbx-binary-properties70.md` §4 + the
+    // cubes-ascii-v7500.fbx fixture, `GlobalSettings` sits at the top
+    // level (sibling of `Objects` / `Connections`) and exposes axis /
+    // unit / time / ambient settings via a `Properties70` block. See
+    // `crate::globals` for the per-record breakdown.
+    extract_global_settings(doc, &mut scene);
 
     // Index every Geometry element by its FBX id. Materials,
     // animations, etc. are deferred — round 1 surfaces just enough
@@ -249,8 +260,11 @@ pub fn build_scene(doc: &FbxDocument) -> Result<Scene3D> {
 
     // If somehow no roots and no meshes ended up populated, surface
     // an empty scene rather than failing — this matches the
-    // "FBX-with-no-Objects" tolerance other loaders apply.
-    if scene.nodes.is_empty() && scene.meshes.is_empty() {
+    // "FBX-with-no-Objects" tolerance other loaders apply. We retain
+    // the GlobalSettings-derived `scene.extras` / `scene.unit` (round
+    // 219) — only fall back to the FBX centimetre default when neither
+    // GlobalSettings nor any Objects/Models populated the scene.
+    if scene.nodes.is_empty() && scene.meshes.is_empty() && scene.extras.is_empty() {
         return Ok(Mesh3DEmpty::scene());
     }
     Ok(scene)

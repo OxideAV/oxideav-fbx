@@ -9,6 +9,96 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Round 219 — **`GlobalSettings` element decode** (advances the
+  "Coordinate-system / unit-scale auto-conversion" README "Lacks"
+  tail to the *decoded but not auto-converted* state).
+  - New `globals` module exposes
+    `extract_global_settings(&FbxDocument, &mut Scene3D) -> usize`.
+    Walks the top-level `GlobalSettings { Properties70 { P: ... } }`
+    block via the existing `crate::properties70::PropertyMap` and
+    surfaces every well-known P-record onto `Scene3D::extras` under
+    the `"fbx:<snake_case>"` key convention (`fbx:up_axis`,
+    `fbx:unit_scale_factor`, `fbx:ambient_color`, `fbx:default_camera`,
+    `fbx:time_span_start`, ...). The recognised name list is sourced
+    directly from the cubes-ascii-v7500.fbx fixture's GlobalSettings
+    block + the box.fbx sample documented in
+    `docs/3d/fbx/fbx-binary-properties70.md` §4 (`UpAxis` /
+    `UpAxisSign` / `FrontAxis` / `FrontAxisSign` / `CoordAxis` /
+    `CoordAxisSign` / `OriginalUpAxis` / `OriginalUpAxisSign` /
+    `UnitScaleFactor` / `OriginalUnitScaleFactor` / `AmbientColor` /
+    `DefaultCamera` / `TimeMode` / `TimeProtocol` /
+    `SnapOnFrameMode` / `TimeSpanStart` / `TimeSpanStop` /
+    `CustomFrameRate` / `CurrentTimeMarker`). Unrecognised names
+    round-trip through `FbxDocument` but do not surface to extras
+    (so a future round can opt in to additional names without an
+    extras-key collision).
+  - `UnitScaleFactor` is additionally translated to typed
+    `Scene3D::unit`: `100.0` → `Unit::Centimetres`, `1.0` →
+    `Unit::Metres`. These are the two values explicitly tied to
+    `unit_meters` in `docs/3d/fbx/ufbx/elements-nodes.md` (*"Most
+    unit-aware FBXs are expressed in centimeters
+    (`ufbx_scene_settings.unit_meters = 0.01`)"* and *"meter units
+    (`ufbx_scene_settings.unit_meters = 1.0`)"*) — the relation
+    `unit_meters = 1 / UnitScaleFactor` holds for both. Other
+    values leave `scene.unit` at the `Scene3D::new` default; the
+    raw factor stays available on `extras["fbx:unit_scale_factor"]`
+    for callers that need the literal exporter-side value.
+  - `KTime` records (`TimeSpanStart` / `TimeSpanStop`) surface as
+    i64 ticks to preserve every documented unit of precision (the
+    KTime constant is ~`4.6e10` ticks/second and a long
+    `TimeSpanStop` is in the `~4e14` range — beyond f64-exact
+    integer territory). Downstream consumers can convert to seconds
+    with the `animation::KTIME_TICKS_PER_SECOND` constant.
+  - **No axis auto-conversion.** The `UpAxis` / `FrontAxis` /
+    `CoordAxis` integer enum mapping to `oxideav_mesh3d::Axis`
+    (positive/negative X/Y/Z) variants is not in the staged docs
+    (the ufbx-side `ufbx_coordinate_axis` enum is documented as an
+    enum but the *FBX-P-record-int → axis-variant* table itself is
+    absent). The raw ints surface on `extras` and
+    `Scene3D::up_axis` / `front_axis` stay at the `Scene3D::new`
+    defaults. A follow-up docs-staging round can close this loop.
+  - **No geometry transformation.** Module only *decodes* the
+    settings into `Scene3D` metadata; transforming the geometry
+    into a target axis/unit frame (e.g. converting cm → m by
+    scaling every position by 0.01) is a separate follow-up — the
+    `Scene3D` shape doesn't yet have a non-trivial axis-conversion
+    primitive.
+  - Called from `scene::build_scene` first (before
+    `extract_deformers` / `extract_animations` / etc.) so any
+    downstream module that consults `Scene3D::extras` finds them
+    populated. The empty-scene fallback at end-of-`build_scene`
+    now retains the GlobalSettings-derived `extras` + `unit`
+    rather than discarding them.
+  - 15 new unit tests in `src/globals.rs::tests` cover the missing
+    / empty / unrecognised-name no-op paths, the per-type-bucket
+    decode (int / KTime long / double / KString / Vec3), the
+    UnitScaleFactor → Unit::{Centimetres, Metres} mapping + the
+    "unknown factor leaves unit unchanged" path, the
+    snake_case extras-key generator, an epsilon-tolerance check
+    around the canonical UnitScaleFactor values, the
+    no-clobber-prior-extras invariant, and a "full fixture" set
+    that decodes all 19 P-records from the cubes fixture in one
+    pass. 1 new integration test in
+    `tests/synthetic_global_settings.rs` hand-builds a binary
+    v7400 FBX with the full GlobalSettings P-record block and
+    asserts the public `FbxDecoder::decode` path lifts every
+    documented bucket onto `Scene3D::extras` + maps
+    `UnitScaleFactor = 100.0` to `Scene3D::unit = Centimetres`.
+    1 new integration test in `tests/ascii_fixture.rs` re-checks
+    the ASCII round-trip on the real cubes fixture
+    (`UnitScaleFactor=1` → `Unit::Metres`, `DefaultCamera` and
+    `TimeMode` reach extras).
+  - Test count: 110 → 126 unit (+16), 23 → 25 integration (+2).
+  - References: `docs/3d/fbx/fbx-binary-properties70.md` §4
+    (Properties70 grammar + the box.fbx GlobalSettings sample
+    block); `docs/3d/fbx/fbx-ascii-grammar.md` §7 (top-level
+    section list) / §8 (`P:` ASCII form);
+    `docs/3d/fbx/ufbx/elements-nodes.md` (the cm:0.01 / m:1.0
+    `unit_meters` documentation);
+    `docs/3d/fbx/ufbx/reference.html` §`ufbx_scene_settings` (the
+    typed scene-settings struct field list); the
+    cubes-ascii-v7500.fbx fixture's GlobalSettings block (full P-
+    record set).
 - Round 213 — **ASCII FBX writer** (closes the round-200 "ASCII
   writer NYI" tail). New `ascii_writer` module exposes
   `write_ascii_document(&FbxDocument)` and
