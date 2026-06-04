@@ -9,6 +9,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Round 235 — **`NodeAttribute` `"LimbNode"` / `"Null"` discriminator
+  surfacing.** The §6 ruleset in
+  `docs/3d/fbx/fbx-binary-properties70.md` lists `"LimbNode"`
+  (skeletal bone) and `"Null"` (locator / empty) as well-known
+  `NodeAttribute` subtype discriminators, alongside the typed
+  `"Light"` / `"Camera"` ones the round-207 path consumes. The new
+  `src/node_attribute.rs` module records the §6 discriminator on the
+  owning `Model`'s scene-graph `Node::extras["fbx:node_attribute_kind"]`
+  (value = the subtype string verbatim) so downstream consumers can
+  distinguish a skeletal-bone Model from a locator Model from a
+  plain Mesh Model without re-walking the `FbxDocument`.
+  - **Decode path.** `Objects { NodeAttribute }` records whose
+    `prop2` subtype string is `"LimbNode"` or `"Null"` are indexed,
+    then `Connections { C "OO" }` walks bind each attribute to its
+    owning `Model`. The kind tag is written first-wins (so a Model
+    with two NodeAttribute children of different kinds keeps the
+    first-resolved discriminator deterministically).
+  - **Idempotence with round 207.** The light/camera path writes
+    `Node::extras["fbx:light_type"]` only for lossy `Area` / `Volume`
+    fall-backs; this round writes a distinct key
+    (`"fbx:node_attribute_kind"`) so the two surfacing passes never
+    collide on the same scene node. Pre-existing `"fbx:light_type"`
+    tags are preserved unchanged.
+  - **Out of scope (documented in module-level comment).** The
+    `ufbx_bone` `radius` / `relative_length` / `is_root` and
+    `ufbx_empty` fields documented in
+    `docs/3d/fbx/ufbx/reference.html` §`ufbx_bone` / §`ufbx_empty`
+    are decoded ufbx-side fields whose specific FBX `P`-record names
+    are not enumerated in the staged docs; a follow-up round can add
+    them once a bone / empty `Properties70` P-record name table is
+    staged. `"Root"` is only documented as a `Model` subtype (not a
+    `NodeAttribute` subtype) per §6, so it isn't dispatched here.
+  - 7 new unit tests in `src/node_attribute.rs::tests`: LimbNode and
+    Null kinds land on owning-Model extras; unknown subtypes don't;
+    orphan NodeAttribute (no OO wiring) is a no-op; the light_type
+    key coexists with the new kind key without collision; first-kind
+    wins on degenerate two-attribute Models; non-`OO` connection
+    kinds (`OP` / `PP` / `PO`) don't trigger the tag. 1 new
+    integration test in
+    `tests/synthetic_node_attribute.rs::limbnode_and_null_node_attributes_round_trip_through_decoder`
+    builds an `Objects { LimbNode-attr, Null-attr, Bone1-model,
+    Locator1-model }` + `Connections { OO 600→700, OO 601→701 }`
+    document, writes it through the round-3 binary writer, then
+    decodes it through `FbxDecoder::new().decode()` and asserts the
+    two named `Node`s carry `"fbx:node_attribute_kind"` =
+    `"LimbNode"` / `"Null"`.
+  - Test count: 132 → 139 unit (+7), 26 → 27 integration (+1).
+
 - Round 226 — **bind-pose `bone_to_parent` derivation** (closes the
   round-97 "Pose `bone_to_parent`" entry on the README "Lacks" list).
   - Once `extract_poses` has stashed every `PoseNode { Matrix }`

@@ -176,6 +176,7 @@ pub mod globals;
 /// (round 207).
 pub mod lights_cameras;
 pub mod material;
+pub mod node_attribute;
 pub mod pose;
 pub mod properties70;
 pub mod scene;

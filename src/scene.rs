@@ -31,6 +31,7 @@ use crate::geometry::extract_geometry_mesh_with_corners;
 use crate::globals::extract_global_settings;
 use crate::lights_cameras::extract_lights_and_cameras;
 use crate::material::extract_materials;
+use crate::node_attribute::extract_node_attribute_kinds;
 use crate::pose::extract_poses;
 
 /// Decode the top-level `Objects` / `Connections` records into a
@@ -257,6 +258,16 @@ pub fn build_scene(doc: &FbxDocument) -> Result<Scene3D> {
     // `crate::properties70`, and binds the result onto the owning
     // `Model`'s scene-graph `Node::light` / `Node::camera`.
     extract_lights_and_cameras(doc, &mut scene, &model_nodes);
+
+    // Round 235 — `NodeAttribute` subtype-discriminator surfacing for
+    // the `"LimbNode"` / `"Null"` discriminators documented in
+    // `docs/3d/fbx/fbx-binary-properties70.md` §6 but not covered by
+    // the typed Light / Camera path above. The owning Model's
+    // `Node::extras["fbx:node_attribute_kind"]` records the §6
+    // discriminator string verbatim so consumers can distinguish a
+    // skeletal-bone Model from a locator/empty Model from a plain
+    // Mesh Model without re-walking the `FbxDocument`.
+    extract_node_attribute_kinds(doc, &mut scene, &model_nodes);
 
     // If somehow no roots and no meshes ended up populated, surface
     // an empty scene rather than failing — this matches the

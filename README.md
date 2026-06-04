@@ -130,6 +130,16 @@ clean-room from third-party documentation:
   parent world = identity). Per `docs/3d/fbx/ufbx/reference.html`
   §`ufbx_bone_pose`, `bone_to_parent` is documented as *"approximated
   from the parent world transform"*.
+- **NodeAttribute `"LimbNode"` / `"Null"` discriminator** (round 235) —
+  the remaining well-known `NodeAttribute` subtype discriminators
+  documented in `docs/3d/fbx/fbx-binary-properties70.md` §6 that
+  don't map onto a first-class [`oxideav_mesh3d`] type. The owning
+  `Model`'s scene-graph `Node::extras["fbx:node_attribute_kind"]`
+  records the §6 discriminator string verbatim (`"LimbNode"` for a
+  skeletal bone, `"Null"` for a locator / empty), so consumers can
+  distinguish bone Models from locator Models from plain Mesh Models
+  without re-walking the `FbxDocument`. Coexists with round 207 on a
+  distinct key (`"fbx:light_type"` is round 207's; this is its own).
 - **Lights / Cameras** (round 207) — `Objects { NodeAttribute }` records
   whose subtype string (third property — see
   `docs/3d/fbx/fbx-binary-properties70.md` §6) is `"Light"` or
