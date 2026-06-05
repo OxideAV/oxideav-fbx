@@ -160,6 +160,32 @@ impl PropertyMap {
         }
     }
 
+    /// Pull a `KTime` / `ULongLong` / `Long` value by name without
+    /// loss of precision.
+    ///
+    /// Per `docs/3d/fbx/fbx-binary-properties70.md` §4, the wire
+    /// codes for these typeNames are `L` (int64), so a `KTime`
+    /// payload may exceed the i32 range (the doc's sample
+    /// `TimeSpanStop = 46_186_158_000` already does) and the
+    /// floating-point [`Self::as_f64`] path would lose precision
+    /// near the 2^53 boundary. This accessor returns the underlying
+    /// [`PValue::Long`] verbatim, widening [`PValue::Int`] /
+    /// [`PValue::Bool`] losslessly so an exporter that wires an
+    /// otherwise-`KTime` value as `I` (the docs §4 note about older
+    /// exporters mixing the integer wire codes) still reads back
+    /// correctly.
+    ///
+    /// Returns `None` for non-numeric records (`Str` / `Vec3` /
+    /// `Compound` / `Double` / `Other`).
+    pub fn as_i64(&self, name: &str) -> Option<i64> {
+        match &self.inner.get(name)?.value {
+            PValue::Long(v) => Some(*v),
+            PValue::Int(v) => Some(*v as i64),
+            PValue::Bool(v) => Some(if *v { 1 } else { 0 }),
+            _ => None,
+        }
+    }
+
     /// Pull a `bool` value by name. `Int` / `Long` values are
     /// coerced via `!= 0` (FBX `bool` is wire-encoded as `int` in
     /// many older exporters per docs §4).
@@ -419,6 +445,112 @@ mod tests {
             Some(PValue::Long(46_186_158_000))
         );
         assert_eq!(pm.as_f64("TimeSpanStop"), Some(46_186_158_000.0));
+        // Lossless int64 accessor (the docs §4 sample value exceeds
+        // the i32 range): `46_186_158_000` cleanly survives the
+        // round trip, where the f64 path quietly drops precision for
+        // values approaching 2^53.
+        assert_eq!(pm.as_i64("TimeSpanStop"), Some(46_186_158_000));
+    }
+
+    #[test]
+    fn as_i64_preserves_int64_past_f64_safe_range() {
+        // 2^53 + 1 is the smallest positive integer not exactly
+        // representable by f64, so `as_f64 -> i64 round trip` would
+        // lose precision; `as_i64` returns the wire value verbatim.
+        let big: i64 = (1_i64 << 53) + 1;
+        let block = props70(vec![p(
+            "TimeSpanStop",
+            "KTime",
+            "Time",
+            "",
+            vec![FbxProperty::I64(big)],
+        )]);
+        let pm = PropertyMap::from_properties70(&block);
+        assert_eq!(pm.as_i64("TimeSpanStop"), Some(big));
+        // The f64 accessor still works but quietly truncates the
+        // low-order bit — this assertion documents the precision
+        // ceiling that motivates the typed `as_i64` path.
+        let lossy = pm.as_f64("TimeSpanStop").unwrap() as i64;
+        assert_eq!(lossy, big - 1);
+    }
+
+    #[test]
+    fn as_i64_widens_int_and_bool_wire_codes() {
+        // Per docs §4, older exporters wire some `KTime` / `ULongLong`
+        // payloads as `I` (int32); the accessor widens losslessly.
+        let block = props70(vec![
+            p(
+                "BlendModeBypass",
+                "ULongLong",
+                "",
+                "",
+                vec![FbxProperty::I32(7)],
+            ),
+            p("Mute", "bool", "", "", vec![FbxProperty::Bool(true)]),
+            p("ZeroBool", "bool", "", "", vec![FbxProperty::I32(0)]),
+        ]);
+        let pm = PropertyMap::from_properties70(&block);
+        assert_eq!(pm.as_i64("BlendModeBypass"), Some(7));
+        assert_eq!(pm.as_i64("Mute"), Some(1));
+        assert_eq!(pm.as_i64("ZeroBool"), Some(0));
+    }
+
+    #[test]
+    fn as_i64_rejects_non_numeric_records() {
+        // String / triple / Compound records all return `None` so the
+        // caller can fall back without ambiguity.
+        let block = props70(vec![
+            p(
+                "DefaultCamera",
+                "KString",
+                "",
+                "",
+                vec![s(b"Producer Perspective")],
+            ),
+            p(
+                "AmbientColor",
+                "ColorRGB",
+                "Color",
+                "",
+                vec![
+                    FbxProperty::F64(0.0),
+                    FbxProperty::F64(0.0),
+                    FbxProperty::F64(0.0),
+                ],
+            ),
+            p("TimeMarker", "Compound", "", "", vec![]),
+            p(
+                "UnitScaleFactor",
+                "double",
+                "Number",
+                "",
+                vec![FbxProperty::F64(100.0)],
+            ),
+        ]);
+        let pm = PropertyMap::from_properties70(&block);
+        assert_eq!(pm.as_i64("DefaultCamera"), None);
+        assert_eq!(pm.as_i64("AmbientColor"), None);
+        assert_eq!(pm.as_i64("TimeMarker"), None);
+        // Double payload is also rejected — callers wanting numeric
+        // coercion across f64/int should call `as_f64`.
+        assert_eq!(pm.as_i64("UnitScaleFactor"), None);
+        // Missing record: also `None`.
+        assert_eq!(pm.as_i64("DoesNotExist"), None);
+    }
+
+    #[test]
+    fn as_i64_handles_negative_ktime() {
+        // KTime values can be negative (e.g. `TimeSpanStart` before
+        // time 0 in animations that loop). The wire is signed int64.
+        let block = props70(vec![p(
+            "TimeSpanStart",
+            "KTime",
+            "Time",
+            "",
+            vec![FbxProperty::I64(-1_924_423_250)],
+        )]);
+        let pm = PropertyMap::from_properties70(&block);
+        assert_eq!(pm.as_i64("TimeSpanStart"), Some(-1_924_423_250));
     }
 
     #[test]

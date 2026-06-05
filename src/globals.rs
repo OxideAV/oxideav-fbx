@@ -83,7 +83,7 @@ use oxideav_mesh3d::{Scene3D, Unit};
 use serde_json::Value;
 
 use crate::binary::FbxDocument;
-use crate::properties70::{PValue, PropertyMap};
+use crate::properties70::PropertyMap;
 
 /// FBX top-level node name for the global-settings element. Sibling
 /// of `Objects`, `Connections`, `Documents`, etc. (per
@@ -217,16 +217,13 @@ pub fn unit_from_scale_factor(f: f64) -> Option<Unit> {
 
 /// Pull a `KTime` value from the [`PropertyMap`].
 ///
-/// The `KTime` typeName is wire-encoded as `L` (int64) per
-/// `docs/3d/fbx/fbx-binary-properties70.md` §4. The `as_f64` path
-/// would lose precision near the 2^53 boundary, so we pull the
-/// underlying [`PValue::Long`] directly.
+/// Thin alias around [`PropertyMap::as_i64`], which preserves the
+/// underlying int64 payload exactly (the `as_f64` path would lose
+/// precision near the 2^53 boundary). Per
+/// `docs/3d/fbx/fbx-binary-properties70.md` §4, the `KTime` typeName
+/// is wire-encoded as `L` (int64).
 fn ktime_long(props: &PropertyMap, name: &str) -> Option<i64> {
-    match &props.get(name)?.value {
-        PValue::Long(v) => Some(*v),
-        PValue::Int(v) => Some(*v as i64),
-        _ => None,
-    }
+    props.as_i64(name)
 }
 
 /// Format an `extras` key as `"fbx:<snake_case_name>"` so the result

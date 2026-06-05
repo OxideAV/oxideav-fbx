@@ -9,6 +9,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Round 240 — **`PropertyMap::as_i64` lossless `KTime` / `ULongLong` /
+  `Long` accessor.** Per the §4 wire-code table in
+  `docs/3d/fbx/fbx-binary-properties70.md`, the `KTime` and
+  `ULongLong` typeNames are encoded as the `L` (int64) property code,
+  which means their range routinely exceeds f64's safe-integer
+  ceiling — the doc's own sample value `TimeSpanStop =
+  46_186_158_000` is already past the i32 ceiling, and any `KTime`
+  approaching the 2^53 boundary loses precision when round-tripped
+  through the existing [`PropertyMap::as_f64`] path. The new
+  accessor returns the underlying [`PValue::Long`] verbatim and
+  losslessly widens [`PValue::Int`] / [`PValue::Bool`] payloads so
+  exporters that wire an otherwise-`KTime` value as `I` (per the
+  §4 note about older exporters mixing the integer wire codes for
+  some `KTime` / `ULongLong` records) still decode correctly. Non-
+  numeric records (`Str` / `Vec3` / `Compound` / `Double` / `Other`)
+  return `None` so the caller can fall back without ambiguity.
+  - **`globals.rs::ktime_long` refactor.** The previously-private
+    helper that handled the same lossless `KTime` pull for
+    `TimeSpanStart` / `TimeSpanStop` is now a one-line alias around
+    the new public `PropertyMap::as_i64`. The behaviour is unchanged
+    (every round-219 `GlobalSettings` test still passes verbatim);
+    the change only removes the duplication so future callers
+    (e.g. animation `KeyTime` pullers, or any new element that
+    surfaces a `ULongLong` flag P-record) don't re-roll a third
+    private copy of the same int64 widener.
+  - **Coverage** — 4 new unit tests in `src/properties70.rs::tests`:
+    `as_i64_preserves_int64_past_f64_safe_range` exercises the
+    `2^53 + 1` precision-ceiling case and additionally asserts the
+    `as_f64` path drops the low-order bit (documenting why the typed
+    accessor is needed); `as_i64_widens_int_and_bool_wire_codes`
+    exercises the int32 + bool widening path against `ULongLong` and
+    `bool` typeNames; `as_i64_rejects_non_numeric_records` exercises
+    the rejection branches for `KString` / `ColorRGB` / `Compound` /
+    `double` payloads plus the missing-record `None`;
+    `as_i64_handles_negative_ktime` exercises the signed range for
+    `TimeSpanStart`-style negative values. The pre-existing
+    `decode_ktime_long` unit test also gains an `as_i64`
+    cross-check assertion. Test count: 139 → 143 unit (+4),
+    27 integration unchanged.
+  - References: `docs/3d/fbx/fbx-binary-properties70.md` §3
+    (the `L` int64 wire code), §4 (the `KTime` / `ULongLong` →
+    `L` typeName-to-wire mapping plus the older-exporter integer
+    wire-mixing note), `docs/3d/fbx/fbx-ascii-grammar.md` §5
+    (the ASCII counterpart for the same `KTime` typeName).
+
 - Round 235 — **`NodeAttribute` `"LimbNode"` / `"Null"` discriminator
   surfacing.** The §6 ruleset in
   `docs/3d/fbx/fbx-binary-properties70.md` lists `"LimbNode"`
