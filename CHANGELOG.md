@@ -9,6 +9,75 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Round 243 — **`Properties70` typeName-discriminating accessors.**
+  The existing [`PropertyMap::as_vec3`] and [`PropertyMap::as_str`]
+  surface every triple-typed and string-typed `P` record
+  indiscriminately, but `docs/3d/fbx/fbx-binary-properties70.md` §4
+  documents prop1 (the typeName string) as the semantic
+  discriminator (*"The typeName / label / flags strings carry the
+  semantic type; the leading one-byte code carries the wire type"*).
+  This round adds six typeName-aware accessors on top of the existing
+  ones so a caller pulling, say, a `Lcl Rotation` triple cannot
+  accidentally pick up a `Vector3D` triple sitting under the same
+  name from a non-standard exporter:
+  - **`as_color_rgb`** accepts `"ColorRGB"` and `"Color"` typeNames
+    (the docs §4 worked sample `AmbientColor S"ColorRGB"` and the
+    cubes-ascii-v7500.fbx Material records `DiffuseColor S"Color"`).
+  - **`as_vector3d`** accepts `"Vector3D"` and `"Vector"` typeNames
+    (the cubes fixture's `PreRotation` / `PostRotation` /
+    `GeometricTranslation` / `GeometricRotation` / `GeometricScaling`
+    records). The ASCII grammar §8 typeName list enumerates both.
+  - **`as_lcl_translation`** / **`as_lcl_rotation`** /
+    **`as_lcl_scaling`** each require their exact `"Lcl …"`
+    typeName. The docs §4 trailing-value table calls out
+    `"Lcl Translation"` and `"Lcl Scaling"` explicitly; `"Lcl
+    Rotation"` is in the ASCII grammar §8 typeName enumeration
+    alongside them.
+  - **`as_datetime`** accepts the `"DateTime"` typeName documented
+    in the docs §4 *"`KString`/`DateTime` → `S`"* row. The
+    cubes-ascii-v7500.fbx fixture's `FBXHeaderExtension` block
+    carries the worked sample form `P: "Original|DateTime_GMT",
+    "DateTime", "", "", "07/01/2019 16:17:31.730"`; returning the
+    raw string body matches the docs' refusal to specify a parsed
+    `chrono`-style breakdown, while the typeName guard prevents a
+    plain `"KString"` payload from surfacing here unintentionally.
+  - **`as_object_ref`** accepts the `"object"` typeName enumerated
+    in the ASCII grammar §8 typeName list (distinct from
+    `"KString"`). The cubes fixture's `SourceObject` /
+    `LookAtProperty` / `UpVectorProperty` records all carry an
+    empty body that the decoder lands as `PValue::Compound`; the
+    accessor surfaces `""` in that case so the slot's presence is
+    still detectable from the property map alone, with the
+    resolved object UID living on the corresponding `Connections`
+    `OP` record. An exporter wiring the slot with an inline
+    string body (e.g. `"Model::SomeNode"`) is also surfaced.
+  - **Coverage** — 7 new unit tests in `src/properties70.rs::tests`:
+    `as_color_rgb_accepts_colorrgb_and_color_typenames`,
+    `as_color_rgb_rejects_non_color_typenames`,
+    `as_vector3d_accepts_vector3d_and_vector_typenames`,
+    `as_vector3d_rejects_color_and_lcl_typenames`,
+    `as_lcl_translation_rotation_scaling_split_by_typename`,
+    `as_datetime_accepts_datetime_typename_only`,
+    `as_object_ref_accepts_object_typename_with_str_or_compound_body`.
+    Test count: 143 → 150 unit (+7), 27 integration unchanged.
+  Existing `as_vec3` / `as_str` callers are unaffected — the typed
+  accessors narrow on top of the generic ones rather than replacing
+  them; the round-191 material decoder, round-207 light/camera
+  decoder, round-219 GlobalSettings decoder, and round-235
+  NodeAttribute discriminator surfacer all stay as written, since
+  they read names whose typeName is unambiguous in the worked
+  fixture samples.
+
+  References: `docs/3d/fbx/fbx-binary-properties70.md` §4
+  (typeName-to-wire mapping, trailing-value-count table, worked
+  GlobalSettings sample including `AmbientColor` / `DefaultCamera`
+  / `TimeSpanStop` / `TimeMarker`),
+  `docs/3d/fbx/fbx-ascii-grammar.md` §8 (the typeName enumerated
+  list `int`, `double`, `enum`, `bool`, `KString`, `KTime`,
+  `Number`, `ColorRGB`, `Color`, `Vector3D`, `Vector`, `Compound`,
+  `ULongLong`, `DateTime`, `Lcl Translation`, `Lcl Scaling`,
+  `object`).
+
 - Round 240 — **`PropertyMap::as_i64` lossless `KTime` / `ULongLong` /
   `Long` accessor.** Per the §4 wire-code table in
   `docs/3d/fbx/fbx-binary-properties70.md`, the `KTime` and

@@ -215,6 +215,169 @@ impl PropertyMap {
         }
     }
 
+    // --- typeName-discriminating accessors ---
+    //
+    // The base [`Self::as_vec3`] / [`Self::as_str`] flatten every
+    // trailing-value typeName the docs §4 trailing-value table
+    // enumerates. The following accessors honour
+    // [`PRecord::type_name`] — the typeName string parsed from
+    // prop1 — so a caller asking for a `ColorRGB` triple does not
+    // accidentally pick up a `Lcl Translation` triple sitting on
+    // the same name. Per `docs/3d/fbx/fbx-binary-properties70.md`
+    // §4 *"The typeName/label/flags strings carry the semantic
+    // type"*, this is the typeName's documented role.
+
+    /// Pull a `ColorRGB` / `Color` triple by name.
+    ///
+    /// Per `docs/3d/fbx/fbx-binary-properties70.md` §4 trailing-value
+    /// rule *"3 for vectors/colours (`ColorRGB`/`Color`/`Vector3D`)"*,
+    /// the docs §4 worked sample (`AmbientColor S"ColorRGB" S"Color"
+    /// S"" D=0 D=0 D=0`) and the ASCII grammar §8 enumerated typeName
+    /// list, `"ColorRGB"` and `"Color"` are the colour-bearing
+    /// typeNames in the same family. Returns `None` for records whose
+    /// `type_name` falls outside that pair (e.g. a `Vector3D` triple
+    /// — those go through [`Self::as_vector3d`]).
+    pub fn as_color_rgb(&self, name: &str) -> Option<[f64; 3]> {
+        let rec = self.inner.get(name)?;
+        if !matches!(rec.type_name.as_str(), "ColorRGB" | "Color") {
+            return None;
+        }
+        match &rec.value {
+            PValue::Vec3(v) => Some(*v),
+            _ => None,
+        }
+    }
+
+    /// Pull a `Vector3D` / `Vector` triple by name.
+    ///
+    /// Per the docs §4 trailing-value rule and the ASCII grammar §8
+    /// typeName list, `"Vector3D"` and `"Vector"` carry plain
+    /// geometric triples (positions / directions / Euler angles) as
+    /// distinct from colour triples (`ColorRGB`/`Color` — see
+    /// [`Self::as_color_rgb`]) and transform triples (`Lcl …` — see
+    /// [`Self::as_lcl_translation`] et al). The cubes fixture's
+    /// `PreRotation` / `PostRotation` / `GeometricTranslation` /
+    /// `GeometricRotation` / `GeometricScaling` all wire as
+    /// `"Vector3D"`; `"Vector"` is observed as the label string but
+    /// is also documented as a typeName variant.
+    pub fn as_vector3d(&self, name: &str) -> Option<[f64; 3]> {
+        let rec = self.inner.get(name)?;
+        if !matches!(rec.type_name.as_str(), "Vector3D" | "Vector") {
+            return None;
+        }
+        match &rec.value {
+            PValue::Vec3(v) => Some(*v),
+            _ => None,
+        }
+    }
+
+    /// Pull a `Lcl Translation` triple by name.
+    ///
+    /// `"Lcl Translation"` is the typeName the docs §4 trailing-value
+    /// table calls out explicitly (alongside `"Lcl Scaling"`) as a
+    /// triple typeName; the cubes-ascii-v7500.fbx fixture's `Model`
+    /// node carries it as `P: "Lcl Translation", "Lcl Translation",
+    /// "", "A", -1.04…, 0.998…, -1.043…`. The accessor validates the
+    /// typeName so a caller cannot accidentally pick up a `Vector3D`
+    /// triple sitting under the same `"Lcl Translation"` name from a
+    /// non-standard exporter.
+    pub fn as_lcl_translation(&self, name: &str) -> Option<[f64; 3]> {
+        self.as_typed_vec3(name, "Lcl Translation")
+    }
+
+    /// Pull a `Lcl Rotation` triple (XYZ Euler degrees) by name.
+    ///
+    /// `"Lcl Rotation"` is listed in the ASCII grammar §8 typeName
+    /// enumeration and the binary-doc §4 P-record family; the
+    /// cubes-ascii-v7500.fbx fixture has `P: "Lcl Rotation", "Lcl
+    /// Rotation", "", "A", 0, 0, 0`. The triple is XYZ Euler in
+    /// degrees per the ufbx-doc convention the [`crate::animation`]
+    /// module already follows when converting `Lcl Rotation` curves
+    /// to quaternions.
+    pub fn as_lcl_rotation(&self, name: &str) -> Option<[f64; 3]> {
+        self.as_typed_vec3(name, "Lcl Rotation")
+    }
+
+    /// Pull a `Lcl Scaling` triple by name.
+    ///
+    /// `"Lcl Scaling"` is the second `"Lcl …"` typeName the docs §4
+    /// trailing-value table calls out explicitly; the cubes fixture's
+    /// `Model` node carries `P: "Lcl Scaling", "Lcl Scaling", "", "A",
+    /// 10, 10, 10`.
+    pub fn as_lcl_scaling(&self, name: &str) -> Option<[f64; 3]> {
+        self.as_typed_vec3(name, "Lcl Scaling")
+    }
+
+    /// Internal helper for the `as_lcl_*` family — match a
+    /// triple-valued record with the requested typeName.
+    fn as_typed_vec3(&self, name: &str, expected_type_name: &str) -> Option<[f64; 3]> {
+        let rec = self.inner.get(name)?;
+        if rec.type_name != expected_type_name {
+            return None;
+        }
+        match &rec.value {
+            PValue::Vec3(v) => Some(*v),
+            _ => None,
+        }
+    }
+
+    /// Pull a `DateTime` value by name.
+    ///
+    /// Per the docs §4 *"`KString`/`DateTime` → `S`"* row, a
+    /// `"DateTime"` typeName is wire-encoded as an `S` string; the
+    /// cubes-ascii-v7500.fbx fixture's `FBXHeaderExtension` block
+    /// shows the documented sample form `P:
+    /// "Original|DateTime_GMT", "DateTime", "", "", "07/01/2019
+    /// 16:17:31.730"` (the doc's own §3 / §5 enumerates
+    /// `"DateTime"` as one of the typeName values that wires as a
+    /// quoted string). The accessor returns the raw string body
+    /// (the docs do not specify a parsed `chrono`-style breakdown,
+    /// so the bytes are surfaced verbatim for caller-side parsing);
+    /// it validates the typeName so a `KString` payload doesn't
+    /// surface here unintentionally.
+    pub fn as_datetime(&self, name: &str) -> Option<&str> {
+        let rec = self.inner.get(name)?;
+        if rec.type_name != "DateTime" {
+            return None;
+        }
+        match &rec.value {
+            PValue::Str(s) => Some(s.as_str()),
+            _ => None,
+        }
+    }
+
+    /// Pull an `"object"` reference value by name.
+    ///
+    /// The ASCII grammar §8 typeName enumeration lists `"object"`
+    /// as a distinct typeName variant (separate from `"KString"`).
+    /// In the cubes-ascii-v7500.fbx fixture the `"object"` records
+    /// (`P: "SourceObject", "object", "", ""`, `P:
+    /// "LookAtProperty", "object", "", ""`, `P:
+    /// "UpVectorProperty", "object", "", ""`) all carry an empty
+    /// string body — the object reference itself is recorded
+    /// elsewhere (in `Connections` `OP` records that wire the
+    /// owning element to the referenced object). The accessor
+    /// returns the (typically empty) string body for callers that
+    /// want to detect the presence of an `"object"` slot
+    /// independently of its `Connections` resolution. typeName
+    /// validation prevents a `KString` body sneaking in.
+    pub fn as_object_ref(&self, name: &str) -> Option<&str> {
+        let rec = self.inner.get(name)?;
+        if rec.type_name != "object" {
+            return None;
+        }
+        match &rec.value {
+            PValue::Str(s) => Some(s.as_str()),
+            // The fixture's `"object"` records have zero trailing
+            // values (the doc-§4 zero-value `Compound` shape applies
+            // when an exporter omits the body entirely). Surface that
+            // case as an empty string so the caller can still detect
+            // the slot's presence without re-walking.
+            PValue::Compound => Some(""),
+            _ => None,
+        }
+    }
+
     /// Iterate every record name. Order is HashMap-defined (no
     /// particular file order).
     pub fn names(&self) -> impl Iterator<Item = &str> {
@@ -622,5 +785,288 @@ mod tests {
         assert_eq!(pm.as_vec3("Lcl Translation"), Some([-1.04, 0.998, -1.043]));
         let rec = pm.get("Lcl Translation").expect("decoded translation");
         assert_eq!(rec.flags, "A");
+    }
+
+    // --- typeName-discriminating accessor tests ---
+
+    #[test]
+    fn as_color_rgb_accepts_colorrgb_and_color_typenames() {
+        // Docs §4 sample uses "ColorRGB"; cubes-ascii-v7500.fbx Material
+        // records use "Color" — both belong to the same triple-typeName
+        // family and the accessor accepts either.
+        let block = props70(vec![
+            p(
+                "AmbientColor",
+                "ColorRGB",
+                "Color",
+                "",
+                vec![
+                    FbxProperty::F64(0.1),
+                    FbxProperty::F64(0.2),
+                    FbxProperty::F64(0.3),
+                ],
+            ),
+            p(
+                "DiffuseColor",
+                "Color",
+                "",
+                "A",
+                vec![
+                    FbxProperty::F64(0.8),
+                    FbxProperty::F64(0.4),
+                    FbxProperty::F64(0.2),
+                ],
+            ),
+        ]);
+        let pm = PropertyMap::from_properties70(&block);
+        assert_eq!(pm.as_color_rgb("AmbientColor"), Some([0.1, 0.2, 0.3]));
+        assert_eq!(pm.as_color_rgb("DiffuseColor"), Some([0.8, 0.4, 0.2]));
+    }
+
+    #[test]
+    fn as_color_rgb_rejects_non_color_typenames() {
+        // A `Vector3D` triple is structurally identical (three doubles)
+        // but semantically a direction/Euler/etc. — the typeName guard
+        // keeps the surfaces disjoint.
+        let block = props70(vec![
+            p(
+                "PreRotation",
+                "Vector3D",
+                "Vector",
+                "",
+                vec![
+                    FbxProperty::F64(0.0),
+                    FbxProperty::F64(90.0),
+                    FbxProperty::F64(0.0),
+                ],
+            ),
+            p(
+                "Lcl Translation",
+                "Lcl Translation",
+                "",
+                "A",
+                vec![
+                    FbxProperty::F64(1.0),
+                    FbxProperty::F64(2.0),
+                    FbxProperty::F64(3.0),
+                ],
+            ),
+            p("UpAxis", "int", "Integer", "", vec![FbxProperty::I32(1)]),
+        ]);
+        let pm = PropertyMap::from_properties70(&block);
+        assert_eq!(pm.as_color_rgb("PreRotation"), None);
+        assert_eq!(pm.as_color_rgb("Lcl Translation"), None);
+        assert_eq!(pm.as_color_rgb("UpAxis"), None);
+        // Plain `as_vec3` still surfaces the Vector3D/Lcl triples —
+        // the typeName-discriminating accessor narrows on top of the
+        // generic one.
+        assert_eq!(pm.as_vec3("PreRotation"), Some([0.0, 90.0, 0.0]));
+        assert_eq!(pm.as_vec3("Lcl Translation"), Some([1.0, 2.0, 3.0]));
+    }
+
+    #[test]
+    fn as_vector3d_accepts_vector3d_and_vector_typenames() {
+        // Cubes fixture's `PreRotation` / `PostRotation` /
+        // `GeometricTranslation` / `GeometricRotation` /
+        // `GeometricScaling` all wire as `"Vector3D"`. `"Vector"`
+        // is also enumerated in ASCII grammar §8.
+        let block = props70(vec![
+            p(
+                "PreRotation",
+                "Vector3D",
+                "Vector",
+                "",
+                vec![
+                    FbxProperty::F64(0.0),
+                    FbxProperty::F64(0.0),
+                    FbxProperty::F64(0.0),
+                ],
+            ),
+            p(
+                "GeometricScaling",
+                "Vector",
+                "",
+                "",
+                vec![
+                    FbxProperty::F64(1.0),
+                    FbxProperty::F64(1.0),
+                    FbxProperty::F64(1.0),
+                ],
+            ),
+        ]);
+        let pm = PropertyMap::from_properties70(&block);
+        assert_eq!(pm.as_vector3d("PreRotation"), Some([0.0, 0.0, 0.0]));
+        assert_eq!(pm.as_vector3d("GeometricScaling"), Some([1.0, 1.0, 1.0]));
+    }
+
+    #[test]
+    fn as_vector3d_rejects_color_and_lcl_typenames() {
+        let block = props70(vec![
+            p(
+                "AmbientColor",
+                "ColorRGB",
+                "Color",
+                "",
+                vec![
+                    FbxProperty::F64(0.0),
+                    FbxProperty::F64(0.0),
+                    FbxProperty::F64(0.0),
+                ],
+            ),
+            p(
+                "Lcl Scaling",
+                "Lcl Scaling",
+                "",
+                "A",
+                vec![
+                    FbxProperty::F64(2.0),
+                    FbxProperty::F64(2.0),
+                    FbxProperty::F64(2.0),
+                ],
+            ),
+        ]);
+        let pm = PropertyMap::from_properties70(&block);
+        assert_eq!(pm.as_vector3d("AmbientColor"), None);
+        assert_eq!(pm.as_vector3d("Lcl Scaling"), None);
+    }
+
+    #[test]
+    fn as_lcl_translation_rotation_scaling_split_by_typename() {
+        // The cubes-ascii-v7500.fbx fixture's `Model` block carries
+        // all three `Lcl …` records on the same element; each
+        // accessor must surface only its own typeName.
+        let block = props70(vec![
+            p(
+                "Lcl Translation",
+                "Lcl Translation",
+                "",
+                "A",
+                vec![
+                    FbxProperty::F64(-1.04023893373156),
+                    FbxProperty::F64(0.998288783259251),
+                    FbxProperty::F64(-1.04375962988677),
+                ],
+            ),
+            p(
+                "Lcl Rotation",
+                "Lcl Rotation",
+                "",
+                "A",
+                vec![
+                    FbxProperty::F64(0.0),
+                    FbxProperty::F64(45.0),
+                    FbxProperty::F64(0.0),
+                ],
+            ),
+            p(
+                "Lcl Scaling",
+                "Lcl Scaling",
+                "",
+                "A",
+                vec![
+                    FbxProperty::F64(10.0),
+                    FbxProperty::F64(10.0),
+                    FbxProperty::F64(10.0),
+                ],
+            ),
+        ]);
+        let pm = PropertyMap::from_properties70(&block);
+        assert_eq!(
+            pm.as_lcl_translation("Lcl Translation"),
+            Some([-1.04023893373156, 0.998288783259251, -1.04375962988677]),
+        );
+        assert_eq!(pm.as_lcl_rotation("Lcl Rotation"), Some([0.0, 45.0, 0.0]));
+        assert_eq!(pm.as_lcl_scaling("Lcl Scaling"), Some([10.0, 10.0, 10.0]));
+        // Cross-name rejection — `Lcl Translation` payload does not
+        // surface under `as_lcl_rotation`, etc.
+        assert_eq!(pm.as_lcl_rotation("Lcl Translation"), None);
+        assert_eq!(pm.as_lcl_scaling("Lcl Translation"), None);
+        assert_eq!(pm.as_lcl_translation("Lcl Rotation"), None);
+        // And a plain `Vector3D` record (e.g. PreRotation) is not
+        // promoted to `Lcl Rotation` just because its triple shape
+        // matches.
+        let pre = props70(vec![p(
+            "PreRotation",
+            "Vector3D",
+            "Vector",
+            "",
+            vec![
+                FbxProperty::F64(0.0),
+                FbxProperty::F64(0.0),
+                FbxProperty::F64(0.0),
+            ],
+        )]);
+        let pm2 = PropertyMap::from_properties70(&pre);
+        assert_eq!(pm2.as_lcl_rotation("PreRotation"), None);
+    }
+
+    #[test]
+    fn as_datetime_accepts_datetime_typename_only() {
+        // ASCII grammar §8 worked sample:
+        // `P: "Original|DateTime_GMT", "DateTime", "", "", "07/01/2019 16:17:31.730"`
+        let block = props70(vec![
+            p(
+                "Original|DateTime_GMT",
+                "DateTime",
+                "",
+                "",
+                vec![FbxProperty::String(b"07/01/2019 16:17:31.730".to_vec())],
+            ),
+            // A KString record on a similarly-named slot must NOT
+            // surface through as_datetime; the typeName is the only
+            // signal that disambiguates the two.
+            p(
+                "DocumentUrl",
+                "KString",
+                "Url",
+                "",
+                vec![s(b"U:\\path\\file.fbx")],
+            ),
+        ]);
+        let pm = PropertyMap::from_properties70(&block);
+        assert_eq!(
+            pm.as_datetime("Original|DateTime_GMT"),
+            Some("07/01/2019 16:17:31.730"),
+        );
+        assert_eq!(pm.as_datetime("DocumentUrl"), None);
+        // Plain as_str still surfaces both — the typeName accessor
+        // narrows on top.
+        assert_eq!(
+            pm.as_str("Original|DateTime_GMT"),
+            Some("07/01/2019 16:17:31.730"),
+        );
+        assert_eq!(pm.as_str("DocumentUrl"), Some("U:\\path\\file.fbx"));
+        // Missing record → None.
+        assert_eq!(pm.as_datetime("MissingRecord"), None);
+    }
+
+    #[test]
+    fn as_object_ref_accepts_object_typename_with_str_or_compound_body() {
+        // Cubes fixture's `SourceObject`, `LookAtProperty`,
+        // `UpVectorProperty` records carry an empty body which the
+        // decoder lands as `PValue::Compound` (zero trailing values).
+        // `as_object_ref` surfaces "" so the caller can still detect
+        // the slot's presence; a typed body (someone wires the slot
+        // with an inline name) also surfaces.
+        let block = props70(vec![
+            p("SourceObject", "object", "", "", vec![]),
+            p("LookAtProperty", "object", "", "", vec![]),
+            p(
+                "InlineRef",
+                "object",
+                "",
+                "",
+                vec![FbxProperty::String(b"Model::SomeNode".to_vec())],
+            ),
+            // A KString sitting under a slot name common in the
+            // fixture (`currentUVSet`) must NOT surface here.
+            p("currentUVSet", "KString", "", "U", vec![s(b"map1")]),
+        ]);
+        let pm = PropertyMap::from_properties70(&block);
+        assert_eq!(pm.as_object_ref("SourceObject"), Some(""));
+        assert_eq!(pm.as_object_ref("LookAtProperty"), Some(""));
+        assert_eq!(pm.as_object_ref("InlineRef"), Some("Model::SomeNode"));
+        assert_eq!(pm.as_object_ref("currentUVSet"), None);
+        assert_eq!(pm.as_object_ref("MissingRecord"), None);
     }
 }

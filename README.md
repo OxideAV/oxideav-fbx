@@ -130,6 +130,37 @@ clean-room from third-party documentation:
   parent world = identity). Per `docs/3d/fbx/ufbx/reference.html`
   §`ufbx_bone_pose`, `bone_to_parent` is documented as *"approximated
   from the parent world transform"*.
+- **`Properties70` typeName-discriminating accessors** (round 243) —
+  the existing [`PropertyMap::as_vec3`] and [`PropertyMap::as_str`]
+  surface every triple-typed and string-typed `P`-record indiscriminately,
+  but `docs/3d/fbx/fbx-binary-properties70.md` §4 documents prop1 (the
+  typeName string) as the semantic discriminator (*"The typeName /
+  label / flags strings carry the semantic type"*). Round 243 adds six
+  typeName-aware accessors that honour the docs §4 typeName mapping:
+  - `as_color_rgb` — accepts `"ColorRGB"` and `"Color"` (the docs §4
+    sample `AmbientColor S"ColorRGB"` and the cubes-ascii-v7500.fbx
+    Material records `DiffuseColor "Color"`).
+  - `as_vector3d` — accepts `"Vector3D"` and `"Vector"` (the cubes
+    fixture's `PreRotation` / `PostRotation` / `GeometricTranslation` /
+    `GeometricRotation` / `GeometricScaling` records).
+  - `as_lcl_translation` / `as_lcl_rotation` / `as_lcl_scaling` — each
+    requires its exact `"Lcl …"` typeName, so a caller pulling local
+    transforms cannot accidentally pick up a `Vector3D` triple sitting
+    under the same name.
+  - `as_datetime` — accepts `"DateTime"` typeName (the cubes fixture's
+    `Original|DateTime_GMT` / `LastSaved|DateTime_GMT` records carry
+    the documented `MM/DD/YYYY HH:MM:SS.fff` string body); rejects a
+    plain `"KString"` payload so the two surfaces stay disjoint.
+  - `as_object_ref` — accepts `"object"` typeName (the cubes fixture's
+    `SourceObject` / `LookAtProperty` / `UpVectorProperty` records);
+    the empty-body case (`Compound` PValue when the exporter omits
+    the trailing string) surfaces as `""` so the slot's presence is
+    still detectable from the property map alone, with the resolved
+    object UID still living on the corresponding `Connections` `OP`
+    record.
+  Existing `as_vec3` / `as_str` callers are unaffected — the typed
+  accessors narrow on top of the generic ones rather than replacing
+  them.
 - **NodeAttribute `"LimbNode"` / `"Null"` discriminator** (round 235) —
   the remaining well-known `NodeAttribute` subtype discriminators
   documented in `docs/3d/fbx/fbx-binary-properties70.md` §6 that
