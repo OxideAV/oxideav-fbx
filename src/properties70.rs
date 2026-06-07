@@ -573,6 +573,78 @@ impl PropertyMap {
         }
     }
 
+    // --- `Compound` typeName-discriminating accessor ---
+    //
+    // Closes the last typeName the §8 ASCII-grammar enumeration calls
+    // out that previously had no typeName-aware accessor. `"Compound"`
+    // is the value-less typeName (docs §4 trailing-value rule *"0 (for
+    // Compound, and any value-less property)"*; docs §8 *"`Compound`
+    // properties end right after the flags field"*). The §4 worked
+    // sample in `fbx-binary-properties70.md` shows it directly:
+    // `P props=4 S"TimeMarker" S"Compound" S"" S""` (NO trailing
+    // value). Round 243's [`Self::as_object_ref`] already widens an
+    // `"object"` typeName whose body got dropped into `PValue::Compound`
+    // (an `"object"` slot the exporter wrote with zero trailing
+    // values); the present accessor instead narrows to the bare
+    // `"Compound"` typeName itself so the two surfaces stay disjoint.
+
+    /// Detect a `"Compound"` typeName slot by name.
+    ///
+    /// Per the docs §4 worked sample (`P props=4 S"TimeMarker"
+    /// S"Compound" S"" S""` — *"Compound: NO value"*) and the docs §8
+    /// ASCII enumeration (`P: "Original", "Compound", "", ""` —
+    /// *"Compound: no value"*), a `"Compound"` typeName record is a
+    /// structural placeholder: its presence is meaningful (the slot
+    /// exists in the property template / file) but it carries no
+    /// payload. The cubes-ascii-v7500.fbx fixture's
+    /// `FBXHeaderExtension { SceneInfo { Properties70 } }` block uses
+    /// it for compound-path prefixes such as `Original`, `LastSaved`
+    /// (whose nested keys then appear as separate `P` records with
+    /// names like `Original|ApplicationName`,
+    /// `LastSaved|DateTime_GMT`, etc.).
+    ///
+    /// Returns `true` when a record with the given name exists with
+    /// `type_name == "Compound"` AND the payload is the zero-trailing
+    /// [`PValue::Compound`] shape the docs require. Returns `false` in
+    /// every other case (record absent, non-`Compound` typeName, or
+    /// any non-empty trailing-value payload — the latter is a
+    /// malformed Compound and is rejected the same way the round-246
+    /// typed-scalar accessors reject shape mismatches).
+    ///
+    /// This narrowing keeps the round-243 [`Self::as_object_ref`]
+    /// surface disjoint from `is_compound`: an `"object"` slot the
+    /// exporter wrote with no body lands in [`PValue::Compound`] but
+    /// keeps its `"object"` typeName, so it surfaces via
+    /// [`Self::as_object_ref`] (returning `""`) and never via
+    /// `is_compound` (which only fires when the typeName itself is
+    /// the literal string `"Compound"`).
+    pub fn is_compound(&self, name: &str) -> bool {
+        let Some(rec) = self.inner.get(name) else {
+            return false;
+        };
+        rec.type_name == "Compound" && matches!(rec.value, PValue::Compound)
+    }
+
+    /// Iterate every `"Compound"` typeName record name.
+    ///
+    /// Order is HashMap-defined (no particular file order). Useful
+    /// when a caller wants to enumerate the structural / template
+    /// placeholder slots in a `Properties70` block (e.g. to drive a
+    /// UI that lists compound parent keys before walking the
+    /// `Parent|Child` nested keys that share the same prefix). The
+    /// same typeName + payload-shape guard [`Self::is_compound`]
+    /// applies — records whose `type_name` is `"Compound"` but whose
+    /// payload is non-empty (a malformed Compound) are omitted, and
+    /// `"object"` slots that happen to carry a `PValue::Compound`
+    /// payload (the round-243 [`Self::as_object_ref`] case) keep
+    /// their `"object"` typeName and are also omitted here.
+    pub fn compound_names(&self) -> impl Iterator<Item = &str> {
+        self.inner
+            .iter()
+            .filter(|(_, rec)| rec.type_name == "Compound" && matches!(rec.value, PValue::Compound))
+            .map(|(name, _)| name.as_str())
+    }
+
     /// Iterate every record name. Order is HashMap-defined (no
     /// particular file order).
     pub fn names(&self) -> impl Iterator<Item = &str> {
@@ -1589,6 +1661,152 @@ mod tests {
         assert_eq!(pm.as_ulonglong("Original"), None);
         // Malformed triple-under-KString: payload-shape guard fires.
         assert_eq!(pm.as_kstring("Malformed"), None);
+    }
+
+    #[test]
+    fn is_compound_accepts_only_compound_typename_with_empty_payload() {
+        // docs §4 worked sample: `P props=4 S"TimeMarker" S"Compound"
+        // S"" S""` — Compound: NO value. docs §8 ASCII counterpart:
+        // `P: "Original", "Compound", "", ""` — same shape.
+        let block = props70(vec![
+            // Canonical Compound from the docs.
+            p("TimeMarker", "Compound", "", "", vec![]),
+            p("Original", "Compound", "", "", vec![]),
+            p("LastSaved", "Compound", "", "", vec![]),
+            // The compound-prefix's nested keys appear as separate
+            // `P` records with their own scalar typeNames — these
+            // must NOT surface via is_compound.
+            p(
+                "Original|ApplicationName",
+                "KString",
+                "",
+                "",
+                vec![s(b"AnApp")],
+            ),
+            p(
+                "LastSaved|DateTime_GMT",
+                "DateTime",
+                "",
+                "",
+                vec![s(b"07/01/2019 16:17:31.730")],
+            ),
+            // The round-243 `object` empty-body case (cubes fixture
+            // `SourceObject` / `LookAtProperty` / `UpVectorProperty`):
+            // payload lands as PValue::Compound but typeName stays
+            // "object" — must NOT surface via is_compound.
+            p("SourceObject", "object", "", "", vec![]),
+            // A `"double"` slot — typeName guard rejects it.
+            p(
+                "UnitScaleFactor",
+                "double",
+                "Number",
+                "",
+                vec![FbxProperty::F64(1.0)],
+            ),
+        ]);
+        let pm = PropertyMap::from_properties70(&block);
+
+        // True only for the bare `"Compound"` typeName records.
+        assert!(pm.is_compound("TimeMarker"));
+        assert!(pm.is_compound("Original"));
+        assert!(pm.is_compound("LastSaved"));
+
+        // Compound-prefix nested keys keep their own typeNames.
+        assert!(!pm.is_compound("Original|ApplicationName"));
+        assert!(!pm.is_compound("LastSaved|DateTime_GMT"));
+
+        // `object` empty-body must not collide with `Compound`.
+        assert!(!pm.is_compound("SourceObject"));
+        // The round-243 surface still recognises it.
+        assert_eq!(pm.as_object_ref("SourceObject"), Some(""));
+
+        // Non-Compound typeName: rejected.
+        assert!(!pm.is_compound("UnitScaleFactor"));
+
+        // Absent slot: rejected.
+        assert!(!pm.is_compound("Missing"));
+    }
+
+    #[test]
+    fn is_compound_rejects_malformed_compound_with_trailing_payload() {
+        // A `"Compound"` typeName with a non-empty trailing value is
+        // structurally malformed per docs §4 (*"0 (for Compound)"*).
+        // The shape guard rejects it the same way the round-246
+        // typed-scalar accessors reject mismatched payloads.
+        let block = props70(vec![
+            // Malformed: Compound typeName carrying a single scalar.
+            p(
+                "BadCompound",
+                "Compound",
+                "",
+                "",
+                vec![FbxProperty::I32(42)],
+            ),
+            // Malformed: Compound typeName carrying a triple. The
+            // §4 trailing-value table only enumerates `Compound` /
+            // scalar / triple shapes — the typeName-guarded accessor
+            // honours the documented zero-trailing rule even when
+            // the wire encoding happens to be a triple.
+            p(
+                "TripleCompound",
+                "Compound",
+                "",
+                "",
+                vec![
+                    FbxProperty::F64(0.0),
+                    FbxProperty::F64(0.0),
+                    FbxProperty::F64(0.0),
+                ],
+            ),
+        ]);
+        let pm = PropertyMap::from_properties70(&block);
+
+        // Both malformed Compound records exist in the map…
+        assert!(pm.get("BadCompound").is_some());
+        assert!(pm.get("TripleCompound").is_some());
+        // …but is_compound only returns true for the documented
+        // zero-trailing shape.
+        assert!(!pm.is_compound("BadCompound"));
+        assert!(!pm.is_compound("TripleCompound"));
+    }
+
+    #[test]
+    fn compound_names_enumerates_only_well_formed_compound_records() {
+        // Same fixture shape as the canonical is_compound test, plus
+        // one malformed Compound (shape guard rejects it) and the
+        // `object` empty-body case (typeName guard rejects it).
+        let block = props70(vec![
+            p("TimeMarker", "Compound", "", "", vec![]),
+            p("Original", "Compound", "", "", vec![]),
+            p("LastSaved", "Compound", "", "", vec![]),
+            p(
+                "BadCompound",
+                "Compound",
+                "",
+                "",
+                vec![FbxProperty::I32(42)],
+            ),
+            p("SourceObject", "object", "", "", vec![]),
+            p(
+                "Original|ApplicationName",
+                "KString",
+                "",
+                "",
+                vec![s(b"AnApp")],
+            ),
+            p(
+                "UnitScaleFactor",
+                "double",
+                "Number",
+                "",
+                vec![FbxProperty::F64(1.0)],
+            ),
+        ]);
+        let pm = PropertyMap::from_properties70(&block);
+
+        let mut names: Vec<&str> = pm.compound_names().collect();
+        names.sort_unstable();
+        assert_eq!(names, vec!["LastSaved", "Original", "TimeMarker"]);
     }
 
     #[test]

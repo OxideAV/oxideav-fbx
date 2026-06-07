@@ -201,6 +201,35 @@ clean-room from third-party documentation:
     same `L`-wire path as `as_ktime` with the matching guard.
   Generic widening accessors continue to surface every variant — the
   typed accessors narrow on top.
+- **`Properties70` `"Compound"` typeName-discriminating accessor**
+  (round 249) — closes the last typeName from the
+  `docs/3d/fbx/fbx-ascii-grammar.md` §8 enumeration that previously
+  had no typeName-aware accessor. After round 243 (six triple +
+  string accessors) and round 246 (eight scalar accessors), the
+  full §8 typeName enumeration (`int / double / enum / bool /
+  KString / KTime / Number / ULongLong / ColorRGB / Color / Vector3D
+  / Vector / Lcl Translation / Lcl Rotation / Lcl Scaling / DateTime
+  / object / Compound`) is now covered by typeName-narrow surfaces.
+  `"Compound"` is the value-less typeName (docs §4 trailing-value
+  rule *"0 (for Compound, and any value-less property)"*; the §4
+  worked sample `P props=4 S"TimeMarker" S"Compound" S"" S""` and
+  the §8 ASCII counterpart `P: "Original", "Compound", "", ""` are
+  byte-for-byte equivalent). The accessor pair is:
+  - `is_compound(name)` — `true` only when the record exists with
+    `type_name == "Compound"` AND the payload is the zero-trailing
+    [`PValue::Compound`] shape; `false` for absent records,
+    non-`Compound` typeNames, and malformed Compound records
+    carrying a trailing payload.
+  - `compound_names()` — iterator over every well-formed
+    `"Compound"` record name (useful for enumerating the structural
+    / template placeholder slots in a `Properties70` block, e.g.
+    `Original` / `LastSaved` parent keys that precede the sibling
+    `Original|ApplicationName` / `LastSaved|DateTime_GMT` nested
+    keys sharing the prefix).
+  Disjoint from the round-243 `as_object_ref`: an `"object"` slot
+  the exporter wrote with no body lands in `PValue::Compound` but
+  keeps its `"object"` typeName, so it surfaces via `as_object_ref`
+  (returning `""`) and never via `is_compound`.
 - **NodeAttribute `"LimbNode"` / `"Null"` discriminator** (round 235) —
   the remaining well-known `NodeAttribute` subtype discriminators
   documented in `docs/3d/fbx/fbx-binary-properties70.md` §6 that

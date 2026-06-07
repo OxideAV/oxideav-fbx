@@ -9,6 +9,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Round 249 — **`Properties70` `"Compound"` typeName-discriminating
+  accessor.** Closes the last typeName from the
+  `docs/3d/fbx/fbx-ascii-grammar.md` §8 enumeration that previously
+  had no typeName-aware accessor. After round 243 (six triple +
+  string accessors) and round 246 (eight scalar accessors), the
+  enumeration `int / double / enum / bool / KString / KTime / Number /
+  ULongLong / ColorRGB / Color / Vector3D / Vector / Lcl Translation /
+  Lcl Rotation / Lcl Scaling / DateTime / object / Compound` is now
+  fully covered by typeName-narrow surfaces on top of the generic
+  widening accessors. `"Compound"` is the value-less typeName per the
+  docs §4 trailing-value rule *"0 (for Compound, and any value-less
+  property)"* and the docs §8 ASCII counterpart *"`Compound`
+  properties end right after the flags field"*; the binary-doc §4
+  worked sample (`P props=4 S"TimeMarker" S"Compound" S"" S""` —
+  *"Compound: NO value"*) and the ASCII §8 worked sample (`P:
+  "Original", "Compound", "", ""` — *"Compound: no value"*) are
+  byte-for-byte equivalent. The new surface:
+  - **`PropertyMap::is_compound(name)`** — `true` only when the
+    record exists with `type_name == "Compound"` AND the payload is
+    the zero-trailing [`PValue::Compound`] shape the docs §4
+    trailing-value rule requires. `false` for absent records,
+    non-`Compound` typeNames, and malformed Compound records carrying
+    a trailing payload.
+  - **`PropertyMap::compound_names()`** — iterator over every
+    well-formed `"Compound"` record name; useful when a caller wants
+    to enumerate the structural / template placeholder slots in a
+    `Properties70` block (e.g. to drive a UI that lists compound
+    parent keys like `Original` / `LastSaved` before walking the
+    sibling `Original|ApplicationName` / `LastSaved|DateTime_GMT`
+    keys that share the prefix).
+  Disjoint from the round-243 [`PropertyMap::as_object_ref`]: an
+  `"object"` slot the exporter wrote with no body lands in
+  [`PValue::Compound`] but keeps its `"object"` typeName, so it
+  surfaces via [`as_object_ref`] (returning `""`) and never via
+  `is_compound` (which only fires when the typeName itself is the
+  literal string `"Compound"`).
+
 - Round 246 — **`Properties70` typeName-discriminating scalar
   accessors.** Round 243 closed the triple-typed half of the
   typeName-aware accessor surface (`as_color_rgb` / `as_vector3d` /
