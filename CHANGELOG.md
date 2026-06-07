@@ -9,6 +9,64 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Round 246 — **`Properties70` typeName-discriminating scalar
+  accessors.** Round 243 closed the triple-typed half of the
+  typeName-aware accessor surface (`as_color_rgb` / `as_vector3d` /
+  `as_lcl_translation` / `as_lcl_rotation` / `as_lcl_scaling` /
+  `as_datetime` / `as_object_ref`). Round 246 closes the matching
+  scalar half, so each typeName the docs §8 ASCII-grammar scalar
+  enumeration calls out — `int`, `enum`, `bool`, `double`, `Number`,
+  `KString`, `KTime`, `ULongLong` — gets its own typeName-narrow
+  accessor on top of the existing generic [`PropertyMap::as_f64`] /
+  [`as_i32`] / [`as_i64`] / [`as_bool`] / [`as_str`] widening
+  surface:
+  - **`as_int_typed`** accepts `"int"` typeName only (the
+    cubes-ascii-v7500.fbx fixture's GlobalSettings `UpAxis` /
+    `UpAxisSign` / `FrontAxis` / `OriginalUpAxis*` records). The
+    typeName guard keeps a coincident `"enum"` index or `"bool"`
+    flag off the surface even though both wire as `I` per docs §4.
+  - **`as_enum`** accepts `"enum"` typeName only (the cubes fixture's
+    `TimeMode` / `TimeProtocol` / `SnapOnFrameMode` records; the
+    docs §4 sample `TimeMode S"enum" S"" S"" I=0`). Distinguishes a
+    true enumeration index from a plain `"int"` slot.
+  - **`as_bool_typed`** accepts `"bool"` typeName only (the cubes
+    fixture's `Primary Visibility` / `Mute` records; the docs §8
+    worked sample `P: "Mute", "bool", "", "",0`). Coerces `Int` /
+    `Long` wire payloads via `!= 0` once the typeName check confirms
+    the slot is semantically a bool — older exporters mix the wire
+    codes per the docs §4 mixed-wire note.
+  - **`as_double`** accepts `"double"` typeName only
+    (`UnitScaleFactor`, `Opacity`, `OriginalUnitScaleFactor`). Kept
+    disjoint from [`Self::as_number`] even though both share the `D`
+    wire encoding per docs §4 *"`double`/`Number` → `D`"*.
+  - **`as_number`** accepts `"Number"` typeName only (the cubes
+    fixture's Material records `DiffuseFactor` / `EmissiveFactor` /
+    `Shininess` / `ReflectionFactor` all wire as
+    `P: "...", "Number", "", "A", <D>`).
+  - **`as_kstring`** accepts `"KString"` typeName only (the cubes
+    fixture's `DocumentUrl` / `SrcDocumentUrl` / `currentUVSet` /
+    `DefaultCamera` records). Rejects coincident `"DateTime"` and
+    `"object"` records so the round-243 [`Self::as_datetime`] /
+    [`Self::as_object_ref`] surfaces stay disjoint even though all
+    three share the `S` wire encoding.
+  - **`as_ktime`** accepts `"KTime"` typeName only with lossless `L`
+    (int64) decoding (the cubes fixture's `TimeSpanStart` /
+    `TimeSpanStop` GlobalSettings records; the docs §4 sample
+    `TimeSpanStop S"KTime" S"Time" S"" L=46_186_158_000`). Widens
+    `I` / `Bool` payloads losslessly once the typeName guard fires
+    per the docs §4 mixed-wire note, so an older exporter wiring a
+    short KTime as `I` still reads back correctly.
+  - **`as_ulonglong`** accepts `"ULongLong"` typeName only (the docs
+    §8 worked sample `P: "BlendModeBypass", "ULongLong", "", "",0`).
+    Same `L`-wire decoding path as `as_ktime` with the matching
+    typeName guard.
+  Each accessor's `None` return covers three disjoint cases — record
+  not present, typeName mismatch, payload-shape mismatch — so a
+  caller can use the typed surface as a strict-mode validator
+  without re-walking the underlying [`FbxDocument`]. Generic
+  widening accessors continue to surface every variant; the typed
+  accessors narrow on top.
+
 - Round 243 — **`Properties70` typeName-discriminating accessors.**
   The existing [`PropertyMap::as_vec3`] and [`PropertyMap::as_str`]
   surface every triple-typed and string-typed `P` record

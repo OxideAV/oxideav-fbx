@@ -378,6 +378,201 @@ impl PropertyMap {
         }
     }
 
+    // --- typeName-discriminating scalar accessors ---
+    //
+    // The base [`Self::as_f64`] / [`Self::as_i32`] / [`Self::as_i64`]
+    // / [`Self::as_bool`] / [`Self::as_str`] flatten every scalar
+    // typeName the docs §4 trailing-value table enumerates (older
+    // exporters mix `I` and `D` and `C` payloads freely for the same
+    // semantic slot, so the generic accessors widen across the
+    // numeric variants). The following accessors honour
+    // [`PRecord::type_name`] — the typeName string parsed from prop1
+    // — so a caller asking for, say, a `"KTime"` value does not
+    // accidentally pick up a plain `"int"` payload sitting under the
+    // same name. Same shape as the round-243 triple accessors above,
+    // applied to the §8 ASCII-grammar scalar typeName enumeration
+    // (`int`, `double`, `enum`, `bool`, `KString`, `KTime`, `Number`,
+    // `ULongLong`).
+
+    /// Pull an `"int"` scalar by name.
+    ///
+    /// The docs §8 enumeration lists `"int"` as the typeName for
+    /// integer-valued properties (the cubes-ascii-v7500.fbx fixture's
+    /// `UpAxis` / `UpAxisSign` / `FrontAxis` / `FrontAxisSign` /
+    /// `CoordAxis` / `CoordAxisSign` records, and the docs §4 sample
+    /// `UpAxis S"int" S"Integer" S"" I=1`). Returns `None` for
+    /// records whose typeName is `"enum"` (use [`Self::as_enum`]),
+    /// `"bool"` (use [`Self::as_bool_typed`]), or any non-integer
+    /// typeName — even though the wire payload may technically be
+    /// `I`, the typeName is the semantic discriminator.
+    pub fn as_int_typed(&self, name: &str) -> Option<i32> {
+        let rec = self.inner.get(name)?;
+        if rec.type_name != "int" {
+            return None;
+        }
+        match &rec.value {
+            PValue::Int(v) => Some(*v),
+            PValue::Long(v) => Some(*v as i32),
+            _ => None,
+        }
+    }
+
+    /// Pull an `"enum"` scalar by name.
+    ///
+    /// Per docs §4 *"`int`/`enum` → `I`"* the wire encoding is the
+    /// same as a plain `"int"`, but the semantic role differs:
+    /// `"enum"` typeName records carry an exporter-defined
+    /// enumeration index (e.g. the cubes fixture's `TimeMode`,
+    /// `TimeProtocol`, `SnapOnFrameMode` records observed under
+    /// `GlobalSettings`; the docs §4 sample shows
+    /// `TimeMode S"enum" S"" S"" I=0`). The typeName discriminator
+    /// lets a caller distinguish a true `enum` index from a plain
+    /// integer attribute without re-walking the document.
+    pub fn as_enum(&self, name: &str) -> Option<i32> {
+        let rec = self.inner.get(name)?;
+        if rec.type_name != "enum" {
+            return None;
+        }
+        match &rec.value {
+            PValue::Int(v) => Some(*v),
+            PValue::Long(v) => Some(*v as i32),
+            _ => None,
+        }
+    }
+
+    /// Pull a `"bool"` scalar by name.
+    ///
+    /// Per docs §4 *"the typeName/label/flags strings carry the
+    /// semantic type; the leading one-byte code carries the wire
+    /// type"* — older exporters wire `"bool"` payloads as `I` (int32)
+    /// freely (the docs §4 note about `Mute` / `BlendModeBypass`).
+    /// The accessor coerces `Int` / `Long` payloads via `!= 0` once
+    /// the typeName check confirms the slot is semantically a bool
+    /// (the cubes fixture's `Primary Visibility S"bool" S"" S"" I=1`
+    /// is a worked example). Returns `None` for non-bool typeNames
+    /// even when the wire payload is `I` or `C` — the typeName guard
+    /// keeps a plain `"int"` record off the bool surface.
+    pub fn as_bool_typed(&self, name: &str) -> Option<bool> {
+        let rec = self.inner.get(name)?;
+        if rec.type_name != "bool" {
+            return None;
+        }
+        match &rec.value {
+            PValue::Bool(v) => Some(*v),
+            PValue::Int(v) => Some(*v != 0),
+            PValue::Long(v) => Some(*v != 0),
+            _ => None,
+        }
+    }
+
+    /// Pull a `"double"` scalar by name.
+    ///
+    /// Per docs §4 *"`double`/`Number` → `D`"* both typeNames decode
+    /// the same wire payload (a single `D` double). The cubes fixture
+    /// uses `"double"` for `UnitScaleFactor` / `OriginalUnitScaleFactor`
+    /// / `Opacity` and `"Number"` for `DiffuseFactor`; the
+    /// typeName-discriminating accessor narrows on top of the generic
+    /// [`Self::as_f64`] so a caller pulling a `"double"` slot does
+    /// not pick up a `"Number"` payload under the same name.
+    pub fn as_double(&self, name: &str) -> Option<f64> {
+        let rec = self.inner.get(name)?;
+        if rec.type_name != "double" {
+            return None;
+        }
+        match &rec.value {
+            PValue::Double(v) => Some(*v),
+            _ => None,
+        }
+    }
+
+    /// Pull a `"Number"` scalar by name.
+    ///
+    /// `"Number"` is the second typeName the docs §4 *"`double`/`Number`
+    /// → `D`"* row enumerates; the cubes fixture's Material records
+    /// `DiffuseFactor` / `EmissiveFactor` / `Shininess` /
+    /// `ReflectionFactor` all wire as `P: "...", "Number", "", "A",
+    /// <D>`. The typeName guard distinguishes a `"Number"` factor from
+    /// a `"double"` setting that happens to share a name.
+    pub fn as_number(&self, name: &str) -> Option<f64> {
+        let rec = self.inner.get(name)?;
+        if rec.type_name != "Number" {
+            return None;
+        }
+        match &rec.value {
+            PValue::Double(v) => Some(*v),
+            _ => None,
+        }
+    }
+
+    /// Pull a `"KString"` scalar by name.
+    ///
+    /// Per docs §4 *"`KString`/`DateTime` → `S`"* both wire as a single
+    /// `S` string. The round-243 [`Self::as_datetime`] surfaces the
+    /// `"DateTime"` half; this accessor surfaces the `"KString"` half
+    /// (the cubes fixture's `DocumentUrl` / `SrcDocumentUrl` /
+    /// `currentUVSet` / `DefaultCamera` records all carry
+    /// `"KString"`). The typeName guard prevents a `"DateTime"` body
+    /// or an `"object"` reference from sneaking in.
+    pub fn as_kstring(&self, name: &str) -> Option<&str> {
+        let rec = self.inner.get(name)?;
+        if rec.type_name != "KString" {
+            return None;
+        }
+        match &rec.value {
+            PValue::Str(s) => Some(s.as_str()),
+            _ => None,
+        }
+    }
+
+    /// Pull a `"KTime"` scalar by name without loss of precision.
+    ///
+    /// Per docs §4 *"`KTime`/`ULongLong` → `L`"* the wire encoding is
+    /// `L` (int64); the generic [`Self::as_i64`] widens across `I` /
+    /// `Bool` payloads but does not check the typeName, so a plain
+    /// `"int"` record passes through unchallenged. This accessor
+    /// narrows to `"KTime"` typeName only (the docs §4 sample
+    /// `TimeSpanStop S"KTime" S"Time" S"" L=46_186_158_000` is a
+    /// worked example, as are the cubes fixture's `TimeSpanStart` /
+    /// `TimeSpanStop` records under `GlobalSettings`). `Int` / `Bool`
+    /// payloads are still widened losslessly per the docs §4 note
+    /// about older exporters using `I` for KTime values that fit; an
+    /// `L` payload is returned verbatim so values past 2^53 round-trip
+    /// without precision loss (see [`Self::as_i64`] for the precision
+    /// rationale).
+    pub fn as_ktime(&self, name: &str) -> Option<i64> {
+        let rec = self.inner.get(name)?;
+        if rec.type_name != "KTime" {
+            return None;
+        }
+        match &rec.value {
+            PValue::Long(v) => Some(*v),
+            PValue::Int(v) => Some(*v as i64),
+            PValue::Bool(v) => Some(if *v { 1 } else { 0 }),
+            _ => None,
+        }
+    }
+
+    /// Pull a `"ULongLong"` scalar by name without loss of precision.
+    ///
+    /// `"ULongLong"` is the second `L`-wire typeName the docs §4
+    /// `KTime`/`ULongLong` → `L` row enumerates; the docs §8 worked
+    /// sample lists `P: "BlendModeBypass", "ULongLong", "", "",0` as
+    /// a representative case. The wire is the same `L` (int64) the
+    /// `KTime` slot uses, so this accessor mirrors [`Self::as_ktime`]
+    /// with the matching typeName guard.
+    pub fn as_ulonglong(&self, name: &str) -> Option<i64> {
+        let rec = self.inner.get(name)?;
+        if rec.type_name != "ULongLong" {
+            return None;
+        }
+        match &rec.value {
+            PValue::Long(v) => Some(*v),
+            PValue::Int(v) => Some(*v as i64),
+            PValue::Bool(v) => Some(if *v { 1 } else { 0 }),
+            _ => None,
+        }
+    }
+
     /// Iterate every record name. Order is HashMap-defined (no
     /// particular file order).
     pub fn names(&self) -> impl Iterator<Item = &str> {
@@ -1038,6 +1233,362 @@ mod tests {
         assert_eq!(pm.as_str("DocumentUrl"), Some("U:\\path\\file.fbx"));
         // Missing record → None.
         assert_eq!(pm.as_datetime("MissingRecord"), None);
+    }
+
+    // --- typeName-discriminating scalar accessor tests ---
+
+    #[test]
+    fn as_int_typed_accepts_only_int_typename() {
+        // Cubes-fixture GlobalSettings records: `UpAxis`, `UpAxisSign`,
+        // `FrontAxis`, etc. all wire as `"int"` with an `I` payload.
+        // A coincident `"enum"` or `"bool"` payload sitting under a
+        // similarly-named slot must NOT surface here — that's the
+        // round-243 typeName-discrimination invariant applied to the
+        // scalar `as_i32` surface.
+        let block = props70(vec![
+            p("UpAxis", "int", "Integer", "", vec![FbxProperty::I32(1)]),
+            p(
+                "OriginalUpAxis",
+                "int",
+                "Integer",
+                "",
+                vec![FbxProperty::I32(-1)],
+            ),
+            p("TimeMode", "enum", "", "", vec![FbxProperty::I32(11)]),
+            p(
+                "Primary Visibility",
+                "bool",
+                "",
+                "",
+                vec![FbxProperty::I32(1)],
+            ),
+        ]);
+        let pm = PropertyMap::from_properties70(&block);
+        assert_eq!(pm.as_int_typed("UpAxis"), Some(1));
+        assert_eq!(pm.as_int_typed("OriginalUpAxis"), Some(-1));
+        // `"enum"` and `"bool"` typeNames stay disjoint from `"int"`.
+        assert_eq!(pm.as_int_typed("TimeMode"), None);
+        assert_eq!(pm.as_int_typed("Primary Visibility"), None);
+        // The generic `as_i32` still widens across all three (the
+        // typeName-aware accessor narrows on top).
+        assert_eq!(pm.as_i32("UpAxis"), Some(1));
+        assert_eq!(pm.as_i32("TimeMode"), Some(11));
+        assert_eq!(pm.as_i32("Primary Visibility"), Some(1));
+        // Missing record → `None`.
+        assert_eq!(pm.as_int_typed("DoesNotExist"), None);
+    }
+
+    #[test]
+    fn as_enum_accepts_only_enum_typename() {
+        // Docs §4 sample: `TimeMode S"enum" S"" S"" I=0`. The cubes
+        // fixture's GlobalSettings block has `TimeMode`, `TimeProtocol`,
+        // `SnapOnFrameMode` all as `"enum"`.
+        let block = props70(vec![
+            p("TimeMode", "enum", "", "", vec![FbxProperty::I32(0)]),
+            p("TimeProtocol", "enum", "", "", vec![FbxProperty::I32(2)]),
+            p("UpAxis", "int", "Integer", "", vec![FbxProperty::I32(1)]),
+        ]);
+        let pm = PropertyMap::from_properties70(&block);
+        assert_eq!(pm.as_enum("TimeMode"), Some(0));
+        assert_eq!(pm.as_enum("TimeProtocol"), Some(2));
+        // `"int"` typeName stays disjoint.
+        assert_eq!(pm.as_enum("UpAxis"), None);
+        assert_eq!(pm.as_enum("Missing"), None);
+    }
+
+    #[test]
+    fn as_bool_typed_accepts_only_bool_typename() {
+        // Docs §8 worked sample: `P: "Mute", "bool", "", "",0`. Older
+        // exporters wire `"bool"` as `I` per docs §4; the typeName
+        // discriminator confirms the bool intent before the wire
+        // coercion fires.
+        let block = props70(vec![
+            p("Mute", "bool", "", "", vec![FbxProperty::Bool(true)]),
+            p(
+                "Primary Visibility",
+                "bool",
+                "",
+                "",
+                vec![FbxProperty::I32(0)],
+            ),
+            p("Solo", "bool", "", "", vec![FbxProperty::Bool(false)]),
+            // Plain `"int"` record: must NOT surface as a bool even
+            // though the wire payload could coerce.
+            p("UpAxis", "int", "Integer", "", vec![FbxProperty::I32(1)]),
+        ]);
+        let pm = PropertyMap::from_properties70(&block);
+        assert_eq!(pm.as_bool_typed("Mute"), Some(true));
+        assert_eq!(pm.as_bool_typed("Primary Visibility"), Some(false));
+        assert_eq!(pm.as_bool_typed("Solo"), Some(false));
+        assert_eq!(pm.as_bool_typed("UpAxis"), None);
+        // Generic `as_bool` still surfaces the `"int"` payload via the
+        // documented `!= 0` widening.
+        assert_eq!(pm.as_bool("UpAxis"), Some(true));
+        assert_eq!(pm.as_bool_typed("Missing"), None);
+    }
+
+    #[test]
+    fn as_double_accepts_only_double_typename() {
+        // Docs §4 sample: `UnitScaleFactor S"double" S"Number" S"" D=100.0`.
+        // Cubes fixture also has `OriginalUnitScaleFactor S"double"` and
+        // `Opacity S"double"`. `"Number"` is a distinct typeName even
+        // though both share the `D` wire encoding.
+        let block = props70(vec![
+            p(
+                "UnitScaleFactor",
+                "double",
+                "Number",
+                "",
+                vec![FbxProperty::F64(100.0)],
+            ),
+            p(
+                "Opacity",
+                "double",
+                "Number",
+                "",
+                vec![FbxProperty::F64(1.0)],
+            ),
+            p(
+                "DiffuseFactor",
+                "Number",
+                "",
+                "A",
+                vec![FbxProperty::F64(0.8)],
+            ),
+        ]);
+        let pm = PropertyMap::from_properties70(&block);
+        assert_eq!(pm.as_double("UnitScaleFactor"), Some(100.0));
+        assert_eq!(pm.as_double("Opacity"), Some(1.0));
+        assert_eq!(pm.as_double("DiffuseFactor"), None);
+        // Generic `as_f64` still surfaces both.
+        assert_eq!(pm.as_f64("UnitScaleFactor"), Some(100.0));
+        assert_eq!(pm.as_f64("DiffuseFactor"), Some(0.8));
+        assert_eq!(pm.as_double("Missing"), None);
+    }
+
+    #[test]
+    fn as_number_accepts_only_number_typename() {
+        // Cubes fixture Material records: `DiffuseFactor`,
+        // `EmissiveFactor`, `Shininess`, `ReflectionFactor` are all
+        // `P: "...", "Number", "", "A", <D>`.
+        let block = props70(vec![
+            p(
+                "DiffuseFactor",
+                "Number",
+                "",
+                "A",
+                vec![FbxProperty::F64(0.8)],
+            ),
+            p("Shininess", "Number", "", "A", vec![FbxProperty::F64(20.0)]),
+            p(
+                "UnitScaleFactor",
+                "double",
+                "Number",
+                "",
+                vec![FbxProperty::F64(100.0)],
+            ),
+        ]);
+        let pm = PropertyMap::from_properties70(&block);
+        assert_eq!(pm.as_number("DiffuseFactor"), Some(0.8));
+        assert_eq!(pm.as_number("Shininess"), Some(20.0));
+        // `"double"` typeName stays disjoint even though both share `D` wire.
+        assert_eq!(pm.as_number("UnitScaleFactor"), None);
+        assert_eq!(pm.as_number("Missing"), None);
+    }
+
+    #[test]
+    fn as_kstring_accepts_only_kstring_typename() {
+        // Cubes fixture `DocumentUrl` / `SrcDocumentUrl` /
+        // `currentUVSet` / `DefaultCamera` records all carry
+        // `"KString"`. `"DateTime"` and `"object"` share the `S` wire
+        // but must NOT surface here — the round-243 `as_datetime` /
+        // `as_object_ref` accessors own those.
+        let block = props70(vec![
+            p(
+                "DocumentUrl",
+                "KString",
+                "Url",
+                "",
+                vec![s(b"U:\\path\\file.fbx")],
+            ),
+            p(
+                "DefaultCamera",
+                "KString",
+                "",
+                "",
+                vec![s(b"Producer Perspective")],
+            ),
+            p("currentUVSet", "KString", "", "U", vec![s(b"map1")]),
+            // `"DateTime"` payload — disjoint surface.
+            p(
+                "Original|DateTime_GMT",
+                "DateTime",
+                "",
+                "",
+                vec![s(b"07/01/2019 16:17:31.730")],
+            ),
+            // `"object"` payload — also disjoint.
+            p("SourceObject", "object", "", "", vec![]),
+        ]);
+        let pm = PropertyMap::from_properties70(&block);
+        assert_eq!(pm.as_kstring("DocumentUrl"), Some("U:\\path\\file.fbx"));
+        assert_eq!(pm.as_kstring("DefaultCamera"), Some("Producer Perspective"));
+        assert_eq!(pm.as_kstring("currentUVSet"), Some("map1"));
+        // typeName guard rejects `"DateTime"` / `"object"`.
+        assert_eq!(pm.as_kstring("Original|DateTime_GMT"), None);
+        assert_eq!(pm.as_kstring("SourceObject"), None);
+        // Generic `as_str` still surfaces every string-bodied record.
+        assert_eq!(
+            pm.as_str("Original|DateTime_GMT"),
+            Some("07/01/2019 16:17:31.730")
+        );
+        assert_eq!(pm.as_kstring("Missing"), None);
+    }
+
+    #[test]
+    fn as_ktime_accepts_only_ktime_typename() {
+        // Docs §4 sample: `TimeSpanStop S"KTime" S"Time" S"" L=46186158000`.
+        // Plain `"int"` / `"ULongLong"` payloads (also `L`-wire per
+        // docs §4) must NOT surface here — the typeName is the
+        // semantic discriminator.
+        let block = props70(vec![
+            p(
+                "TimeSpanStart",
+                "KTime",
+                "Time",
+                "",
+                vec![FbxProperty::I64(-1_924_423_250)],
+            ),
+            p(
+                "TimeSpanStop",
+                "KTime",
+                "Time",
+                "",
+                vec![FbxProperty::I64(46_186_158_000)],
+            ),
+            p(
+                "BlendModeBypass",
+                "ULongLong",
+                "",
+                "",
+                vec![FbxProperty::I64(0)],
+            ),
+            p("UpAxis", "int", "Integer", "", vec![FbxProperty::I32(1)]),
+        ]);
+        let pm = PropertyMap::from_properties70(&block);
+        assert_eq!(pm.as_ktime("TimeSpanStart"), Some(-1_924_423_250));
+        assert_eq!(pm.as_ktime("TimeSpanStop"), Some(46_186_158_000));
+        // typeName guard rejects `"ULongLong"` and `"int"`.
+        assert_eq!(pm.as_ktime("BlendModeBypass"), None);
+        assert_eq!(pm.as_ktime("UpAxis"), None);
+        // Generic `as_i64` still surfaces every `L`-wire numeric record.
+        assert_eq!(pm.as_i64("BlendModeBypass"), Some(0));
+        assert_eq!(pm.as_i64("UpAxis"), Some(1));
+        assert_eq!(pm.as_ktime("Missing"), None);
+    }
+
+    #[test]
+    fn as_ktime_widens_int_and_bool_wire_codes() {
+        // Per docs §4, older exporters wire `"KTime"` payloads as `I`
+        // (int32) when the value fits; the typeName-aware accessor
+        // widens losslessly once the typeName check confirms the slot.
+        let block = props70(vec![
+            p(
+                "ShortKTime",
+                "KTime",
+                "Time",
+                "",
+                vec![FbxProperty::I32(12345)],
+            ),
+            p(
+                "BoolKTime",
+                "KTime",
+                "Time",
+                "",
+                vec![FbxProperty::Bool(true)],
+            ),
+        ]);
+        let pm = PropertyMap::from_properties70(&block);
+        assert_eq!(pm.as_ktime("ShortKTime"), Some(12345));
+        assert_eq!(pm.as_ktime("BoolKTime"), Some(1));
+    }
+
+    #[test]
+    fn as_ulonglong_accepts_only_ulonglong_typename() {
+        // Docs §8 worked sample:
+        // `P: "BlendModeBypass", "ULongLong", "", "",0`.
+        let block = props70(vec![
+            p(
+                "BlendModeBypass",
+                "ULongLong",
+                "",
+                "",
+                vec![FbxProperty::I64(7)],
+            ),
+            // Plain `"KTime"` must NOT surface here.
+            p(
+                "TimeSpanStop",
+                "KTime",
+                "Time",
+                "",
+                vec![FbxProperty::I64(46_186_158_000)],
+            ),
+            // Plain `"int"` must NOT surface here.
+            p("UpAxis", "int", "Integer", "", vec![FbxProperty::I32(1)]),
+            // `I` payload under `"ULongLong"` typeName widens losslessly
+            // per the docs §4 mixed-wire note.
+            p(
+                "ShortBypass",
+                "ULongLong",
+                "",
+                "",
+                vec![FbxProperty::I32(42)],
+            ),
+        ]);
+        let pm = PropertyMap::from_properties70(&block);
+        assert_eq!(pm.as_ulonglong("BlendModeBypass"), Some(7));
+        assert_eq!(pm.as_ulonglong("ShortBypass"), Some(42));
+        assert_eq!(pm.as_ulonglong("TimeSpanStop"), None);
+        assert_eq!(pm.as_ulonglong("UpAxis"), None);
+        assert_eq!(pm.as_ulonglong("Missing"), None);
+    }
+
+    #[test]
+    fn typed_scalar_accessors_reject_non_matching_payload_shape() {
+        // A `Compound` (zero-value) record cannot surface through any
+        // typed-scalar accessor — the payload-shape guard catches the
+        // mismatch even when the typeName check would otherwise pass.
+        // (Compound is its own typeName; the guard fires on payload
+        // structure, mirroring the round-243 triple-accessor pattern.)
+        let block = props70(vec![
+            // `"Compound"` typeName: zero-value record.
+            p("Original", "Compound", "", "", vec![]),
+            // `"KString"` typeName with a triple payload (synthetic
+            // malformation): the shape guard rejects it.
+            p(
+                "Malformed",
+                "KString",
+                "",
+                "",
+                vec![
+                    FbxProperty::F64(0.0),
+                    FbxProperty::F64(0.0),
+                    FbxProperty::F64(0.0),
+                ],
+            ),
+        ]);
+        let pm = PropertyMap::from_properties70(&block);
+        // Compound payload: no scalar accessor accepts it.
+        assert_eq!(pm.as_int_typed("Original"), None);
+        assert_eq!(pm.as_enum("Original"), None);
+        assert_eq!(pm.as_bool_typed("Original"), None);
+        assert_eq!(pm.as_double("Original"), None);
+        assert_eq!(pm.as_number("Original"), None);
+        assert_eq!(pm.as_kstring("Original"), None);
+        assert_eq!(pm.as_ktime("Original"), None);
+        assert_eq!(pm.as_ulonglong("Original"), None);
+        // Malformed triple-under-KString: payload-shape guard fires.
+        assert_eq!(pm.as_kstring("Malformed"), None);
     }
 
     #[test]

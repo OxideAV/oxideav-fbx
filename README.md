@@ -161,6 +161,46 @@ clean-room from third-party documentation:
   Existing `as_vec3` / `as_str` callers are unaffected — the typed
   accessors narrow on top of the generic ones rather than replacing
   them.
+- **`Properties70` typeName-discriminating scalar accessors**
+  (round 246) — round 243 closed the triple-typed half of the
+  typeName-aware accessor surface; round 246 closes the matching
+  scalar half so each typeName from the docs §8 ASCII-grammar
+  scalar enumeration (`int`, `enum`, `bool`, `double`, `Number`,
+  `KString`, `KTime`, `ULongLong`) gets its own narrow accessor on
+  top of the generic [`PropertyMap::as_f64`] / [`as_i32`] /
+  [`as_i64`] / [`as_bool`] / [`as_str`] widening surface:
+  - `as_int_typed` — `"int"` typeName only (cubes fixture's
+    `UpAxis` / `UpAxisSign` / `FrontAxis` / `OriginalUpAxis*`
+    `GlobalSettings` records); rejects coincident `"enum"` and
+    `"bool"` payloads whose wire encoding would otherwise widen.
+  - `as_enum` — `"enum"` typeName only (the cubes fixture's
+    `TimeMode` / `TimeProtocol` / `SnapOnFrameMode`); distinguishes
+    a true enumeration index from a plain `"int"` slot even though
+    docs §4 wires both as `I`.
+  - `as_bool_typed` — `"bool"` typeName only (the cubes fixture's
+    `Primary Visibility` / `Mute` records, and the docs §8
+    worked sample `P: "Mute", "bool", "", "",0`); coerces `Int` /
+    `Long` wires via `!= 0` once the typeName guard confirms the
+    slot is semantically a bool.
+  - `as_double` — `"double"` typeName only (`UnitScaleFactor`,
+    `Opacity`, `OriginalUnitScaleFactor`); kept disjoint from
+    `as_number` even though both share the `D` wire per docs §4.
+  - `as_number` — `"Number"` typeName only (cubes Material records'
+    `DiffuseFactor` / `EmissiveFactor` / `Shininess` /
+    `ReflectionFactor`).
+  - `as_kstring` — `"KString"` typeName only (`DocumentUrl` /
+    `SrcDocumentUrl` / `currentUVSet` / `DefaultCamera`); rejects
+    coincident `"DateTime"` and `"object"` records so the round-243
+    [`as_datetime`] / [`as_object_ref`] surfaces stay disjoint.
+  - `as_ktime` — `"KTime"` typeName only with lossless `L` (int64)
+    decoding (`TimeSpanStart` / `TimeSpanStop`); widens `I` / `Bool`
+    payloads losslessly once the typeName guard fires per the docs
+    §4 mixed-wire note.
+  - `as_ulonglong` — `"ULongLong"` typeName only (the docs §8
+    worked sample `P: "BlendModeBypass", "ULongLong", "", "",0`);
+    same `L`-wire path as `as_ktime` with the matching guard.
+  Generic widening accessors continue to surface every variant — the
+  typed accessors narrow on top.
 - **NodeAttribute `"LimbNode"` / `"Null"` discriminator** (round 235) —
   the remaining well-known `NodeAttribute` subtype discriminators
   documented in `docs/3d/fbx/fbx-binary-properties70.md` §6 that
