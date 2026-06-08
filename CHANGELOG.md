@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Round 263 — **`Properties70` flag-discriminating iterators.**
+  Surfaces the third parsed-but-otherwise-unused string in every
+  `P` record (`PRecord::flags`, prop3 of the docs §4 / §8 grammar).
+  The docs alphabet *"`""` (none), `"A"` (animatable), `"U"` (user
+  / UI)"* composes freely (observed `"AU"`), so the iterators match
+  by character containment rather than full-string equality. Three
+  accessors land:
+  - `animatable_names()` — every record name whose flags contain
+    `'A'`. An animation walker enumerates this surface to find the
+    slots eligible for AnimCurve wiring through the `Connections`
+    `OP` records.
+  - `user_names()` — every record name whose flags contain `'U'`. A
+    UI layer enumerates this surface to find the custom attributes
+    the artist added in the source DCC (Maya / 3ds Max / Blender).
+  - `names_with_flag(char)` — general-purpose escape hatch for any
+    flag character the docs §4 / §8 grammar leaves open-ended.
+  Five unit tests added covering `'A'`-only, `'U'`-only, composed
+  `"AU"` (surfaces in both), the general-purpose escape hatch, and
+  the empty-flags exclusion case.
 - Round 249 — **`Properties70` `"Compound"` typeName-discriminating
   accessor.** Closes the last typeName from the
   `docs/3d/fbx/fbx-ascii-grammar.md` §8 enumeration that previously

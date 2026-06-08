@@ -645,6 +645,102 @@ impl PropertyMap {
             .map(|(name, _)| name.as_str())
     }
 
+    // --- flag-discriminating iterators ---
+    //
+    // The flags field (prop3 of every `P` record per docs §4 / §8) is a
+    // string of single-character codes carrying animatable / user
+    // hints. The docs §4 sample line *"flags     e.g. ""   ("A"
+    // animatable / "U" user)"* and the ASCII §8 worked enumeration
+    // *"`""` (none), `"A"` (animatable), `"U"` (user / UI)"* define
+    // the alphabet. Exporters compose them — observed combinations
+    // include `""`, `"A"`, `"U"`, `"AU"` — so the iterators match by
+    // character containment rather than full-string equality.
+    //
+    // These complement the typeName-discriminating accessors above by
+    // surfacing the third parsed-but-otherwise-unused string in every
+    // `P` record (prop1 = typeName, prop2 = label, prop3 = flags). The
+    // round-240..249 typed-accessor family covered typeName; this
+    // round surfaces flags. The animatable flag is the one a caller
+    // most often needs — it identifies which properties have linked
+    // AnimCurves in the `Connections` block, so an animation walker
+    // can skip the static-value records when building its work list.
+    //
+    // Order is HashMap-defined (no particular file order) — same shape
+    // as [`Self::compound_names`] / [`Self::names`].
+
+    /// Iterate every record name flagged as animatable (`'A'` in the
+    /// flags field).
+    ///
+    /// Per `docs/3d/fbx/fbx-binary-properties70.md` §4 *"flags     e.g.
+    /// "" ("A" animatable / "U" user)"* and `docs/3d/fbx/fbx-ascii-
+    /// grammar.md` §8 *"flags (string) — animatable/user flag string:
+    /// `""` (none), `"A"` (animatable), `"U"` (user / UI)"*, the
+    /// flag character `'A'` marks a property whose value can be
+    /// driven by an AnimCurve in the `Connections` block. The cubes-
+    /// ascii-v7500.fbx fixture's `Model` node carries `P: "Lcl
+    /// Translation","Lcl Translation","","A",…` and the Material
+    /// records carry `P: "DiffuseFactor","Number","","A",…`. An
+    /// animation walker that wants to enumerate the slots eligible
+    /// for AnimCurve wiring iterates this surface and resolves each
+    /// name through the `Connections` `OP` records.
+    ///
+    /// Matches by character containment, so a composed flags string
+    /// (`"AU"` — both animatable AND user) still surfaces here. A
+    /// caller wanting *only* animatable-and-not-user can intersect
+    /// with the complement of [`Self::user_names`].
+    pub fn animatable_names(&self) -> impl Iterator<Item = &str> {
+        self.inner
+            .iter()
+            .filter(|(_, rec)| rec.flags.contains('A'))
+            .map(|(name, _)| name.as_str())
+    }
+
+    /// Iterate every record name flagged as user-defined (`'U'` in
+    /// the flags field).
+    ///
+    /// Per `docs/3d/fbx/fbx-binary-properties70.md` §4 and `docs/3d/
+    /// fbx/fbx-ascii-grammar.md` §8 (same passages cited under
+    /// [`Self::animatable_names`]), the flag character `'U'` marks a
+    /// user-defined / UI-exposed property — typically a custom
+    /// attribute the artist added in the source DCC (Maya / Max /
+    /// Blender) rather than a template-default slot. The cubes-ascii
+    /// fixture's `currentUVSet` (`P: "currentUVSet", "KString", "",
+    /// "U", "map1"`) and `DocumentUrl` records are worked examples;
+    /// the ASCII §8 enumeration shows `DocumentUrl` with label
+    /// `"Url"` and the `"U"` flag.
+    ///
+    /// Matches by character containment, so a composed flags string
+    /// (`"AU"`) surfaces here too — a property that is BOTH user-
+    /// defined AND animatable falls in both surfaces and a caller can
+    /// intersect / set-difference as needed.
+    pub fn user_names(&self) -> impl Iterator<Item = &str> {
+        self.inner
+            .iter()
+            .filter(|(_, rec)| rec.flags.contains('U'))
+            .map(|(name, _)| name.as_str())
+    }
+
+    /// Iterate every record name whose flags field carries the given
+    /// flag character.
+    ///
+    /// General-purpose escape hatch behind [`Self::animatable_names`]
+    /// / [`Self::user_names`] for callers that need to match a
+    /// flag character the docs §4 / §8 grammar does not yet
+    /// enumerate (the grammar leaves the exact set open-ended — *"`""`
+    /// (none), `"A"` (animatable), `"U"` (user / UI)"* is the
+    /// observed alphabet, not an exhaustive specification). Same
+    /// character-containment matching as the dedicated accessors.
+    ///
+    /// The flag character is taken verbatim; case sensitivity matches
+    /// the wire bytes (FBX flag chars are ASCII uppercase per the
+    /// observed corpus).
+    pub fn names_with_flag(&self, flag: char) -> impl Iterator<Item = &str> {
+        self.inner
+            .iter()
+            .filter(move |(_, rec)| rec.flags.contains(flag))
+            .map(|(name, _)| name.as_str())
+    }
+
     /// Iterate every record name. Order is HashMap-defined (no
     /// particular file order).
     pub fn names(&self) -> impl Iterator<Item = &str> {
@@ -1837,5 +1933,149 @@ mod tests {
         assert_eq!(pm.as_object_ref("InlineRef"), Some("Model::SomeNode"));
         assert_eq!(pm.as_object_ref("currentUVSet"), None);
         assert_eq!(pm.as_object_ref("MissingRecord"), None);
+    }
+
+    // --- flag-discriminating iterator tests ---
+
+    #[test]
+    fn animatable_names_surfaces_records_with_a_flag() {
+        // docs §4 / §8: the `'A'` flag marks animatable properties.
+        // The cubes-ascii-v7500.fbx fixture's `Lcl Translation` and
+        // `Lcl Scaling` records carry `"A"`; `DiffuseFactor` (Material)
+        // does too; `UpAxis` / `UnitScaleFactor` (GlobalSettings) do
+        // not.
+        let block = props70(vec![
+            p(
+                "Lcl Translation",
+                "Lcl Translation",
+                "",
+                "A",
+                vec![
+                    FbxProperty::F64(1.0),
+                    FbxProperty::F64(2.0),
+                    FbxProperty::F64(3.0),
+                ],
+            ),
+            p(
+                "Lcl Scaling",
+                "Lcl Scaling",
+                "",
+                "A",
+                vec![
+                    FbxProperty::F64(10.0),
+                    FbxProperty::F64(10.0),
+                    FbxProperty::F64(10.0),
+                ],
+            ),
+            p(
+                "DiffuseFactor",
+                "Number",
+                "",
+                "A",
+                vec![FbxProperty::F64(0.8)],
+            ),
+            p("UpAxis", "int", "Integer", "", vec![FbxProperty::I32(1)]),
+            p(
+                "UnitScaleFactor",
+                "double",
+                "Number",
+                "",
+                vec![FbxProperty::F64(100.0)],
+            ),
+        ]);
+        let pm = PropertyMap::from_properties70(&block);
+        let mut got: Vec<&str> = pm.animatable_names().collect();
+        got.sort_unstable();
+        assert_eq!(got, vec!["DiffuseFactor", "Lcl Scaling", "Lcl Translation"]);
+    }
+
+    #[test]
+    fn user_names_surfaces_records_with_u_flag() {
+        // docs §4 / §8: the `'U'` flag marks user-defined / UI
+        // properties. The cubes fixture's `currentUVSet` is the
+        // worked example; `DocumentUrl` (label `"Url"`) is another.
+        let block = props70(vec![
+            p("currentUVSet", "KString", "", "U", vec![s(b"map1")]),
+            p(
+                "DocumentUrl",
+                "KString",
+                "Url",
+                "U",
+                vec![s(b"U:\\Some\\Path\\cubes.fbx")],
+            ),
+            p("UpAxis", "int", "Integer", "", vec![FbxProperty::I32(1)]),
+        ]);
+        let pm = PropertyMap::from_properties70(&block);
+        let mut got: Vec<&str> = pm.user_names().collect();
+        got.sort_unstable();
+        assert_eq!(got, vec!["DocumentUrl", "currentUVSet"]);
+    }
+
+    #[test]
+    fn composed_flags_surface_in_both_iterators() {
+        // An exporter writing both `'A'` and `'U'` (a user-defined
+        // property that is also animatable) appears in both surfaces.
+        let block = props70(vec![
+            p(
+                "CustomAnimatable",
+                "Number",
+                "",
+                "AU",
+                vec![FbxProperty::F64(0.5)],
+            ),
+            p("OnlyAnim", "Number", "", "A", vec![FbxProperty::F64(1.0)]),
+            p("OnlyUser", "KString", "", "U", vec![s(b"hello")]),
+            p("Plain", "int", "", "", vec![FbxProperty::I32(0)]),
+        ]);
+        let pm = PropertyMap::from_properties70(&block);
+        let mut anim: Vec<&str> = pm.animatable_names().collect();
+        anim.sort_unstable();
+        assert_eq!(anim, vec!["CustomAnimatable", "OnlyAnim"]);
+        let mut user: Vec<&str> = pm.user_names().collect();
+        user.sort_unstable();
+        assert_eq!(user, vec!["CustomAnimatable", "OnlyUser"]);
+    }
+
+    #[test]
+    fn names_with_flag_matches_arbitrary_flag_char() {
+        // The general-purpose escape hatch matches any single flag
+        // char, including hypothetical exporter-specific flags the
+        // docs §4 / §8 alphabet does not yet enumerate.
+        let block = props70(vec![
+            p("Anim", "Number", "", "A", vec![FbxProperty::F64(1.0)]),
+            p("User", "KString", "", "U", vec![s(b"x")]),
+            p("Plain", "int", "", "", vec![FbxProperty::I32(0)]),
+        ]);
+        let pm = PropertyMap::from_properties70(&block);
+        let mut anim: Vec<&str> = pm.names_with_flag('A').collect();
+        anim.sort_unstable();
+        assert_eq!(anim, vec!["Anim"]);
+        let mut user: Vec<&str> = pm.names_with_flag('U').collect();
+        user.sort_unstable();
+        assert_eq!(user, vec!["User"]);
+        // Flag char not present anywhere: empty iterator.
+        let none: Vec<&str> = pm.names_with_flag('Z').collect();
+        assert!(none.is_empty());
+    }
+
+    #[test]
+    fn empty_flags_field_excludes_record_from_flag_iterators() {
+        // Records with `flags == ""` (the docs §4 "none" case) are
+        // not surfaced by any of the flag-discriminating iterators.
+        let block = props70(vec![
+            p("UpAxis", "int", "Integer", "", vec![FbxProperty::I32(1)]),
+            p(
+                "UnitScaleFactor",
+                "double",
+                "Number",
+                "",
+                vec![FbxProperty::F64(100.0)],
+            ),
+        ]);
+        let pm = PropertyMap::from_properties70(&block);
+        assert_eq!(pm.animatable_names().count(), 0);
+        assert_eq!(pm.user_names().count(), 0);
+        assert_eq!(pm.names_with_flag('A').count(), 0);
+        assert_eq!(pm.names_with_flag('U').count(), 0);
     }
 }

@@ -230,6 +230,19 @@ clean-room from third-party documentation:
   the exporter wrote with no body lands in `PValue::Compound` but
   keeps its `"object"` typeName, so it surfaces via `as_object_ref`
   (returning `""`) and never via `is_compound`.
+- **`Properties70` flag-discriminating iterators** (round 263) —
+  surfaces the third parsed-but-otherwise-unused string in every
+  `P` record (`PRecord::flags`, prop3 of the
+  `docs/3d/fbx/fbx-binary-properties70.md` §4 / `fbx-ascii-grammar.md`
+  §8 grammar). The docs define the alphabet *"`""` (none), `"A"`
+  (animatable), `"U"` (user / UI)"* — flags compose freely (observed
+  `"AU"`), so the iterators match by character containment, not
+  full-string equality. Three accessors: `animatable_names()` /
+  `user_names()` / `names_with_flag(char)`. An animation walker
+  enumerates `animatable_names()` to find the slots eligible for
+  AnimCurve wiring through the `Connections` `OP` records; a UI
+  layer enumerates `user_names()` to find the custom attributes the
+  artist added in the source DCC.
 - **NodeAttribute `"LimbNode"` / `"Null"` discriminator** (round 235) —
   the remaining well-known `NodeAttribute` subtype discriminators
   documented in `docs/3d/fbx/fbx-binary-properties70.md` §6 that
