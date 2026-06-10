@@ -9,6 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Round 271 — **`Geometry` non-`Mesh` subtype discriminator.** The
+  `docs/3d/fbx/fbx-binary-properties70.md` §6 point 3 enumeration lists
+  the `Geometry` prop2 subtype string as the fine class discriminator.
+  `"Mesh"` is tessellated by `crate::geometry`; `"Shape"` is consumed
+  by the blend-shape path in `crate::deformer`. The remaining §6
+  subtypes — `"NurbsCurve"`, `"NurbsSurface"`, `"Boundary"`,
+  `"TrimNurbsSurface"`, `"Line"` — have no first-class mesh3d
+  tessellation in this crate and were previously dropped entirely by
+  the scene walker (no `Mesh`, no node tag). The new `geometry_kind`
+  module records the §6 discriminator string verbatim on the owning
+  `Model`'s `Node::extras["fbx:geometry_kind"]` via the
+  `Geometry -> Model` `OO` connection, so a consumer can detect that a
+  non-tessellated NURBS / line geometry exists and what kind it is
+  without re-walking the `FbxDocument`. Distinct key from round 235's
+  `"fbx:node_attribute_kind"`; the two surfacing passes coexist on the
+  same node. Nine unit tests cover each documented subtype, the
+  Mesh / Shape exclusions, OO-only wiring, the orphan-geometry skip,
+  the unknown-subtype reject, key coexistence, and first-wins
+  determinism.
+
 - Round 263 — **`Properties70` flag-discriminating iterators.**
   Surfaces the third parsed-but-otherwise-unused string in every
   `P` record (`PRecord::flags`, prop3 of the docs §4 / §8 grammar).

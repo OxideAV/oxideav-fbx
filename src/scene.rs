@@ -28,6 +28,7 @@ use crate::animation::extract_animations;
 use crate::binary::{FbxDocument, FbxNode, FbxProperty};
 use crate::deformer::extract_deformers;
 use crate::geometry::extract_geometry_mesh_with_corners;
+use crate::geometry_kind::extract_geometry_kinds;
 use crate::globals::extract_global_settings;
 use crate::lights_cameras::extract_lights_and_cameras;
 use crate::material::extract_materials;
@@ -268,6 +269,19 @@ pub fn build_scene(doc: &FbxDocument) -> Result<Scene3D> {
     // skeletal-bone Model from a locator/empty Model from a plain
     // Mesh Model without re-walking the `FbxDocument`.
     extract_node_attribute_kinds(doc, &mut scene, &model_nodes);
+
+    // Round 271 — `Geometry` non-`Mesh` subtype-discriminator
+    // surfacing. The `"Mesh"` subtype is tessellated above; `"Shape"`
+    // is consumed by the blend-shape path in `crate::deformer`. The
+    // remaining §6-point-3 subtypes (`NurbsCurve` / `NurbsSurface` /
+    // `Boundary` / `TrimNurbsSurface` / `Line`) have no typed mesh3d
+    // home in this crate and were previously dropped entirely by the
+    // walker above; this pass records the
+    // `docs/3d/fbx/fbx-binary-properties70.md` §6 discriminator string
+    // on the owning Model's `Node::extras["fbx:geometry_kind"]` via the
+    // `Geometry -> Model` OO connection so a consumer can detect the
+    // non-tessellated geometry without re-walking the `FbxDocument`.
+    extract_geometry_kinds(doc, &mut scene, &model_nodes);
 
     // If somehow no roots and no meshes ended up populated, surface
     // an empty scene rather than failing — this matches the

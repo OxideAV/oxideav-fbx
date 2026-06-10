@@ -243,6 +243,25 @@ clean-room from third-party documentation:
   AnimCurve wiring through the `Connections` `OP` records; a UI
   layer enumerates `user_names()` to find the custom attributes the
   artist added in the source DCC.
+- **`Geometry` non-`Mesh` subtype discriminator** (round 271) — the
+  `docs/3d/fbx/fbx-binary-properties70.md` §6 point 3 enumeration lists
+  the `Geometry` prop2 subtype string as the fine class discriminator;
+  the `"Mesh"` subtype is tessellated by [`crate::geometry`] and
+  `"Shape"` is consumed by the blend-shape path in [`crate::deformer`]
+  (a `Shape` geometry connects to a `BlendShapeChannel`, never to a
+  `Model`), but the remaining subtypes — `"NurbsCurve"`,
+  `"NurbsSurface"`, `"Boundary"`, `"TrimNurbsSurface"`, `"Line"` — have
+  no first-class mesh3d tessellation in this crate and were previously
+  dropped entirely by the scene walker (no `Mesh`, no node tag). Round
+  271 records the §6 discriminator string verbatim on the owning
+  `Model`'s `Node::extras["fbx:geometry_kind"]` via the
+  `Geometry -> Model` `OO` connection, so a consumer can detect that a
+  non-tessellated NURBS / line geometry exists and what kind it is
+  without re-walking the `FbxDocument`. Coexists on a distinct key from
+  round 235's `"fbx:node_attribute_kind"`. The per-subtype control-point
+  / knot-vector grammar that a real curve / surface evaluation would
+  need is absent from the staged docs (only the subtype *names* are
+  enumerated), so tessellation is a follow-up round.
 - **NodeAttribute `"LimbNode"` / `"Null"` discriminator** (round 235) —
   the remaining well-known `NodeAttribute` subtype discriminators
   documented in `docs/3d/fbx/fbx-binary-properties70.md` §6 that

@@ -168,6 +168,11 @@ pub mod binary;
 pub mod decoder;
 pub mod deformer;
 pub mod geometry;
+/// `Geometry` non-`Mesh` subtype-discriminator surfacing
+/// (`NurbsCurve` / `NurbsSurface` / `Boundary` / `TrimNurbsSurface` /
+/// `Line`) onto the owning Model's `Node::extras["fbx:geometry_kind"]`
+/// (round 271).
+pub mod geometry_kind;
 /// `GlobalSettings` element decoder — scene-wide axis / unit / time /
 /// ambient settings surfaced onto [`oxideav_mesh3d::Scene3D`] (round
 /// 219).
