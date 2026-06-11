@@ -109,6 +109,29 @@ clean-room from third-party documentation:
   the FBX-int → `Axis` variant table is absent from the staged docs,
   so `Scene3D::up_axis` / `front_axis` stay at the `Scene3D::new`
   defaults pending a follow-up grammar staging.
+- **`Definitions` / `PropertyTemplate` decoding + template-default
+  resolution** (round 280) — the top-level `Definitions` section (per
+  `docs/3d/fbx/fbx-ascii-grammar.md` §7b: *"`Count` at the top is the
+  total object count; each `ObjectType:` block names a class, its
+  instance `Count`, and a `PropertyTemplate` holding the default
+  `Properties70` for that class"*) decodes via the new `definitions`
+  module into a typed `Definitions` value — section `Version` /
+  `total_count` plus one `ObjectTypeDefinition` per class (class
+  name, instance count, template name, default property set as a
+  round-191 `PropertyMap`). Classes without a template block (the
+  fixture's `GlobalSettings`) surface count-only. The binary encoding
+  renders the identical node tree (docs `fbx-binary-properties70.md`
+  §4 isomorphism note) so one walker covers both front-ends. The
+  companion `PropertyMap::with_template_defaults` resolves an
+  object's *effective* properties (own records overlay class
+  defaults), and material decode now applies it against the
+  `ObjectType: "Material"` template — exporter-omitted class defaults
+  (the cubes fixture's FbxSurfaceLambert `DiffuseFactor = 1`) decode
+  the same as explicitly-written records, with `ShadingModel`
+  precedence own P-record > direct-child leaf > template default.
+  The scene builder's no-content fallback no longer discards a
+  populated materials / textures arena when a document carries no
+  meshes or nodes.
 - **Bind pose** (round 97; parent-local form added round 226) —
   `Objects { Pose : "BindPose" }` elements surface each
   `PoseNode { Node, Matrix }` bone-world matrix onto the bone `Node`'s

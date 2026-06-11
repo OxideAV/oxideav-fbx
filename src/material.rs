@@ -88,6 +88,7 @@ use oxideav_mesh3d::{
 };
 
 use crate::binary::{FbxDocument, FbxNode, FbxProperty};
+use crate::definitions::Definitions;
 use crate::properties70::PropertyMap;
 
 /// Walk the top-level `Objects` + `Connections` records to populate
@@ -244,6 +245,14 @@ pub fn extract_materials(
     //    legacy-shader analogue). `ShadingModel` is captured into
     //    `Material::extras` for downstream consumers that need the
     //    raw FBX shader-kind hint.
+    //    Round 280: each material's own `Properties70` block is
+    //    resolved against the `Definitions` `ObjectType: "Material"`
+    //    `PropertyTemplate` (the docs ascii-grammar §7b "default
+    //    property set" for the class), so exporter-omitted defaults
+    //    (e.g. the FbxSurfaceLambert template's `DiffuseFactor = 1`)
+    //    decode the same as explicitly-written records.
+    let definitions = Definitions::from_root(&doc.root);
+    let material_template = definitions.template_for("Material");
     let mut material_lookup: HashMap<i64, MaterialId> = HashMap::new();
     let mut material_ids: Vec<i64> = fbx_materials.keys().copied().collect();
     material_ids.sort_unstable();
@@ -254,7 +263,7 @@ pub fn extract_materials(
         };
         let mut mat = Material::new();
         mat.name = element_name(mat_node);
-        apply_properties70(mat_node, &mut mat);
+        apply_properties70(mat_node, &mut mat, material_template);
         let mat_id = scene.add_material(mat);
         material_lookup.insert(mid, mat_id);
     }
@@ -400,8 +409,19 @@ fn element_name(node: &FbxNode) -> Option<String> {
 /// sqrt(2 / (shininess + 2))`); reflection factor → metallic; raw
 /// `ShadingModel` string captured into `extras["fbx:shading_model"]`
 /// so downstream consumers can distinguish phong / lambert / unknown.
-fn apply_properties70(node: &FbxNode, mat: &mut Material) {
-    let pm = PropertyMap::from_element(node);
+///
+/// `template` is the class-default `Properties70` set from the
+/// `Definitions` section's `ObjectType: "Material"` `PropertyTemplate`
+/// (docs ascii-grammar §7b — *"a `PropertyTemplate` holding the
+/// default `Properties70` for that class"*). The material's own
+/// records overlay the template defaults, so a name the exporter left
+/// at its class default still resolves to the documented value.
+fn apply_properties70(node: &FbxNode, mat: &mut Material, template: Option<&PropertyMap>) {
+    let own = PropertyMap::from_element(node);
+    let pm = match template {
+        Some(t) => own.with_template_defaults(t),
+        None => own.clone(),
+    };
     if pm.is_empty() {
         // Also accept a top-level `ShadingModel` leaf — the docs
         // show it lives in `Properties70` for newer exporters but
@@ -492,10 +512,16 @@ fn apply_properties70(node: &FbxNode, mat: &mut Material) {
     // Per the docs §4 sample, ShadingModel may live as a direct-child
     // leaf (`box.fbx` Material →`ShadingModel: "phong"`) OR as a
     // Properties70 P-record on newer exporters — accept either.
-    let shading = pm
+    // Precedence keeps instance data ahead of class defaults: own
+    // P-record > direct-child leaf > Definitions-template default
+    // (the cubes fixture writes the leaf `ShadingModel: "lambert"`
+    // on each Material while its FbxSurfaceLambert template carries
+    // a `"Lambert"` P-record — the instance leaf must win).
+    let shading = own
         .as_str("ShadingModel")
         .map(str::to_owned)
-        .or_else(|| read_string_child(node, "ShadingModel"));
+        .or_else(|| read_string_child(node, "ShadingModel"))
+        .or_else(|| pm.as_str("ShadingModel").map(str::to_owned));
     if let Some(s) = shading {
         mat.extras
             .insert("fbx:shading_model".into(), serde_json::Value::String(s));

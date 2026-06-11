@@ -125,6 +125,34 @@ impl PropertyMap {
         self.inner.get(name)
     }
 
+    /// Overlay this map's records on top of a class-template default
+    /// set.
+    ///
+    /// Per `docs/3d/fbx/fbx-ascii-grammar.md` §7b, a `Definitions`
+    /// `PropertyTemplate` holds *"the default `Properties70` for that
+    /// class"* — an object's own `Properties70` block carries only
+    /// the records its exporter wrote explicitly. The resolved view
+    /// of an object is therefore: the template's record for every
+    /// name the object does not re-state, and the object's own record
+    /// where it does (the same override-the-template-default shape
+    /// the last-wins note on [`PropertyMap`] documents).
+    ///
+    /// Pair with [`crate::definitions::Definitions::template_for`]:
+    ///
+    /// ```text
+    /// let defs = Definitions::from_document(&doc);
+    /// let own  = PropertyMap::from_element(material_node);
+    /// let pm   = match defs.template_for("Material") {
+    ///     Some(t) => own.with_template_defaults(t),
+    ///     None    => own,
+    /// };
+    /// ```
+    pub fn with_template_defaults(&self, template: &PropertyMap) -> PropertyMap {
+        let mut inner = template.inner.clone();
+        inner.extend(self.inner.iter().map(|(k, v)| (k.clone(), v.clone())));
+        PropertyMap { inner }
+    }
+
     /// Number of `P` records decoded.
     pub fn len(&self) -> usize {
         self.inner.len()
@@ -939,6 +967,72 @@ mod tests {
         )]);
         let pm = PropertyMap::from_properties70(&block);
         assert_eq!(pm.as_vec3("AmbientColor"), Some([0.4, 0.5, 0.6]));
+    }
+
+    #[test]
+    fn template_defaults_fill_missing_records() {
+        // docs ascii-grammar §7b: the PropertyTemplate holds "the
+        // default Properties70 for that class" — names the object
+        // doesn't re-state resolve to the template's record.
+        let template = PropertyMap::from_properties70(&props70(vec![
+            p(
+                "DiffuseColor",
+                "Color",
+                "",
+                "A",
+                vec![
+                    FbxProperty::F64(0.8),
+                    FbxProperty::F64(0.8),
+                    FbxProperty::F64(0.8),
+                ],
+            ),
+            p(
+                "DiffuseFactor",
+                "Number",
+                "",
+                "A",
+                vec![FbxProperty::F64(1.0)],
+            ),
+        ]));
+        let own = PropertyMap::from_properties70(&props70(vec![p(
+            "DiffuseColor",
+            "Color",
+            "",
+            "A",
+            vec![
+                FbxProperty::F64(0.0),
+                FbxProperty::F64(1.0),
+                FbxProperty::F64(0.0),
+            ],
+        )]));
+        let resolved = own.with_template_defaults(&template);
+        // Own record wins over the template default.
+        assert_eq!(resolved.as_vec3("DiffuseColor"), Some([0.0, 1.0, 0.0]));
+        // Template fills the name the object didn't re-state.
+        assert_eq!(resolved.as_f64("DiffuseFactor"), Some(1.0));
+        assert_eq!(resolved.len(), 2);
+        // Inputs are untouched.
+        assert_eq!(own.len(), 1);
+        assert_eq!(template.as_vec3("DiffuseColor"), Some([0.8, 0.8, 0.8]));
+    }
+
+    #[test]
+    fn template_defaults_with_empty_sides() {
+        let template = PropertyMap::from_properties70(&props70(vec![p(
+            "Opacity",
+            "double",
+            "Number",
+            "",
+            vec![FbxProperty::F64(1.0)],
+        )]));
+        let empty = PropertyMap::default();
+        // Empty object → pure template view.
+        let resolved = empty.with_template_defaults(&template);
+        assert_eq!(resolved.as_f64("Opacity"), Some(1.0));
+        // Empty template → pure object view.
+        let resolved = template.with_template_defaults(&empty);
+        assert_eq!(resolved.as_f64("Opacity"), Some(1.0));
+        assert_eq!(resolved.len(), 1);
     }
 
     #[test]

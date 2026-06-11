@@ -73,6 +73,15 @@
 //!   `100.0 → Unit::Centimetres` and `1.0 → Unit::Metres` per the
 //!   `unit_meters` documentation in
 //!   `docs/3d/fbx/ufbx/elements-nodes.md`. See [`globals`].
+//! - **Definitions / PropertyTemplate** (round 280) — the top-level
+//!   `Definitions` section (per `docs/3d/fbx/fbx-ascii-grammar.md`
+//!   §7b) decodes via [`definitions::Definitions`]: the section
+//!   `Version` / total `Count`, each `ObjectType`'s class name +
+//!   instance count, and the class `PropertyTemplate` *"default
+//!   `Properties70`"* set. Material decode resolves each element's
+//!   own `P` records against the `"Material"` class template via
+//!   [`properties70::PropertyMap::with_template_defaults`], so
+//!   exporter-omitted class defaults decode like explicit records.
 //! - **Bind pose** (round 97) — `Objects { Pose : "BindPose" }`
 //!   elements with `PoseNode { Node, Matrix }` sub-records surface
 //!   each posed bone's world matrix onto its
@@ -166,6 +175,10 @@ pub mod ascii;
 pub mod ascii_writer;
 pub mod binary;
 pub mod decoder;
+/// `Definitions` section decoder — per-class instance counts +
+/// `PropertyTemplate` default `Properties70` blocks resolved against
+/// each object's own records (round 280).
+pub mod definitions;
 pub mod deformer;
 pub mod geometry;
 /// `Geometry` non-`Mesh` subtype-discriminator surfacing

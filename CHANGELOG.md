@@ -9,6 +9,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Round 280 — **`Definitions` / `PropertyTemplate` decoding +
+  template-default resolution.** The top-level `Definitions` section —
+  per `docs/3d/fbx/fbx-ascii-grammar.md` §7b, *"`Count` at the top is
+  the total object count; each `ObjectType:` block names a class, its
+  instance `Count`, and a `PropertyTemplate` holding the default
+  `Properties70` for that class"* — was previously round-tripped
+  through the `FbxDocument` but never decoded. The new `definitions`
+  module surfaces it as a typed `Definitions` value: section
+  `Version` / `total_count`, plus one `ObjectTypeDefinition` per class
+  (class name, instance count, template name, and the template's
+  default property set decoded through the round-191 `PropertyMap`).
+  The binary encoding renders the identical node tree (docs
+  `fbx-binary-properties70.md` §4 isomorphism note), so one walker
+  covers both front-ends. A companion
+  `PropertyMap::with_template_defaults` resolves an object's
+  *effective* properties (own records overlay the class defaults), and
+  the material extractor now applies it: a `Material` element's
+  `Properties70` is resolved against the `ObjectType: "Material"`
+  template before PBR factor decode, so exporter-omitted class
+  defaults (e.g. the cubes fixture's FbxSurfaceLambert
+  `DiffuseFactor = 1`) decode the same as explicitly-written records.
+  `ShadingModel` precedence keeps instance data ahead of class
+  defaults: own P-record > direct-child leaf > template default.
+  Fixed alongside: `scene::build_scene`'s no-content fallback no
+  longer discards a populated `Scene3D::materials` / `textures` arena
+  when the document carries no meshes or nodes. 14 new tests: 9
+  `definitions` unit tests (docs-§7b sample shape, count-only class,
+  missing section, malformed `ObjectType` skip, last-wins repeat,
+  sorted iteration, empty-template-vs-no-template), 2 `PropertyMap`
+  overlay tests, 2 synthetic ASCII end-to-end template-resolution
+  tests, and 1 cubes-ascii-v7500.fbx fixture test (6 `ObjectType`
+  blocks, 17-record FbxSurfaceLambert template,
+  instance-override-wins on the decoded scene).
+
 - Round 271 — **`Geometry` non-`Mesh` subtype discriminator.** The
   `docs/3d/fbx/fbx-binary-properties70.md` §6 point 3 enumeration lists
   the `Geometry` prop2 subtype string as the fine class discriminator.

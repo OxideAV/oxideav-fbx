@@ -287,9 +287,16 @@ pub fn build_scene(doc: &FbxDocument) -> Result<Scene3D> {
     // an empty scene rather than failing — this matches the
     // "FBX-with-no-Objects" tolerance other loaders apply. We retain
     // the GlobalSettings-derived `scene.extras` / `scene.unit` (round
-    // 219) — only fall back to the FBX centimetre default when neither
-    // GlobalSettings nor any Objects/Models populated the scene.
-    if scene.nodes.is_empty() && scene.meshes.is_empty() && scene.extras.is_empty() {
+    // 219) and any Material / Texture arenas (round 280 — a
+    // Material-only document is still a populated document) — only
+    // fall back to the FBX centimetre default when nothing at all
+    // populated the scene.
+    if scene.nodes.is_empty()
+        && scene.meshes.is_empty()
+        && scene.materials.is_empty()
+        && scene.textures.is_empty()
+        && scene.extras.is_empty()
+    {
         return Ok(Mesh3DEmpty::scene());
     }
     Ok(scene)
