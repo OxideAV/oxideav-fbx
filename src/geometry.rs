@@ -25,7 +25,17 @@
 //! - `normals` — pulled from the first `LayerElementNormal` if its
 //!   mapping mode is `ByPolygonVertex` or `ByVertex` (with optional
 //!   `IndexToDirect` indirection); other mapping modes pass through
-//!   unmodified for now.
+//!   unmodified for now. Any *additional* `LayerElementNormal`
+//!   records (a `Geometry` may carry several, distinguished by their
+//!   `Layer`/`TypedIndex` integer per
+//!   `docs/3d/fbx/fbx-binary-properties70.md` §6.4) are surfaced on
+//!   `Primitive::extras["fbx:extra_normals"]` (a JSON array, one
+//!   flattened per-corner `[x,y,z,…]` buffer per extra layer) with
+//!   `fbx:extra_normals_typed_index` / `fbx:extra_normals_mapping`
+//!   carrying each extra layer's `TypedIndex` and source mapping
+//!   mode. `Primitive::normals` itself has only a single slot in
+//!   `oxideav_mesh3d`, so the first surfaced normal layer is the
+//!   canonical `vertex_normal` and the rest ride in `extras`.
 //! - `colors` — every `LayerElementColor` in document order, surfaced
 //!   as RGBA `[f32; 4]` per-corner buffers (one slot per FBX colour
 //!   set, mirroring ufbx's `ufbx_mesh.color_sets`). Mapping / reference
@@ -82,20 +92,81 @@ pub fn extract_geometry_mesh_with_corners(
         ]);
     }
 
-    // Normals — first LayerElementNormal only (multi-layer normals
-    // are unusual in practice per
-    // `docs/3d/fbx/ufbx/elements-meshes.md` §"Attributes"; surface
-    // the first and stash the rest in `extras` for a follow-up round).
-    if let Some(layer) = geom.children_named("LayerElementNormal").next() {
-        if let Some(normals) = pull_layer_vec3(
+    // Normals — every `LayerElementNormal` in document order.
+    // A `Geometry` may carry more than one normal layer (each
+    // distinguished by its `Layer`/`TypedIndex` integer per
+    // `docs/3d/fbx/fbx-binary-properties70.md` §6.4 "LayerElement*
+    // sub-discriminator"). `oxideav_mesh3d::Primitive` exposes a
+    // single `normals: Option<…>` slot, so the FIRST layer that
+    // flattens to per-corner data becomes the canonical
+    // `vertex_normal`; any further normal layers are surfaced on
+    // `Primitive::extras` so a downstream consumer can recover them
+    // (mirroring how `LayerElementUV`/`LayerElementColor` expose
+    // every set). Each layer's `MappingInformationType` /
+    // `ReferenceInformationType` is resolved independently by
+    // `pull_layer_vec3` — extra layers may use a different mapping
+    // mode than the first.
+    let mut extra_normals: Vec<Value> = Vec::new();
+    let mut extra_normals_typed_index: Vec<Value> = Vec::new();
+    let mut extra_normals_mapping: Vec<Value> = Vec::new();
+    for layer in geom.children_named("LayerElementNormal") {
+        let flattened = pull_layer_vec3(
             layer,
             "Normals",
             "NormalsIndex",
             triangles.corner_indices.len(),
             &triangles,
-        )? {
+        )?;
+        let Some(normals) = flattened else {
+            // Mapping mode this puller doesn't flatten (`AllSame`,
+            // `ByPolygon`, `NoMappingInformation`) or a missing
+            // `Normals` payload — skip without claiming a slot.
+            continue;
+        };
+        if prim.normals.is_none() {
             prim.normals = Some(normals);
+        } else {
+            // Additional normal layer — flatten its per-corner
+            // buffer into `extras`. Record the layer's `TypedIndex`
+            // (the integer that disambiguates it from the canonical
+            // layer) and its source mapping mode alongside it.
+            let flat: Vec<Value> = normals
+                .iter()
+                .flat_map(|n| n.iter())
+                .map(|&c| {
+                    Value::Number(serde_json::Number::from_f64(c as f64).unwrap_or_else(|| {
+                        // Non-finite components fall back to 0.0
+                        // (serde_json refuses NaN/Inf).
+                        serde_json::Number::from_f64(0.0).unwrap()
+                    }))
+                })
+                .collect();
+            extra_normals.push(Value::Array(flat));
+            extra_normals_typed_index.push(
+                layer_typed_index(layer)
+                    .map(|i| Value::Number(serde_json::Number::from(i)))
+                    .unwrap_or(Value::Null),
+            );
+            extra_normals_mapping.push(
+                layer
+                    .child("MappingInformationType")
+                    .and_then(|n| n.properties.first().and_then(FbxProperty::as_str))
+                    .map(|s| Value::String(s.to_owned()))
+                    .unwrap_or(Value::Null),
+            );
         }
+    }
+    if !extra_normals.is_empty() {
+        prim.extras
+            .insert("fbx:extra_normals".to_string(), Value::Array(extra_normals));
+        prim.extras.insert(
+            "fbx:extra_normals_typed_index".to_string(),
+            Value::Array(extra_normals_typed_index),
+        );
+        prim.extras.insert(
+            "fbx:extra_normals_mapping".to_string(),
+            Value::Array(extra_normals_mapping),
+        );
     }
 
     // UVs — every `LayerElementUV` in document order.
@@ -339,6 +410,19 @@ fn decode_pvi(raw: i32) -> u32 {
     } else {
         raw as u32
     }
+}
+
+/// The layer-disambiguating integer (`TypedIndex`) carried directly
+/// as the first property of a `LayerElement*` node.
+///
+/// In both ASCII (`LayerElementNormal: 0 { … }`) and binary FBX the
+/// integer index that distinguishes one normal/UV/colour layer from
+/// the next is the node's leading scalar property; the parent `Layer`
+/// node references it via its `TypedIndex` child (per
+/// `docs/3d/fbx/fbx-binary-properties70.md` §6.4). Returns `None`
+/// when the node carries no leading integer property.
+fn layer_typed_index(layer: &FbxNode) -> Option<i64> {
+    layer.properties.first().and_then(FbxProperty::as_i64)
 }
 
 /// Generic 3-component `LayerElement*` puller (Normals, Tangents,

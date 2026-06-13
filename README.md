@@ -24,10 +24,17 @@ clean-room from third-party documentation:
   Model → root.
 - Mesh extraction: `Vertices` + `PolygonVertexIndex` →
   per-corner `Primitive(Topology::Triangles)` (ngons fan-triangulated;
-  end-of-polygon negatives bit-NOT decoded). First
-  `LayerElementNormal` / `LayerElementUV` flattened when the mapping
-  mode is `ByPolygonVertex` or `ByVertex` (with optional
-  `IndexToDirect` indirection).
+  end-of-polygon negatives bit-NOT decoded). `LayerElementNormal` /
+  `LayerElementUV` flattened when the mapping mode is `ByPolygonVertex`
+  or `ByVertex` (with optional `IndexToDirect` indirection), each
+  layer's `MappingInformationType` / `ReferenceInformationType`
+  resolved independently. A `Geometry` carrying **more than one**
+  `LayerElementNormal` (distinguished by its `Layer` / `TypedIndex`
+  integer per `docs/3d/fbx/fbx-binary-properties70.md` §6.4) surfaces
+  the first as the canonical `Primitive::normals` and the rest on
+  `Primitive::extras["fbx:extra_normals"]` (one flattened per-corner
+  buffer each, with `fbx:extra_normals_typed_index` /
+  `fbx:extra_normals_mapping` metadata).
 - Animation: `AnimationStack` / `AnimationLayer` /
   `AnimationCurveNode` / `AnimationCurve` → one
   `oxideav_mesh3d::Animation` per stack. `Lcl Translation` /

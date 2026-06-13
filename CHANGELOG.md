@@ -9,6 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Round 289 — **multi-`LayerElementNormal` decode.** A `Geometry`
+  node may carry more than one `LayerElementNormal` record, each
+  distinguished by its `Layer` / `TypedIndex` integer per
+  `docs/3d/fbx/fbx-binary-properties70.md` §6.4 *"LayerElement*
+  sub-discriminator (within Geometry)"* (each layer carries its own
+  `MappingInformationType` / `ReferenceInformationType`). The mesh
+  extractor previously surfaced only the first normal layer and
+  dropped the rest; it now resolves every `LayerElementNormal`
+  independently, keeps the first flattenable layer as the canonical
+  `Primitive::normals` (`oxideav_mesh3d` exposes a single normals
+  slot), and surfaces any additional layers on
+  `Primitive::extras["fbx:extra_normals"]` (one flattened per-corner
+  `[x,y,z,…]` buffer per extra layer) with
+  `fbx:extra_normals_typed_index` / `fbx:extra_normals_mapping`
+  recording each extra layer's `TypedIndex` and source mapping mode.
+  New `tests/synthetic_multi_normal.rs` builds a quad with two
+  `LayerElementNormal` records (`ByPolygonVertex` channel 0 +
+  `ByVertex` channel 1, distinct `TypedIndex`) and asserts both the
+  canonical slot and the extras flattening / metadata.
+
 - Round 280 — **`Definitions` / `PropertyTemplate` decoding +
   template-default resolution.** The top-level `Definitions` section —
   per `docs/3d/fbx/fbx-ascii-grammar.md` §7b, *"`Count` at the top is
