@@ -107,6 +107,71 @@ fn ascii_fixture_first_mesh_has_24_vertices() {
 }
 
 #[test]
+fn ascii_fixture_first_mesh_surfaces_tangents_and_binormals() {
+    // Round 301 — the fixture's first Geometry carries a
+    // `LayerElementTangent` (`Tangents: *72` triple + `TangentsW: *24`
+    // per-corner sign, `ByPolygonVertex` / `Direct`) and a
+    // `LayerElementBinormal` (`Binormals: *72` + `BinormalsW: *24`),
+    // both enumerated as Geometry LayerElement sub-discriminators in
+    // `docs/3d/fbx/fbx-binary-properties70.md` §6 point 4 and shown in
+    // the `docs/3d/fbx/fbx-ascii-grammar.md` §7c worked example. The
+    // tangent layer must populate the canonical `Primitive::tangents`
+    // slot (glTF-style `[x,y,z,w]`); the binormal layer must surface on
+    // `Primitive::extras["fbx:binormals"]`.
+    let mut dec = FbxDecoder::new();
+    let scene = dec.decode(FIXTURE).expect("ASCII fixture decodes");
+
+    // Find a mesh that actually carries a tangent layer (the cube
+    // Geometry; iterate so the test is robust to scene ordering).
+    let prim = scene
+        .meshes
+        .iter()
+        .flat_map(|m| m.primitives.iter())
+        .find(|p| p.tangents.is_some())
+        .expect("at least one primitive surfaces tangents");
+
+    let tangents = prim.tangents.as_ref().unwrap();
+    // One tangent per triangle corner (24 PolygonVertexIndex entries →
+    // 6 quads → 12 triangles → 36 corners).
+    assert_eq!(
+        tangents.len(),
+        prim.positions.len(),
+        "tangents are per-corner, same length as positions"
+    );
+    // Every handedness sign in the fixture is +1.0 (TangentsW: all 1s).
+    for t in tangents {
+        assert!(
+            (t[3] - 1.0).abs() < 1e-6,
+            "expected +1.0 handedness sign, got {}",
+            t[3]
+        );
+        // Tangent xyz is a unit axis vector in the fixture (1,0,0)
+        // family — finite and non-degenerate.
+        let len = (t[0] * t[0] + t[1] * t[1] + t[2] * t[2]).sqrt();
+        assert!(len > 0.5, "tangent xyz should be ~unit length, got {len}");
+    }
+
+    // Binormals surfaced on extras as one flattened per-corner buffer.
+    let binormals = prim
+        .extras
+        .get("fbx:binormals")
+        .expect("fbx:binormals surfaced")
+        .as_array()
+        .expect("fbx:binormals is a JSON array");
+    assert_eq!(binormals.len(), 1, "one LayerElementBinormal layer");
+    let buf = binormals[0].as_array().expect("buffer is an array");
+    // 4 components (x,y,z,w) per corner.
+    assert_eq!(buf.len(), prim.positions.len() * 4);
+    let mapping = prim
+        .extras
+        .get("fbx:binormals_mapping")
+        .and_then(|v| v.as_array())
+        .and_then(|a| a.first())
+        .and_then(|v| v.as_str());
+    assert_eq!(mapping, Some("ByPolygonVertex"));
+}
+
+#[test]
 fn ascii_fixture_definitions_decode_with_material_template() {
     // Round 280 — the fixture's `Definitions` section is the grammar
     // §7b worked example: Version 100, total Count 13, six

@@ -9,6 +9,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Round 301 — **`LayerElementTangent` / `LayerElementBinormal`
+  decode.** `docs/3d/fbx/fbx-binary-properties70.md` §6 point 4
+  enumerates `LayerElementTangent` and `LayerElementBinormal` as
+  `Geometry` LayerElement sub-discriminators alongside Normal / UV /
+  Color / Material; the `docs/3d/fbx/fbx-ascii-grammar.md` §7c worked
+  example + the staged `cubes-ascii-v7500.fbx` fixture show the on-disk
+  shape (a `Tangents` 3-component `d`-array + a companion `TangentsW`
+  per-corner sign `d`-array, and likewise `Binormals` / `BinormalsW`).
+  The mesh extractor previously dropped both layer kinds. It now
+  populates the canonical `Primitive::tangents` slot (glTF-style
+  `[x,y,z,w]` — xyz from `Tangents`, `w` handedness from `TangentsW`
+  when present, else `+1.0`) from the first `LayerElementTangent`;
+  additional tangent layers ride on
+  `Primitive::extras["fbx:extra_tangents"]` (one flattened per-corner
+  `[x,y,z,w,…]` buffer each) with `fbx:extra_tangents_typed_index` /
+  `fbx:extra_tangents_mapping` metadata, mirroring the
+  multi-`LayerElementNormal` surfacing. `oxideav_mesh3d` has no
+  first-class binormal slot (the bitangent is reconstructed from the
+  tangent `w` sign), so every `LayerElementBinormal` surfaces on
+  `Primitive::extras["fbx:binormals"]` (xyz + `BinormalsW` sign) with a
+  `fbx:binormals_mapping` companion, keeping the explicitly-authored
+  binormal payload recoverable for a consumer that prefers the stored
+  bitangent over the reconstructed one. Mapping / reference handling
+  (`ByPolygonVertex` / `ByVertex` with optional `IndexToDirect`
+  indirection) reuses the round-1 puller. Validated against the
+  fixture's tangent / binormal layers + four hand-authored binary
+  synthetics.
+
 - Round 289 — **multi-`LayerElementNormal` decode.** A `Geometry`
   node may carry more than one `LayerElementNormal` record, each
   distinguished by its `Layer` / `TypedIndex` integer per

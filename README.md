@@ -86,6 +86,26 @@ clean-room from third-party documentation:
   `Direct` / `IndexToDirect` work for every channel. Round-trip
   tested against `docs/3d/fbx/fixtures/cubes-ascii-v7500.fbx`
   ground-truth UV / UVIndex arrays + a two-UV-set synthetic.
+- **Tangents / Binormals** (round 301) — `docs/3d/fbx/fbx-binary-properties70.md`
+  §6 point 4 enumerates `LayerElementTangent` / `LayerElementBinormal`
+  as `Geometry` LayerElement sub-discriminators alongside Normal / UV /
+  Color / Material (the `docs/3d/fbx/fbx-ascii-grammar.md` §7c worked
+  example + the staged `cubes-ascii-v7500.fbx` fixture carry both). The
+  first `LayerElementTangent` populates the canonical
+  `Primitive::tangents` slot glTF-style (`[x,y,z,w]` — xyz from the
+  `Tangents` 3-component `d`-array, `w` handedness from the companion
+  per-corner `TangentsW` sign array when present, else `+1.0`); extra
+  tangent layers (distinguished by their `Layer` / `TypedIndex` integer
+  per §6 point 4) ride on `Primitive::extras["fbx:extra_tangents"]`
+  with `fbx:extra_tangents_typed_index` / `fbx:extra_tangents_mapping`
+  metadata. `oxideav_mesh3d` has no first-class binormal slot (the
+  bitangent reconstructs from the tangent `w` sign as `B = w·(N×T)`),
+  so every `LayerElementBinormal` surfaces on
+  `Primitive::extras["fbx:binormals"]` (xyz + `BinormalsW` sign) with a
+  `fbx:binormals_mapping` companion, keeping the explicitly-authored
+  binormal payload recoverable. Mapping / reference handling
+  (`ByPolygonVertex` / `ByVertex` + optional `IndexToDirect`) reuses the
+  round-1 puller.
 - **Multi-material slot table** (round 178) — `LayerElementMaterial`
   per-polygon slot indices (`MappingInformationType=ByPolygon`) +
   every `Material -> Model` OO connection in slot order land on

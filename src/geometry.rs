@@ -220,6 +220,147 @@ pub fn extract_geometry_mesh_with_corners(
         }
     }
 
+    // Tangents — the first `LayerElementTangent` populates the
+    // canonical `Primitive::tangents` slot (`[f32; 4]`), the xyz
+    // pulled from the `Tangents` (`d`-array, 3-component) sub-record
+    // and the `.w` handedness sign pulled from the companion
+    // `TangentsW` (`d`-array, 1-component, same mapping mode as the
+    // tangent layer) when present, else defaulting to `+1.0`. The
+    // `docs/3d/fbx/fbx-ascii-grammar.md` §6 / §7c worked example +
+    // `docs/3d/fbx/fbx-binary-properties70.md` §6 point 4 enumerate
+    // `LayerElementTangent` (and `LayerElementBinormal`) as
+    // `Geometry` LayerElement sub-discriminators alongside Normal /
+    // UV / Color / Material, each carrying the same
+    // `MappingInformationType` / `ReferenceInformationType` leaves;
+    // the staged `cubes-ascii-v7500.fbx` fixture carries a
+    // `ByPolygonVertex` / `Direct` `Tangents: *72` triple array plus a
+    // `TangentsW: *24` per-corner sign array. `oxideav_mesh3d` stores
+    // tangents glTF-style (`xyz` unit tangent + `w` bitangent sign),
+    // so the FBX 3-component tangent + separate W sign map onto it
+    // directly. Additional `LayerElementTangent` layers (a `Geometry`
+    // may carry several, distinguished by their `Layer` / `TypedIndex`
+    // integer per §6 point 4) ride on
+    // `Primitive::extras["fbx:extra_tangents"]` (one flattened
+    // per-corner `[x,y,z,w,…]` buffer each) with companion
+    // `fbx:extra_tangents_typed_index` / `fbx:extra_tangents_mapping`
+    // metadata, mirroring the multi-`LayerElementNormal` surfacing.
+    let mut extra_tangents: Vec<Value> = Vec::new();
+    let mut extra_tangents_typed_index: Vec<Value> = Vec::new();
+    let mut extra_tangents_mapping: Vec<Value> = Vec::new();
+    for layer in geom.children_named("LayerElementTangent") {
+        let Some(xyz) = pull_layer_vec3(
+            layer,
+            "Tangents",
+            "TangentsIndex",
+            triangles.corner_indices.len(),
+            &triangles,
+        )?
+        else {
+            continue;
+        };
+        // Per-corner handedness sign (`+1.0` / `-1.0`); FBX stores it
+        // separately from the xyz triple.
+        let w = pull_layer_scalar(
+            layer,
+            "TangentsW",
+            "TangentsW",
+            triangles.corner_indices.len(),
+            &triangles,
+        )?;
+        let combined: Vec<[f32; 4]> = xyz
+            .iter()
+            .enumerate()
+            .map(|(i, t)| {
+                let sign = w.as_ref().and_then(|w| w.get(i)).copied().unwrap_or(1.0);
+                [t[0], t[1], t[2], sign]
+            })
+            .collect();
+        if prim.tangents.is_none() {
+            prim.tangents = Some(combined);
+        } else {
+            let flat: Vec<Value> = combined
+                .iter()
+                .flat_map(|t| t.iter())
+                .map(|&c| json_f64(c as f64))
+                .collect();
+            extra_tangents.push(Value::Array(flat));
+            extra_tangents_typed_index.push(
+                layer_typed_index(layer)
+                    .map(|i| Value::Number(serde_json::Number::from(i)))
+                    .unwrap_or(Value::Null),
+            );
+            extra_tangents_mapping.push(layer_mapping_value(layer));
+        }
+    }
+    if !extra_tangents.is_empty() {
+        prim.extras.insert(
+            "fbx:extra_tangents".to_string(),
+            Value::Array(extra_tangents),
+        );
+        prim.extras.insert(
+            "fbx:extra_tangents_typed_index".to_string(),
+            Value::Array(extra_tangents_typed_index),
+        );
+        prim.extras.insert(
+            "fbx:extra_tangents_mapping".to_string(),
+            Value::Array(extra_tangents_mapping),
+        );
+    }
+
+    // Binormals — `oxideav_mesh3d::Primitive` has no first-class
+    // binormal slot (the bitangent is reconstructed from the
+    // tangent's `w` sign as `B = w * (N × T)` in the glTF convention),
+    // so every `LayerElementBinormal` is surfaced on
+    // `Primitive::extras["fbx:binormals"]` (a JSON array, one
+    // flattened per-corner `[x,y,z,w,…]` buffer per layer — xyz from
+    // the `Binormals` `d`-array, `w` from the companion `BinormalsW`
+    // sign array when present, else `+1.0`). `fbx:binormals_mapping`
+    // records each layer's source mapping mode. This keeps the FBX
+    // binormal payload (authored explicitly by exporters like the
+    // staged `cubes-ascii-v7500.fbx`'s `Binormals: *72` /
+    // `BinormalsW: *24`) recoverable for a downstream consumer that
+    // prefers the stored bitangent over the reconstructed one.
+    let mut binormals: Vec<Value> = Vec::new();
+    let mut binormals_mapping: Vec<Value> = Vec::new();
+    for layer in geom.children_named("LayerElementBinormal") {
+        let Some(xyz) = pull_layer_vec3(
+            layer,
+            "Binormals",
+            "BinormalsIndex",
+            triangles.corner_indices.len(),
+            &triangles,
+        )?
+        else {
+            continue;
+        };
+        let w = pull_layer_scalar(
+            layer,
+            "BinormalsW",
+            "BinormalsW",
+            triangles.corner_indices.len(),
+            &triangles,
+        )?;
+        let flat: Vec<Value> = xyz
+            .iter()
+            .enumerate()
+            .flat_map(|(i, b)| {
+                let sign = w.as_ref().and_then(|w| w.get(i)).copied().unwrap_or(1.0);
+                [b[0], b[1], b[2], sign]
+            })
+            .map(|c| json_f64(c as f64))
+            .collect();
+        binormals.push(Value::Array(flat));
+        binormals_mapping.push(layer_mapping_value(layer));
+    }
+    if !binormals.is_empty() {
+        prim.extras
+            .insert("fbx:binormals".to_string(), Value::Array(binormals));
+        prim.extras.insert(
+            "fbx:binormals_mapping".to_string(),
+            Value::Array(binormals_mapping),
+        );
+    }
+
     // LayerElementMaterial — surface per-polygon material slot
     // indices on `Primitive::extras` per
     // `docs/3d/fbx/ufbx/elements-meshes.md` §"Materials": the
@@ -531,6 +672,108 @@ fn flatten_layer_vec3(
         out.push(triple);
     }
     Ok(Some(out))
+}
+
+/// Generic 1-component (scalar) `LayerElement*` puller. Used for the
+/// per-corner handedness-sign arrays `TangentsW` / `BinormalsW` that
+/// FBX stores alongside the 3-component `Tangents` / `Binormals`
+/// triple arrays. Mapping / reference handling matches the 3-component
+/// puller (the W array shares its owning layer's `MappingInformationType`
+/// / `ReferenceInformationType`). Returns `Some(per_corner_buf)` when
+/// the mapping mode is one we flatten, `None` otherwise (including
+/// when the scalar sub-record is absent — callers default the sign to
+/// `+1.0`).
+fn pull_layer_scalar(
+    layer: &FbxNode,
+    data_name: &str,
+    index_name: &str,
+    expected_corners: usize,
+    triangles: &Triangulation,
+) -> Result<Option<Vec<f32>>> {
+    let mapping = layer.child("MappingInformationType").and_then(|n| {
+        n.properties
+            .first()
+            .and_then(FbxProperty::as_str)
+            .map(str::to_owned)
+    });
+    let reference = layer.child("ReferenceInformationType").and_then(|n| {
+        n.properties
+            .first()
+            .and_then(FbxProperty::as_str)
+            .map(str::to_owned)
+    });
+    let data_node = match layer.child(data_name) {
+        Some(n) => n,
+        None => return Ok(None),
+    };
+    let scalars: Vec<f32> = match data_node.properties.first() {
+        Some(FbxProperty::F64Array(a)) => a.iter().map(|&v| v as f32).collect(),
+        Some(FbxProperty::F32Array(a)) => a.clone(),
+        _ => return Ok(None),
+    };
+    let index_arr: Option<Vec<i32>> = layer.child(index_name).and_then(|n| {
+        n.properties.first().and_then(|p| match p {
+            FbxProperty::I32Array(a) => Some(a.clone()),
+            _ => None,
+        })
+    });
+    let direct_only = matches!(reference.as_deref(), None | Some("Direct"));
+    let by_polygon_vertex = matches!(mapping.as_deref(), Some("ByPolygonVertex"));
+    let by_vertex = matches!(mapping.as_deref(), Some("ByVertex") | Some("ByVertice"));
+    if !by_polygon_vertex && !by_vertex {
+        return Ok(None);
+    }
+    let mut out = Vec::with_capacity(expected_corners);
+    for (corner_ix, &shared_ix) in triangles.corner_indices.iter().enumerate() {
+        let lookup = if by_vertex {
+            shared_ix as usize
+        } else {
+            triangles.corner_pvi_index[corner_ix] as usize
+        };
+        let scalar_ix = if direct_only {
+            lookup
+        } else if let Some(ix_arr) = index_arr.as_deref() {
+            let i = ix_arr.get(lookup).copied().unwrap_or(-1);
+            if i < 0 {
+                return Err(Error::invalid(format!(
+                    "FBX LayerElement: {index_name} index {i} (negative)"
+                )));
+            }
+            i as usize
+        } else {
+            return Err(Error::invalid(format!(
+                "FBX LayerElement: {data_name} ReferenceInformationType==IndexToDirect but no {index_name} sub-record",
+            )));
+        };
+        let scalar = scalars.get(scalar_ix).copied().ok_or_else(|| {
+            Error::invalid(format!(
+                "FBX LayerElement: {data_name} index {scalar_ix} out of range for {}-element array",
+                scalars.len()
+            ))
+        })?;
+        out.push(scalar);
+    }
+    Ok(Some(out))
+}
+
+/// JSON-number wrapper that maps non-finite floats (which serde_json
+/// refuses) to `0.0`. Shared by the `extras`-surfacing buffers.
+fn json_f64(c: f64) -> Value {
+    Value::Number(
+        serde_json::Number::from_f64(c)
+            .unwrap_or_else(|| serde_json::Number::from_f64(0.0).unwrap()),
+    )
+}
+
+/// The owning layer's `MappingInformationType` string as a JSON
+/// value, or `Null` when absent. Shared by the extra-tangent /
+/// binormal metadata surfacing.
+fn layer_mapping_value(layer: &FbxNode) -> Value {
+    layer
+        .child("MappingInformationType")
+        .and_then(|n| n.properties.first().and_then(FbxProperty::as_str))
+        .map(|s| Value::String(s.to_owned()))
+        .unwrap_or(Value::Null)
 }
 
 fn pull_layer_vec2(
