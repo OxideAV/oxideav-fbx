@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.3](https://github.com/OxideAV/oxideav-fbx/compare/v0.0.2...v0.0.3) - 2026-06-15
+
+### Other
+
+- refresh to current status, drop per-round changelog cruft
+- Round 301: LayerElementTangent / LayerElementBinormal decode
+- decode multiple LayerElementNormal layers
+- Round 280: Definitions / PropertyTemplate decoding + template-default resolution
+- surface non-Mesh Geometry §6 subtype discriminator (round 271)
+- Round 263: Properties70 flag-discriminating iterators
+- Round 249: Properties70 "Compound" typeName-discriminating accessor
+- drop release-plz.toml — use release-plz defaults across the workspace
+- Round 246: Properties70 typeName-discriminating scalar accessors
+- Round 243: Properties70 typeName-discriminating accessors
+- Round 240: PropertyMap::as_i64 lossless KTime/ULongLong accessor
+- Round 235: NodeAttribute "LimbNode" / "Null" discriminator surfacing
+- scrub decorative "matches ufbx" wording in README + CHANGELOG
+- round 226 — derive bind-pose bone_to_parent
+- lib.rs doc — surface round 219 GlobalSettings in crate-level comment
+- Round 219: GlobalSettings P-record decode + Scene3D::unit / extras
+- Round 213: ASCII FBX writer (closes round-200 NYI tail)
+- Round 207: Light / Camera NodeAttribute surfacing
+- stage cubes-ascii-v7500.fbx in tests/fixtures/ for per-crate CI
+- Round 200: ASCII FBX reader (decoder accepts `; FBX` banner)
+- scrub residual decorative-attribution prose ahead of Hat-2
+
 ### Added
 
 - Round 301 — **`LayerElementTangent` / `LayerElementBinormal`
