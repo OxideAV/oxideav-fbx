@@ -48,7 +48,7 @@ clean-room from third-party documentation:
   `Deformer{BlendShape}` + `BlendShapeChannel` + `Geometry{Shape}`
   → `MorphTarget` per channel (sparse `Indexes` deltas expanded to
   per-corner buffers).
-- **Materials / Textures / Video** (round 5, factor decode round 191)
+- **Materials / Textures / Video**
   — one `oxideav_mesh3d::Material` per FBX `Material` element with
   PBR factors decoded from `Properties70` `P`-records per
   `docs/3d/fbx/fbx-binary-properties70.md` §4: `DiffuseColor` ×
@@ -66,7 +66,7 @@ clean-room from third-party documentation:
   `emissive_texture` / `metallic_roughness_texture` /
   `occlusion_texture` slots; `Material -> Model` OO records set
   `Primitive::material` on the bound mesh.
-- **Vertex colours** (round 184) — every `LayerElementColor` sub-record
+- **Vertex colours** — every `LayerElementColor` sub-record
   on a `Geometry` element is surfaced as a separate per-corner RGBA
   buffer on `Primitive::colors` (one slot per FBX colour set,
   mirroring ufbx's `vertex_color` first slot + `color_sets[1..]`
@@ -74,7 +74,7 @@ clean-room from third-party documentation:
   (`ByPolygonVertex` / `ByVertex` with optional `IndexToDirect`
   indirection); the `d`-array `Colors` payload is 4-component RGBA per
   ufbx reference §`ufbx_color_set.vertex_color`.
-- **Multi-UV-set surfacing** (round 194) — every `LayerElementUV`
+- **Multi-UV-set surfacing** — every `LayerElementUV`
   sub-record on a `Geometry` element is now surfaced as a separate
   per-corner `[f32; 2]` buffer on `Primitive::uvs` (one entry per
   FBX UV channel, in document order). Per
@@ -82,11 +82,11 @@ clean-room from third-party documentation:
   §`ufbx_uv_set`, an FBX mesh may carry multiple UV channels (the
   canonical diffuse + lightmap pair); the first set is also aliased
   at `ufbx_mesh.vertex_uv`. Mapping / reference handling reuses the
-  round-1 2-component puller, so `ByPolygonVertex` / `ByVertex` and
+  2-component puller, so `ByPolygonVertex` / `ByVertex` and
   `Direct` / `IndexToDirect` work for every channel. Round-trip
   tested against `docs/3d/fbx/fixtures/cubes-ascii-v7500.fbx`
   ground-truth UV / UVIndex arrays + a two-UV-set synthetic.
-- **Tangents / Binormals** (round 301) — `docs/3d/fbx/fbx-binary-properties70.md`
+- **Tangents / Binormals** — `docs/3d/fbx/fbx-binary-properties70.md`
   §6 point 4 enumerates `LayerElementTangent` / `LayerElementBinormal`
   as `Geometry` LayerElement sub-discriminators alongside Normal / UV /
   Color / Material (the `docs/3d/fbx/fbx-ascii-grammar.md` §7c worked
@@ -105,16 +105,16 @@ clean-room from third-party documentation:
   `fbx:binormals_mapping` companion, keeping the explicitly-authored
   binormal payload recoverable. Mapping / reference handling
   (`ByPolygonVertex` / `ByVertex` + optional `IndexToDirect`) reuses the
-  round-1 puller.
-- **Multi-material slot table** (round 178) — `LayerElementMaterial`
+  shared puller.
+- **Multi-material slot table** — `LayerElementMaterial`
   per-polygon slot indices (`MappingInformationType=ByPolygon`) +
   every `Material -> Model` OO connection in slot order land on
   `Primitive::extras` (`fbx:face_material_slots` / `fbx:material_slots` /
   `fbx:material_mapping`), preserving the full per-face material
   payload alongside the legacy single-binding `Primitive::material`
-  (which stays at slot 0 for round-5 single-binding consumers).
-- **GlobalSettings** (round 219) — the top-level `GlobalSettings`
-  node's `Properties70` block is decoded via the round-191
+  (slot 0).
+- **GlobalSettings** — the top-level `GlobalSettings`
+  node's `Properties70` block is decoded via the
   `PropertyMap`; every well-known `P`-record from the
   cubes-ascii-v7500.fbx fixture (`UpAxis` / `UpAxisSign` / `FrontAxis`
   / `FrontAxisSign` / `CoordAxis` / `CoordAxisSign` /
@@ -137,7 +137,7 @@ clean-room from third-party documentation:
   so `Scene3D::up_axis` / `front_axis` stay at the `Scene3D::new`
   defaults pending a follow-up grammar staging.
 - **`Definitions` / `PropertyTemplate` decoding + template-default
-  resolution** (round 280) — the top-level `Definitions` section (per
+  resolution** — the top-level `Definitions` section (per
   `docs/3d/fbx/fbx-ascii-grammar.md` §7b: *"`Count` at the top is the
   total object count; each `ObjectType:` block names a class, its
   instance `Count`, and a `PropertyTemplate` holding the default
@@ -145,7 +145,7 @@ clean-room from third-party documentation:
   module into a typed `Definitions` value — section `Version` /
   `total_count` plus one `ObjectTypeDefinition` per class (class
   name, instance count, template name, default property set as a
-  round-191 `PropertyMap`). Classes without a template block (the
+  the `PropertyMap`). Classes without a template block (the
   fixture's `GlobalSettings`) surface count-only. The binary encoding
   renders the identical node tree (docs `fbx-binary-properties70.md`
   §4 isomorphism note) so one walker covers both front-ends. The
@@ -159,7 +159,7 @@ clean-room from third-party documentation:
   The scene builder's no-content fallback no longer discards a
   populated materials / textures arena when a document carries no
   meshes or nodes.
-- **Bind pose** (round 97; parent-local form added round 226) —
+- **Bind pose** —
   `Objects { Pose : "BindPose" }` elements surface each
   `PoseNode { Node, Matrix }` bone-world matrix onto the bone `Node`'s
   `extras["fbx:bind_pose"]` (16-double row-major JSON array). When a
@@ -170,8 +170,7 @@ clean-room from third-party documentation:
   approximated"* case. `Matrix` is a direct `d`-array sub-record, so
   this stays clear of the still-unstaged `Properties70` `P`-record
   grammar. Joints that already have a real inverse-bind are untouched;
-  non-bind rest poses (`is_bind_pose == false`) are not promoted.
-  Round 226 additionally derives the parent-space form
+  non-bind rest poses (`is_bind_pose == false`) are not promoted. The decoder also derives the parent-space form
   `bone_to_parent = inverse(parent_bone_to_world) * bone_to_world` for
   every posed bone whose parent in the scene graph is also posed,
   surfaced as `node.extras["fbx:bind_pose_parent_local"]` (16-double
@@ -180,13 +179,13 @@ clean-room from third-party documentation:
   parent world = identity). Per `docs/3d/fbx/ufbx/reference.html`
   §`ufbx_bone_pose`, `bone_to_parent` is documented as *"approximated
   from the parent world transform"*.
-- **`Properties70` typeName-discriminating accessors** (round 243) —
+- **`Properties70` typeName-discriminating accessors** —
   the existing [`PropertyMap::as_vec3`] and [`PropertyMap::as_str`]
   surface every triple-typed and string-typed `P`-record indiscriminately,
   but `docs/3d/fbx/fbx-binary-properties70.md` §4 documents prop1 (the
   typeName string) as the semantic discriminator (*"The typeName /
-  label / flags strings carry the semantic type"*). Round 243 adds six
-  typeName-aware accessors that honour the docs §4 typeName mapping:
+  label / flags strings carry the semantic type"*). Six typeName-aware
+  accessors honour the docs §4 typeName mapping:
   - `as_color_rgb` — accepts `"ColorRGB"` and `"Color"` (the docs §4
     sample `AmbientColor S"ColorRGB"` and the cubes-ascii-v7500.fbx
     Material records `DiffuseColor "Color"`).
@@ -212,9 +211,8 @@ clean-room from third-party documentation:
   accessors narrow on top of the generic ones rather than replacing
   them.
 - **`Properties70` typeName-discriminating scalar accessors**
-  (round 246) — round 243 closed the triple-typed half of the
-  typeName-aware accessor surface; round 246 closes the matching
-  scalar half so each typeName from the docs §8 ASCII-grammar
+  — alongside the triple/string typeName-aware accessors above, the
+  scalar half covers each typeName from the docs §8 ASCII-grammar
   scalar enumeration (`int`, `enum`, `bool`, `double`, `Number`,
   `KString`, `KTime`, `ULongLong`) gets its own narrow accessor on
   top of the generic [`PropertyMap::as_f64`] / [`as_i32`] /
@@ -240,7 +238,7 @@ clean-room from third-party documentation:
     `ReflectionFactor`).
   - `as_kstring` — `"KString"` typeName only (`DocumentUrl` /
     `SrcDocumentUrl` / `currentUVSet` / `DefaultCamera`); rejects
-    coincident `"DateTime"` and `"object"` records so the round-243
+    coincident `"DateTime"` and `"object"` records so the
     [`as_datetime`] / [`as_object_ref`] surfaces stay disjoint.
   - `as_ktime` — `"KTime"` typeName only with lossless `L` (int64)
     decoding (`TimeSpanStart` / `TimeSpanStop`); widens `I` / `Bool`
@@ -252,10 +250,9 @@ clean-room from third-party documentation:
   Generic widening accessors continue to surface every variant — the
   typed accessors narrow on top.
 - **`Properties70` `"Compound"` typeName-discriminating accessor**
-  (round 249) — closes the last typeName from the
-  `docs/3d/fbx/fbx-ascii-grammar.md` §8 enumeration that previously
-  had no typeName-aware accessor. After round 243 (six triple +
-  string accessors) and round 246 (eight scalar accessors), the
+  — covers the last typeName from the
+  `docs/3d/fbx/fbx-ascii-grammar.md` §8 enumeration. With the triple,
+  string, and scalar accessors above, the
   full §8 typeName enumeration (`int / double / enum / bool /
   KString / KTime / Number / ULongLong / ColorRGB / Color / Vector3D
   / Vector / Lcl Translation / Lcl Rotation / Lcl Scaling / DateTime
@@ -276,11 +273,11 @@ clean-room from third-party documentation:
     `Original` / `LastSaved` parent keys that precede the sibling
     `Original|ApplicationName` / `LastSaved|DateTime_GMT` nested
     keys sharing the prefix).
-  Disjoint from the round-243 `as_object_ref`: an `"object"` slot
+  Disjoint from `as_object_ref`: an `"object"` slot
   the exporter wrote with no body lands in `PValue::Compound` but
   keeps its `"object"` typeName, so it surfaces via `as_object_ref`
   (returning `""`) and never via `is_compound`.
-- **`Properties70` flag-discriminating iterators** (round 263) —
+- **`Properties70` flag-discriminating iterators** —
   surfaces the third parsed-but-otherwise-unused string in every
   `P` record (`PRecord::flags`, prop3 of the
   `docs/3d/fbx/fbx-binary-properties70.md` §4 / `fbx-ascii-grammar.md`
@@ -293,7 +290,7 @@ clean-room from third-party documentation:
   AnimCurve wiring through the `Connections` `OP` records; a UI
   layer enumerates `user_names()` to find the custom attributes the
   artist added in the source DCC.
-- **`Geometry` non-`Mesh` subtype discriminator** (round 271) — the
+- **`Geometry` non-`Mesh` subtype discriminator** — the
   `docs/3d/fbx/fbx-binary-properties70.md` §6 point 3 enumeration lists
   the `Geometry` prop2 subtype string as the fine class discriminator;
   the `"Mesh"` subtype is tessellated by [`crate::geometry`] and
@@ -308,11 +305,11 @@ clean-room from third-party documentation:
   `Geometry -> Model` `OO` connection, so a consumer can detect that a
   non-tessellated NURBS / line geometry exists and what kind it is
   without re-walking the `FbxDocument`. Coexists on a distinct key from
-  round 235's `"fbx:node_attribute_kind"`. The per-subtype control-point
+  the `"fbx:node_attribute_kind"` key. The per-subtype control-point
   / knot-vector grammar that a real curve / surface evaluation would
   need is absent from the staged docs (only the subtype *names* are
   enumerated), so tessellation is a follow-up round.
-- **NodeAttribute `"LimbNode"` / `"Null"` discriminator** (round 235) —
+- **NodeAttribute `"LimbNode"` / `"Null"` discriminator** —
   the remaining well-known `NodeAttribute` subtype discriminators
   documented in `docs/3d/fbx/fbx-binary-properties70.md` §6 that
   don't map onto a first-class [`oxideav_mesh3d`] type. The owning
@@ -320,9 +317,9 @@ clean-room from third-party documentation:
   records the §6 discriminator string verbatim (`"LimbNode"` for a
   skeletal bone, `"Null"` for a locator / empty), so consumers can
   distinguish bone Models from locator Models from plain Mesh Models
-  without re-walking the `FbxDocument`. Coexists with round 207 on a
-  distinct key (`"fbx:light_type"` is round 207's; this is its own).
-- **Lights / Cameras** (round 207) — `Objects { NodeAttribute }` records
+  without re-walking the `FbxDocument`. Coexists with the light/camera
+  surfacing on a distinct key (`"fbx:light_type"` vs this one).
+- **Lights / Cameras** — `Objects { NodeAttribute }` records
   whose subtype string (third property — see
   `docs/3d/fbx/fbx-binary-properties70.md` §6) is `"Light"` or
   `"Camera"` are decoded into [`oxideav_mesh3d::Light`] /
@@ -353,7 +350,7 @@ clean-room from third-party documentation:
     `Node::extras["fbx:camera_resolution"]`. Orthographic cameras
     read `OrthoZoom` as the vertical half-extent + derive `xmag` via
     the aspect ratio.
-- **Binary writer** (round 3) — `write_document(&FbxDocument)` round-trips
+- **Binary writer** — `write_document(&FbxDocument)` round-trips
   the parser's output back to a byte buffer the parser re-reads as an
   equal `FbxDocument`. Every property variant (scalars `Y` `C` `I` `F`
   `D` `L`; arrays `f` `d` `l` `i` `b`; specials `S` `R`) is emitted;
@@ -362,10 +359,9 @@ clean-room from third-party documentation:
   uncompressed (`Encoding == 0`) for byte-determinism by default;
   callers that want smaller output can opt in to zlib-deflate via
   `write_document_with_options(&doc, &WriterOptions::default().compress_arrays_at(256))`
-  (round 4 — `Encoding == 1` per Gessler §"Array types"; a 32×32
-  quad-grid fixture shrinks from 40 346 bytes to 8 326 bytes,
-  ≈ 20.6 % of the raw size).
-- **ASCII writer** (round 213) — `write_ascii_document(&FbxDocument)`
+  (`Encoding == 1` per Gessler §"Array types"; a 32×32 quad-grid fixture
+  shrinks from 40 346 bytes to 8 326 bytes, ≈ 20.6 % of the raw size).
+- **ASCII writer** — `write_ascii_document(&FbxDocument)`
   emits the document back as ASCII text per the observer grammar at
   `docs/3d/fbx/fbx-ascii-grammar.md`. Output starts with the two-line
   `; FBX <maj>.<min>.<patch> project file` + `; ----` banner (§1 /
@@ -403,11 +399,14 @@ println!("{} mesh(es), {} node(s)", scene.meshes.len(), scene.nodes.len());
 # Ok::<_, Box<dyn std::error::Error>>(())
 ```
 
-## Lacks
+## Notes & limitations
 
-- **ASCII FBX reader** (round 200) — input starting with the
+Both the binary and ASCII front-ends are supported; the items below note
+the partial-support edges and the not-yet-implemented surfaces.
+
+- **ASCII FBX reader** (supported) — input starting with the
   `; FBX <version>` banner comment (observer grammar in
-  `docs/3d/fbx/fbx-ascii-grammar.md`) is now routed through
+  `docs/3d/fbx/fbx-ascii-grammar.md`) is routed through
   `ascii::parse`, which produces the **same** typed `FbxDocument` tree
   the binary reader produces; every downstream consumer (scene /
   geometry / material / animation / deformer / pose / properties70)
@@ -423,9 +422,8 @@ println!("{} mesh(es), {} node(s)", scene.meshes.len(), scene.nodes.len());
   and fall back to `I64Array` when any element overflows (matching
   the binary `l` variant the animation module's KTime puller
   accepts). Bytes matching neither the binary magic nor the ASCII
-  banner return a single sniff-failure error rather than the prior
-  blanket ASCII rejection. ASCII writer landed in round 213
-  (see "ASCII writer" above).
+  banner return a single sniff-failure error. The ASCII writer is
+  described under "ASCII writer" above.
 - `Mesh3DEncoder` (Scene3D → bytes) — `write_document` operates on the
   parsed `FbxDocument` tree only; building a fresh `FbxDocument` from a
   `Scene3D` (the inverse of `scene::build_scene`) is a follow-up round.
@@ -446,8 +444,8 @@ println!("{} mesh(es), {} node(s)", scene.meshes.len(), scene.nodes.len());
   specular colour channel. The values still round-trip through the
   `FbxDocument` for callers that need them; an FBX `Phong` →
   `KHR_materials_specular` mapping is a future-round option.
-- Multi-material meshes via `LayerElementMaterial` per-face indices —
-  round 178 surfaces the FBX `LayerElementMaterial` payload:
+- Multi-material meshes via `LayerElementMaterial` per-face indices
+  (partial) — the FBX `LayerElementMaterial` payload is surfaced:
   `MappingInformationType=ByPolygon` per-polygon slot indices land on
   `Primitive::extras["fbx:face_material_slots"]` (one `u32` per
   triangle corner, fanned through the same triangulation the position
@@ -456,12 +454,12 @@ println!("{} mesh(es), {} node(s)", scene.meshes.len(), scene.nodes.len());
   `Primitive::extras["fbx:material_slots"]` (a JSON array of
   `MaterialId.0`s) so a downstream consumer can split the primitive
   into one Primitive-per-slot; `Primitive::material` stays at slot 0
-  for single-binding renderers (the round-5 default). Splitting the
+  for single-binding renderers. Splitting the
   per-corner attribute buffers (positions / normals / UVs / skin /
   morph) into N parts is the consumer's job — the slot table + the
   per-corner index buffer are the only inputs that decision needs.
 - Coordinate-system / unit-scale **auto-conversion** —
-  `GlobalSettings` is *decoded* by round 219 (see "GlobalSettings"
+  `GlobalSettings` is *decoded* (see "GlobalSettings"
   above) so the file's authored axis convention + unit factor land
   on `Scene3D::unit` (for the canonical 1.0 / 100.0 cases) +
   `Scene3D::extras`. Actually *transforming* the geometry into a
@@ -476,8 +474,8 @@ println!("{} mesh(es), {} node(s)", scene.meshes.len(), scene.nodes.len());
   the [`oxideav_mesh3d::Animation`] channel set only models
   `Lcl Translation` / `Lcl Rotation` / `Lcl Scaling` / morph
   `DeformPercent`. Wiring light/camera-attribute curves into
-  `AnimationTarget` is a follow-up round; the static surfacing landed
-  in round 207.
+  `AnimationTarget` is a follow-up; the static light/camera surfacing
+  is supported.
 - **Light / Camera aperture & film-back metadata** —
   `FilmWidth` / `FilmHeight` / `FocalLength` /
   `UFBX_LIGHT_AREA_SHAPE_*` / aperture-format presets don't fit the
