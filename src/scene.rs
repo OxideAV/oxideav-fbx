@@ -34,6 +34,7 @@ use crate::lights_cameras::extract_lights_and_cameras;
 use crate::material::extract_materials;
 use crate::node_attribute::extract_node_attribute_kinds;
 use crate::pose::extract_poses;
+use crate::takes::extract_takes;
 
 /// Decode the top-level `Objects` / `Connections` records into a
 /// [`Scene3D`].
@@ -231,6 +232,15 @@ pub fn build_scene(doc: &FbxDocument) -> Result<Scene3D> {
     for anim in animations {
         scene.add_animation(anim);
     }
+
+    // `Takes` section (`docs/3d/fbx/fbx-ascii-grammar.md` §7e) — the
+    // authoring-tool take catalogue (`Current` active-take name +
+    // per-take `FileName` / `LocalTime` / `ReferenceTime` KTime pairs).
+    // `oxideav_mesh3d::Animation` carries no `extras`, so the take
+    // time-spans surface scene-wide on `Scene3D::extras["fbx:takes"]` /
+    // `["fbx:current_take"]`, joinable back to each `Animation` by the
+    // take name == `AnimationStack` display name. See `crate::takes`.
+    extract_takes(doc, &mut scene);
 
     // Material / Texture / Video extraction. The per-Model -> Mesh
     // lookup is the inverse of the Geometry -> Model OO walk we did

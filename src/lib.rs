@@ -198,6 +198,12 @@ pub mod node_attribute;
 pub mod pose;
 pub mod properties70;
 pub mod scene;
+/// `Takes` section decoder — animation-take time-span metadata
+/// (`Current` active-take name + per-take `FileName` / `LocalTime` /
+/// `ReferenceTime` KTime pairs) surfaced onto
+/// [`oxideav_mesh3d::Scene3D::extras`] per
+/// `docs/3d/fbx/fbx-ascii-grammar.md` §7e.
+pub mod takes;
 pub mod writer;
 
 pub use ascii::is_ascii_fbx;

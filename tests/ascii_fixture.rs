@@ -82,6 +82,72 @@ fn ascii_fixture_global_settings_surface_to_scene_extras() {
 }
 
 #[test]
+fn ascii_fixture_takes_surface_to_scene_extras() {
+    // The fixture's `Takes` section (§7e) carries
+    // `Current: "Take 001"` + one `Take: "Take 001" { FileName,
+    // LocalTime: 1924423250,230930790000, ReferenceTime: ... }`.
+    // Those should reach `Scene3D::extras` via the ASCII front-end
+    // round-trip, joinable to the `AnimStack::Take 001` animation by
+    // the matching display name.
+    let mut dec = FbxDecoder::new();
+    let scene = dec.decode(FIXTURE).expect("ASCII fixture decodes");
+
+    let current = scene
+        .extras
+        .get("fbx:current_take")
+        .expect("Current take surfaced from fixture")
+        .as_str()
+        .unwrap();
+    assert_eq!(current, "Take 001");
+
+    let takes = match scene.extras.get("fbx:takes") {
+        Some(serde_json::Value::Array(v)) => v,
+        other => panic!("expected fbx:takes array, got {other:?}"),
+    };
+    assert_eq!(takes.len(), 1);
+    let t = &takes[0];
+    assert_eq!(t["name"].as_str(), Some("Take 001"));
+    assert_eq!(t["file_name"].as_str(), Some("Take_001.tak"));
+    assert_eq!(
+        t["local_time"].as_array().unwrap()[0].as_i64(),
+        Some(1924423250)
+    );
+    assert_eq!(
+        t["local_time"].as_array().unwrap()[1].as_i64(),
+        Some(230930790000)
+    );
+    assert_eq!(
+        t["reference_time"].as_array().unwrap()[1].as_i64(),
+        Some(230930790000)
+    );
+
+    // The take name is the join key back to the `Objects` section:
+    // the fixture's `AnimationStack: "AnimStack::Take 001"` shares the
+    // "Take 001" display name with this take. (The fixture's stack
+    // carries no AnimationCurve records, so `extract_animations` emits
+    // no channels for it and no Animation materialises — the take
+    // catalogue still surfaces independently; the name is the join.)
+    let stack_name = dec
+        .last_document
+        .as_ref()
+        .unwrap()
+        .root
+        .child("Objects")
+        .unwrap()
+        .children_named("AnimationStack")
+        .next()
+        .unwrap()
+        .properties
+        .get(1)
+        .and_then(|p| p.as_str())
+        .unwrap();
+    assert!(
+        stack_name.ends_with("Take 001"),
+        "AnimationStack display name should match the take name, got {stack_name:?}"
+    );
+}
+
+#[test]
 fn ascii_fixture_first_mesh_has_24_vertices() {
     // First Geometry in the fixture is `*24` Vertices (an 8-corner
     // cube emitted as 8 xyz triples) per the grammar §6 / §7c worked

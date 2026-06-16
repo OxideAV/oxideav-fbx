@@ -9,6 +9,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Round 322 — **`Takes` section decode.**
+  `docs/3d/fbx/fbx-ascii-grammar.md` §7e documents the top-level
+  `Takes` node (the last of the §7 ordered sections) as the file's
+  animation-take catalogue: a `Current: "<name>"` leaf naming the
+  active take plus one `Take: "<name>" { FileName, LocalTime,
+  ReferenceTime }` node per take, where `LocalTime` / `ReferenceTime`
+  are each the §5 two-integer `start,stop` KTime pair. The section was
+  previously parsed into the `FbxDocument` tree but never surfaced. The
+  new `takes` module decodes it onto `Scene3D::extras`:
+  `extras["fbx:current_take"]` (the active-take name) and
+  `extras["fbx:takes"]` (a JSON array of `{ name, file_name?,
+  local_time: [start,stop]?, reference_time: [start,stop]? }` per take).
+  KTime integers stay i64-exact (the take name joins back to each
+  `oxideav_mesh3d::Animation` by display name, since the `Take` name
+  equals the `AnimationStack` display name the `animation` module keys
+  by). `takes_from_extras` / `current_take_from_extras` read the
+  catalogue back off a scene. One walker covers both front-ends (the
+  binary form renders the identical node tree). Validated end-to-end
+  against the staged `cubes-ascii-v7500.fbx` fixture
+  (`Current: "Take 001"` + `Take: "Take 001"` with
+  `LocalTime: 1924423250,230930790000`) plus six unit tests
+  (current-only block, missing optional leaves, malformed time pair).
+
 - Round 301 — **`LayerElementTangent` / `LayerElementBinormal`
   decode.** `docs/3d/fbx/fbx-binary-properties70.md` §6 point 4
   enumerates `LayerElementTangent` and `LayerElementBinormal` as

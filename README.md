@@ -159,6 +159,28 @@ clean-room from third-party documentation:
   The scene builder's no-content fallback no longer discards a
   populated materials / textures arena when a document carries no
   meshes or nodes.
+- **`Takes` section** — the top-level `Takes` node (per
+  `docs/3d/fbx/fbx-ascii-grammar.md` §7e — the last of the §7 ordered
+  sections) catalogues the file's animation *takes*: a `Current` leaf
+  naming the active take plus one `Take : "<name>" { FileName,
+  LocalTime, ReferenceTime }` node-with-body per take, where
+  `LocalTime` / `ReferenceTime` are each the §5 two-integer
+  `start,stop` KTime pair. The new `takes` module decodes them onto
+  `Scene3D::extras` — `extras["fbx:current_take"]` (the active-take
+  name) and `extras["fbx:takes"]` (a JSON array of
+  `{ name, file_name?, local_time: [start,stop]?,
+  reference_time: [start,stop]? }` per take). Because
+  `oxideav_mesh3d::Animation` carries no `extras` map (only `name` +
+  `channels`), the take time-spans live scene-wide and join back to
+  each `Animation` by name: the `Take` name equals the
+  `AnimationStack` display name the `animation` module keys each
+  `Animation` by (`Take: "Take 001"` ⇔
+  `AnimationStack: "AnimStack::Take 001"`). KTime integers stay i64-exact
+  (the `KTIME_TICKS_PER_SECOND ≈ 4.6e10` constant is well outside f32
+  range — same rationale as `GlobalSettings`' `TimeSpanStart` /
+  `TimeSpanStop`). One walker covers both front-ends (the binary form
+  renders the identical node tree). `takes_from_extras` /
+  `current_take_from_extras` read the catalogue back off a scene.
 - **Bind pose** —
   `Objects { Pose : "BindPose" }` elements surface each
   `PoseNode { Node, Matrix }` bone-world matrix onto the bone `Node`'s
