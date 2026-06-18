@@ -181,6 +181,22 @@ clean-room from third-party documentation:
   `TimeSpanStop`). One walker covers both front-ends (the binary form
   renders the identical node tree). `takes_from_extras` /
   `current_take_from_extras` read the catalogue back off a scene.
+- **`FBXHeaderExtension` authoring metadata** — the first top-level §7
+  section (per `docs/3d/fbx/fbx-ascii-grammar.md` §7a) carries the
+  file's provenance: `Creator`, a `CreationTimeStamp` sub-node
+  (`Year`/`Month`/`Day`/`Hour`/`Minute`/`Second`/`Millisecond` integer
+  leaves), and a §7c-shaped `SceneInfo` object whose body holds the
+  document `MetaData` block (`Title`/`Subject`/`Author`/`Keywords`/
+  `Revision`/`Comment`) and a `Properties70` of `Original|*` /
+  `LastSaved|*` application provenance. The `header_info` module
+  decodes it onto `Scene3D::extras`: `extras["fbx:creator"]`,
+  `["fbx:header_version"]`, `["fbx:creation_time"]` (the timestamp
+  composed into an `YYYY-MM-DDThh:mm:ss.mmm` string), `["fbx:meta_*"]`
+  (one per non-empty `MetaData` field — empty SDK-default fields are
+  skipped), and `["fbx:application_name"]` / `["fbx:application_vendor"]`
+  / `["fbx:application_version"]` / `["fbx:document_url"]` from the
+  `Original|*` creating-application set. Existing extras keys are
+  preserved (insert-if-vacant); one walker covers both front-ends.
 - **Bind pose** —
   `Objects { Pose : "BindPose" }` elements surface each
   `PoseNode { Node, Matrix }` bone-world matrix onto the bone `Node`'s

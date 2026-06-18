@@ -148,6 +148,72 @@ fn ascii_fixture_takes_surface_to_scene_extras() {
 }
 
 #[test]
+fn ascii_fixture_header_info_surfaces_to_scene_extras() {
+    // Round 335 — the fixture's `FBXHeaderExtension` (§7a) carries
+    // `Creator: "FBX SDK/FBX Plugins version 2018.1.1"`, a
+    // `CreationTimeStamp` of 2019-01-07 16:17:31.730, and a
+    // `SceneInfo { Properties70 { Original|ApplicationName: "Maya",
+    // Original|ApplicationVendor: "Autodesk",
+    // Original|ApplicationVersion: "201800", DocumentUrl: "U:\..." } }`.
+    // Those should reach `Scene3D::extras` via the ASCII front-end
+    // round-trip. (The fixture's `MetaData` Title/Subject/Author/...
+    // are all the SDK-default empty strings, so no `fbx:meta_*` keys
+    // surface — empty fields are skipped per the §7a-grounded rule.)
+    let mut dec = FbxDecoder::new();
+    let scene = dec.decode(FIXTURE).expect("ASCII fixture decodes");
+
+    assert_eq!(
+        scene.extras.get("fbx:creator").and_then(|v| v.as_str()),
+        Some("FBX SDK/FBX Plugins version 2018.1.1")
+    );
+    assert_eq!(
+        scene
+            .extras
+            .get("fbx:header_version")
+            .and_then(|v| v.as_i64()),
+        Some(1003)
+    );
+    assert_eq!(
+        scene
+            .extras
+            .get("fbx:creation_time")
+            .and_then(|v| v.as_str()),
+        Some("2019-01-07T16:17:31.730")
+    );
+    assert_eq!(
+        scene
+            .extras
+            .get("fbx:application_name")
+            .and_then(|v| v.as_str()),
+        Some("Maya")
+    );
+    assert_eq!(
+        scene
+            .extras
+            .get("fbx:application_vendor")
+            .and_then(|v| v.as_str()),
+        Some("Autodesk")
+    );
+    assert_eq!(
+        scene
+            .extras
+            .get("fbx:application_version")
+            .and_then(|v| v.as_str()),
+        Some("201800")
+    );
+    assert_eq!(
+        scene
+            .extras
+            .get("fbx:document_url")
+            .and_then(|v| v.as_str()),
+        Some(r"U:\Some\Absolute\Path\cubes_with_names.fbx")
+    );
+    // MetaData fields are all empty in the fixture → skipped.
+    assert!(!scene.extras.contains_key("fbx:meta_title"));
+    assert!(!scene.extras.contains_key("fbx:meta_author"));
+}
+
+#[test]
 fn ascii_fixture_first_mesh_has_24_vertices() {
     // First Geometry in the fixture is `*24` Vertices (an 8-corner
     // cube emitted as 8 xyz triples) per the grammar §6 / §7c worked

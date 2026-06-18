@@ -30,6 +30,7 @@ use crate::deformer::extract_deformers;
 use crate::geometry::extract_geometry_mesh_with_corners;
 use crate::geometry_kind::extract_geometry_kinds;
 use crate::globals::extract_global_settings;
+use crate::header_info::extract_header_info;
 use crate::lights_cameras::extract_lights_and_cameras;
 use crate::material::extract_materials;
 use crate::node_attribute::extract_node_attribute_kinds;
@@ -50,6 +51,17 @@ pub fn build_scene(doc: &FbxDocument) -> Result<Scene3D> {
     // unit / time / ambient settings via a `Properties70` block. See
     // `crate::globals` for the per-record breakdown.
     extract_global_settings(doc, &mut scene);
+
+    // Round 335 — `FBXHeaderExtension` authoring metadata. The first
+    // top-level §7 section (per `docs/3d/fbx/fbx-ascii-grammar.md`
+    // §7a): Creator, CreationTimeStamp, and the `SceneInfo` MetaData /
+    // `Original|*` application provenance. Surfaced onto
+    // `Scene3D::extras` (`fbx:creator` / `fbx:creation_time` /
+    // `fbx:meta_*` / `fbx:application_*` / `fbx:document_url`). Runs
+    // alongside GlobalSettings so a consumer finds all scene-wide
+    // metadata populated before any object walk. See
+    // `crate::header_info`.
+    extract_header_info(doc, &mut scene);
 
     // Index every Geometry element by its FBX id. Materials,
     // animations, etc. are deferred — round 1 surfaces just enough

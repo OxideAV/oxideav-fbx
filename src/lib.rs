@@ -190,6 +190,12 @@ pub mod geometry_kind;
 /// ambient settings surfaced onto [`oxideav_mesh3d::Scene3D`] (round
 /// 219).
 pub mod globals;
+/// `FBXHeaderExtension` decoder — file-level authoring metadata
+/// (Creator / CreationTimeStamp / SceneInfo MetaData + Original|*
+/// application provenance) surfaced onto
+/// [`oxideav_mesh3d::Scene3D::extras`] per
+/// `docs/3d/fbx/fbx-ascii-grammar.md` §7a (round 335).
+pub mod header_info;
 /// `NodeAttribute` (`Light` / `Camera`) surfacing onto [`oxideav_mesh3d`]
 /// (round 207).
 pub mod lights_cameras;

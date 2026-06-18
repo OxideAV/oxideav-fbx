@@ -9,6 +9,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Round 335 — **`FBXHeaderExtension` authoring-metadata decode.**
+  `docs/3d/fbx/fbx-ascii-grammar.md` §7a documents the first top-level
+  §7 section, `FBXHeaderExtension`, as the file's authoring provenance:
+  a `Creator` string, a `CreationTimeStamp` sub-node of
+  `Year`/`Month`/`Day`/`Hour`/`Minute`/`Second`/`Millisecond` integer
+  leaves, and a §7c-shaped `SceneInfo` object whose body holds the
+  document `MetaData` block (`Title`/`Subject`/`Author`/`Keywords`/
+  `Revision`/`Comment`) and a `Properties70` of `Original|*` /
+  `LastSaved|*` application provenance. The section was previously
+  parsed into the `FbxDocument` tree but never surfaced. The new
+  `header_info` module decodes it onto `Scene3D::extras`:
+  `extras["fbx:creator"]`, `["fbx:header_version"]`,
+  `["fbx:creation_time"]` (the stamp composed into an
+  `YYYY-MM-DDThh:mm:ss.mmm` string), `["fbx:meta_*"]` (one key per
+  non-empty `MetaData` field — empty SDK-default fields are skipped),
+  and `["fbx:application_name"]` / `["fbx:application_vendor"]` /
+  `["fbx:application_version"]` / `["fbx:document_url"]` from the
+  `Original|*` creating-application set. Existing extras keys are
+  preserved (insert-if-vacant). One walker covers both front-ends (the
+  binary form renders the identical node tree per
+  `fbx-binary-properties70.md` §4/§5). Validated end-to-end against the
+  staged `cubes-ascii-v7500.fbx` fixture (Creator, 2019-01-07 timestamp,
+  Maya/Autodesk/201800 application provenance) plus seven unit tests.
 - Round 322 — **`Takes` section decode.**
   `docs/3d/fbx/fbx-ascii-grammar.md` §7e documents the top-level
   `Takes` node (the last of the §7 ordered sections) as the file's
