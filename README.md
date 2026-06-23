@@ -515,7 +515,7 @@ the partial-support edges and the not-yet-implemented surfaces.
   is supported.
 - **Light / Camera aperture & film-back metadata** —
   `FilmWidth` / `FilmHeight` / `FocalLength` /
-  `UFBX_LIGHT_AREA_SHAPE_*` / aperture-format presets don't fit the
+  area-light-shape / aperture-format presets don't fit the
   glTF-style `Camera::{Perspective, Orthographic}` /
   `Light::{Point, Directional, Spot}` enum surface; they round-trip
   through the `FbxDocument` for callers that need them. Area-light

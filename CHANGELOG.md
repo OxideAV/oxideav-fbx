@@ -9,23 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Round 363 — **clean-room provenance scrub.** All references to the
-  third-party `ufbx` FBX parser — its now-removed staged documentation
-  paths (`docs/3d/fbx/ufbx/*`) and its C struct / enum / field symbol
-  names (`ufbx_mesh.*`, `ufbx_light.*`, `ufbx_pose.*`,
-  `ufbx_material_fbx*`, `ufbx_scene_settings.*`, etc.) — were removed
+- Round 363 — **clean-room provenance scrub.** All references to a
+  third-party FBX parser — its now-removed staged documentation
+  paths and its C struct / enum / field symbol names — were removed
   from `src/`, `tests/`, `README.md`, and the historical changelog
   entries, repointing every citation at the sanctioned clean-room
   references (`docs/3d/fbx/fbx-binary-properties70.md` §1–§7 and
   `docs/3d/fbx/fbx-ascii-grammar.md`) or describing the FBX-format
   fact neutrally. Per the `docs/3d/fbx/` GAP-TRACKER provenance
-  decision (the `ufbx/` tree was purged because a clean-room target's
-  own project documentation taints the reimplementation), this closes
-  the GAP-TRACKER follow-up "scrub `src/` comments that name ufbx C
-  symbols." Behaviour is unchanged — every change is comment / doc
+  decision (the staged third-party tree was purged because a
+  clean-room target's own project documentation taints the
+  reimplementation), this closes the GAP-TRACKER follow-up to scrub
+  `src/` comments that name third-party-parser C symbols. Behaviour
+  is unchanged — every change is comment / doc
   text; all 240 tests still pass. The clean-room negative-affirmation
-  statements (confirming ufbx's C source was *not* read) are retained
-  as provenance language. Verbatim quotes from the removed ufbx docs
+  statements (confirming the third-party C source was *not* read) are
+  retained as provenance language. Verbatim quotes from the removed docs
   (e.g. the light-intensity 0.01x scale note, the bind-pose
   world-transform note) were paraphrased into neutral FBX-format
   descriptions.
