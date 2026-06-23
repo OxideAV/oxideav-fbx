@@ -35,11 +35,11 @@
 //!
 //! # What is NOT surfaced
 //!
-//! - The `ufbx_bone` `radius` / `relative_length` / `is_root` fields
-//!   and the `ufbx_empty` extra properties — these are decoded fields
-//!   on the ufbx structs (see `docs/3d/fbx/ufbx/reference.html`
-//!   §`ufbx_bone` / §`ufbx_empty`) but the specific FBX `P`-record
-//!   names that feed them are not enumerated in the staged docs. A
+//! - The skeletal-bone geometry fields (bone radius / relative length /
+//!   is-root) and the locator/empty extra properties — these are part
+//!   of the `LimbNode` / `Null` NodeAttribute `Properties70` blocks but
+//!   the specific FBX `P`-record names that feed them are not
+//!   enumerated in the staged docs. A
 //!   follow-up round may add them once the staging includes the
 //!   bone / empty `Properties70` `P`-record name table.
 //! - `"Root"` Model subtypes — the §6 ruleset lists `"Root"` as a

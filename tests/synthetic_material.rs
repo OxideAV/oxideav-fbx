@@ -12,8 +12,8 @@
 //!
 //! The Video record carries an 8-byte PNG-magic blob inside a
 //! `Content { R<bytes> }` sub-record so the decoder takes the
-//! embedded-media path (favoured over RelativeFilename per
-//! `docs/3d/fbx/ufbx/reference.html` §`ufbx_video.content`).
+//! embedded-media path (favoured over RelativeFilename — the embedded
+//! `Content` R-blob, per `docs/3d/fbx/fbx-binary-properties70.md` §3c).
 //!
 //! After `FbxDecoder::decode` the asserts confirm:
 //!

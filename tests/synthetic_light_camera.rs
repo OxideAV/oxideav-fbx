@@ -16,8 +16,9 @@
 //!   children are the §4 `P` records (4 leading strings + typed
 //!   values).
 //!
-//! Property names + value typing are taken from
-//! `docs/3d/fbx/ufbx/reference.html` §`ufbx_light` / §`ufbx_camera`.
+//! Property names + value typing are the FBX-SDK Light / Camera
+//! attribute `P`-records (per `docs/3d/fbx/fbx-binary-properties70.md`
+//! §4 + §6).
 
 use std::collections::HashMap;
 
@@ -123,7 +124,7 @@ fn p_color(name: &str, label: &str, flags: &str, rgb: [f64; 3]) -> Rec {
 
 fn light_attribute(id: i64) -> Rec {
     // Point light, white, 200 raw → 2.0 final after the 0.01x scale
-    // (per §ufbx_light.intensity).
+    // (FBX Intensity is a DCC percentage).
     let props70 = Rec::new("Properties70")
         .with_child(p_color("Color", "Color", "A", [1.0, 0.8, 0.6]))
         .with_child(p_double("Intensity", "Number", "Intensity", "A", 200.0))

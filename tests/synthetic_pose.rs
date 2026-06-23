@@ -13,10 +13,10 @@
 //! 2. Have refined the skeleton's identity inverse-bind to
 //!    `inverse(bone_to_world)`.
 //!
-//! Per `docs/3d/fbx/ufbx/reference.html` §`ufbx_pose` /
-//! §`ufbx_bone_pose`: a bind pose stores each bone's world transform
-//! ("FBX only stores world transformations"), and the inverse-bind is
-//! approximated from it when the cluster lacks an explicit link matrix.
+//! A bind pose (`Pose` subtype `"BindPose"`) stores each bone's
+//! world transform (FBX `Pose` records hold world-space matrices
+//! only), and the inverse-bind is approximated from it when the
+//! cluster lacks an explicit link matrix.
 
 use oxideav_fbx::{FbxDecoder, FBX_MAGIC};
 use oxideav_mesh3d::Mesh3DDecoder;
@@ -268,10 +268,9 @@ fn bind_pose_refines_inverse_bind_and_stashes_node_extras() {
 ///   child_world` — for pure translations that's the difference, i.e.
 ///   a translation of (0, 5, 0).
 ///
-/// Per `docs/3d/fbx/ufbx/reference.html` §`ufbx_bone_pose.bone_to_parent`:
-/// *"Matrix from node local space to parent space. FBX only stores
-/// world transformations so this is approximated from the parent
-/// world transform."*
+/// The parent-relative bind matrix (node-local → parent space) is
+/// approximated from the parent's stored world transform, since FBX
+/// `Pose` records hold world-space matrices only.
 #[test]
 fn bind_pose_parent_local_chains_through_scene_graph() {
     // Parent bone (id 300) at world (10, 0, 0); child bone (id 301)

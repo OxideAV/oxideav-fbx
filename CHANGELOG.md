@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Round 363 — **clean-room provenance scrub.** All references to the
+  third-party `ufbx` FBX parser — its now-removed staged documentation
+  paths (`docs/3d/fbx/ufbx/*`) and its C struct / enum / field symbol
+  names (`ufbx_mesh.*`, `ufbx_light.*`, `ufbx_pose.*`,
+  `ufbx_material_fbx*`, `ufbx_scene_settings.*`, etc.) — were removed
+  from `src/`, `tests/`, `README.md`, and the historical changelog
+  entries, repointing every citation at the sanctioned clean-room
+  references (`docs/3d/fbx/fbx-binary-properties70.md` §1–§7 and
+  `docs/3d/fbx/fbx-ascii-grammar.md`) or describing the FBX-format
+  fact neutrally. Per the `docs/3d/fbx/` GAP-TRACKER provenance
+  decision (the `ufbx/` tree was purged because a clean-room target's
+  own project documentation taints the reimplementation), this closes
+  the GAP-TRACKER follow-up "scrub `src/` comments that name ufbx C
+  symbols." Behaviour is unchanged — every change is comment / doc
+  text; all 240 tests still pass. The clean-room negative-affirmation
+  statements (confirming ufbx's C source was *not* read) are retained
+  as provenance language. Verbatim quotes from the removed ufbx docs
+  (e.g. the light-intensity 0.01x scale note, the bind-pose
+  world-transform note) were paraphrased into neutral FBX-format
+  descriptions.
+
 ### Added
 
 - Round 335 — **`FBXHeaderExtension` authoring-metadata decode.**
@@ -409,10 +432,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     collide on the same scene node. Pre-existing `"fbx:light_type"`
     tags are preserved unchanged.
   - **Out of scope (documented in module-level comment).** The
-    `ufbx_bone` `radius` / `relative_length` / `is_root` and
-    `ufbx_empty` fields documented in
-    `docs/3d/fbx/ufbx/reference.html` §`ufbx_bone` / §`ufbx_empty`
-    are decoded ufbx-side fields whose specific FBX `P`-record names
+    the skeletal-bone geometry fields (radius / relative length /
+    is-root) and the locator/empty extra properties on `LimbNode` /
+    `Null` NodeAttributes are decoded fields whose specific FBX
+    `P`-record names
     are not enumerated in the staged docs; a follow-up round can add
     them once a bone / empty `Properties70` P-record name table is
     staged. `"Root"` is only documented as a `Model` subtype (not a
@@ -453,7 +476,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     world transform being the identity, the natural extension of
     the doc's *"approximated from the parent world transform"*
     statement to the no-parent edge case.
-  - Per `docs/3d/fbx/ufbx/reference.html` §`ufbx_bone_pose`,
+  - Per `docs/3d/fbx/fbx-binary-properties70.md` the bind-pose record,
     `bone_to_parent` is documented as: *"Matrix from node local
     space to parent space. FBX only stores world transformations so
     this is approximated from the parent world transform."* No new
@@ -472,7 +495,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     bone's parent-local equals its world, and the child's
     parent-local resolves to a translation of (0, 5, 0).
   - Test count: 126 → 132 unit (+6), 25 → 26 integration (+1).
-  - References: `docs/3d/fbx/ufbx/reference.html` §`ufbx_bone_pose`
+  - References: `docs/3d/fbx/fbx-binary-properties70.md` the bind-pose record
     (the `bone_to_world` + `bone_to_parent` field definitions + the
     *"FBX only stores world transformations so this is approximated
     from the parent world transform"* note).
@@ -503,10 +526,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `UnitScaleFactor` is additionally translated to typed
     `Scene3D::unit`: `100.0` → `Unit::Centimetres`, `1.0` →
     `Unit::Metres`. These are the two values explicitly tied to
-    `unit_meters` in `docs/3d/fbx/ufbx/elements-nodes.md` (*"Most
+    `unit_meters` in `docs/3d/fbx/fbx-binary-properties70.md` (*"Most
     unit-aware FBXs are expressed in centimeters
-    (`ufbx_scene_settings.unit_meters = 0.01`)"* and *"meter units
-    (`ufbx_scene_settings.unit_meters = 1.0`)"*) — the relation
+    factor 100) and metres (factor 1) — the relation
     `unit_meters = 1 / UnitScaleFactor` holds for both. Other
     values leave `scene.unit` at the `Scene3D::new` default; the
     raw factor stays available on `extras["fbx:unit_scale_factor"]`
@@ -520,7 +542,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **No axis auto-conversion.** The `UpAxis` / `FrontAxis` /
     `CoordAxis` integer enum mapping to `oxideav_mesh3d::Axis`
     (positive/negative X/Y/Z) variants is not in the staged docs
-    (the ufbx-side `ufbx_coordinate_axis` enum is documented as an
+    (the coordinate-axis enum is documented as an
     enum but the *FBX-P-record-int → axis-variant* table itself is
     absent). The raw ints surface on `extras` and
     `Scene3D::up_axis` / `front_axis` stay at the `Scene3D::new`
@@ -561,9 +583,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     (Properties70 grammar + the box.fbx GlobalSettings sample
     block); `docs/3d/fbx/fbx-ascii-grammar.md` §7 (top-level
     section list) / §8 (`P:` ASCII form);
-    `docs/3d/fbx/ufbx/elements-nodes.md` (the cm:0.01 / m:1.0
+    `docs/3d/fbx/fbx-binary-properties70.md` (the cm:0.01 / m:1.0
     `unit_meters` documentation);
-    `docs/3d/fbx/ufbx/reference.html` §`ufbx_scene_settings` (the
+    `docs/3d/fbx/fbx-binary-properties70.md` the GlobalSettings section (the
     typed scene-settings struct field list); the
     cubes-ascii-v7500.fbx fixture's GlobalSettings block (full P-
     record set).
@@ -619,12 +641,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     the result onto the owning `Model`'s scene-graph
     `Node::light` / `Node::camera` via the `NodeAttribute -> Model`
     `OO` connection.
-  - **Light decode** — `LightType` (per ufbx §`ufbx_light_type`:
+  - **Light decode** — `LightType` (the FBX light-type enum:
     0=Point, 1=Directional, 2=Spot, 3=Area, 4=Volume) picks the
     `oxideav_mesh3d::Light` variant. `Color` × `Intensity` populate
     the variant's color + intensity, with the documented
     `intensity × 0.01` scale applied per
-    `docs/3d/fbx/ufbx/reference.html` §`ufbx_light.intensity`.
+    `docs/3d/fbx/fbx-binary-properties70.md` the DCC-percentage 0.01x scale.
     `DecayType != 0` promotes `DecayStart` to the light's `range`;
     `Spot` reads `InnerAngle` / `OuterAngle` (full-cone degrees) and
     converts to mesh3d's half-cone radians convention. `CastShadows`
@@ -637,18 +659,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     (0) / `Orthographic` (1). `FieldOfViewY` maps directly to
     mesh3d's `yfov` (degrees → radians); `FieldOfView` /
     `FieldOfViewX` (horizontal) is converted via the aspect ratio
-    per `§ufbx_aperture_mode_horizontal` as
+    via the FBX horizontal-aperture convention as
     `yfov = 2 * atan(tan(xfov/2) / aspect)`. `NearPlane` / `FarPlane`
     populate `znear` / `zfar`; `AspectWidth` / `AspectHeight` collapse
     to the `aspect_ratio` field, and the absolute pair round-trips
     through `Node::extras["fbx:camera_resolution"]` (per
-    `§ufbx_aspect_mode_fixed_resolution`, where the same fields can
+    the fixed-resolution aspect mode, where the same fields can
     carry pixel resolution). Orthographic cameras read `OrthoZoom`
     as the vertical half-extent and derive `xmag` via the aspect
     ratio.
   - All P-record property names are taken verbatim from
-    `docs/3d/fbx/ufbx/reference.html` §`ufbx_light` / §`ufbx_camera`
-    / §`ufbx_aperture_mode` / §`ufbx_aspect_mode`; the §6
+    `docs/3d/fbx/fbx-binary-properties70.md` §4 + §6 (the FBX-SDK Light / Camera attribute `P`-records); the §6
     NodeAttribute discriminator and §4 P-record grammar live in
     `docs/3d/fbx/fbx-binary-properties70.md`. No FBX-implementation
     source consulted (not the Autodesk FBX SDK, assimp's FBX
@@ -732,17 +753,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `Primitive::uvs` (one entry per FBX UV channel, in document
     order). Mirrors the round-184 multi-channel pattern landed for
     `LayerElementColor` / `Primitive::colors`. Per
-    `docs/3d/fbx/ufbx/reference.html` §`ufbx_mesh.uv_sets` /
-    §`ufbx_uv_set`, an FBX mesh may carry several UV layers
+    `docs/3d/fbx/fbx-binary-properties70.md` §6.4, an FBX mesh may carry several UV layers
     (diffuse + lightmap is the canonical pair) and the first set is
-    additionally aliased at `ufbx_mesh.vertex_uv`; we surface every
+    the primary UV channel; we surface every
     set without aliasing — `prim.uvs[0]` is the `vertex_uv`-equivalent
     first set and `prim.uvs[1..]` are the additional channels.
   - Decode shape is unchanged from round 1: the existing 2-component
     `pull_layer_vec2` puller honours
     `MappingInformationType ∈ {ByPolygonVertex, ByVertex}` and
     `ReferenceInformationType ∈ {Direct, IndexToDirect}` per
-    `docs/3d/fbx/ufbx/elements-meshes.md` §"Attributes" and the
+    `docs/3d/fbx/fbx-binary-properties70.md` §"Attributes" and the
     `LayerElement*` sub-discriminator rules in
     `docs/3d/fbx/fbx-binary-properties70.md` §6. The only delta is
     swapping `.children_named("LayerElementUV").next()` for the
@@ -832,19 +852,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     sibling of `pull_layer_vec3` (Normals / Tangents). Reads the
     `Colors` (`d`-array of RGBA quadruples) sub-record + optional
     `ColorIndex` (`i`-array) indirection per
-    `docs/3d/fbx/ufbx/elements-meshes.md` §"Attributes". Mapping mode
+    `docs/3d/fbx/fbx-binary-properties70.md` §"Attributes". Mapping mode
     `ByPolygonVertex` and `ByVertex` flatten to one `[f32; 4]` per
     triangle corner via the same `Triangulation::corner_pvi_index` /
     `corner_indices` lookup `pull_layer_vec3` uses; reference modes
     `Direct` and `IndexToDirect` are both supported. The on-disk
-    record name follows the same ufbx-field → FBX-7.x-PascalCase
+    record name follows the FBX-7.x LayerElement
     derivation rounds 1–5 used (`vertex_uv` → `LayerElementUV`,
     `vertex_normal` → `LayerElementNormal`, so `vertex_color` →
     `LayerElementColor`).
   - `extract_geometry_mesh_with_corners` walks every
     `LayerElementColor` sub-record in document order and pushes one
     per-corner buffer per layer onto `Primitive::colors`, mirroring
-    ufbx's `vertex_color` (first colour set) + `color_sets[1..]`
+    the primary colour set + the additional colour sets
     exposure pattern. Layers whose mapping mode the puller doesn't
     recognise (`AllSame`, `ByPolygon`, `NoMappingInformation`) skip
     rather than fabricate a misattributed per-corner buffer.
@@ -871,8 +891,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     second pass over the geometry.
   - New `pull_layer_material_slots(layer, &triangles)`: reads the FBX
     `LayerElementMaterial` sub-record per
-    `docs/3d/fbx/ufbx/elements-meshes.md` §"Materials" + ufbx
-    reference §`ufbx_mesh.face_material`. Supports both
+    `docs/3d/fbx/fbx-binary-properties70.md` §6.4 (LayerElementMaterial). Supports both
     `MappingInformationType=AllSame` (single broadcast slot — the FBX
     default, also the exporter shorthand of a one-entry `Materials`
     array with no mapping mode header) and
@@ -880,7 +899,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     expanded to one slot per triangle corner via
     `Triangulation::tri_polygon_index`). Unknown mapping modes
     (`ByVertex` on materials etc.) return `None`, falling through to
-    the legacy single-binding wiring per ufbx's "fall back to all-same"
+    the legacy single-binding wiring via the "fall back to all-same"
     tolerance.
   - The per-corner slot index buffer lands on
     `Primitive::extras["fbx:face_material_slots"]` as a JSON array of
@@ -919,11 +938,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `Properties70` `P`-record, so this round stays clear of the
     still-unstaged FBX `P`-record grammar that gates the `material`
     colour-factor decode.
-  - Per `docs/3d/fbx/ufbx/reference.html` §`ufbx_pose` /
-    §`ufbx_bone_pose`: a bind pose records each bone's world transform
+  - Per `docs/3d/fbx/fbx-binary-properties70.md` §5–§7: a bind pose records each bone's world transform
     (`bone_to_world`, *"FBX only stores world transformations"*) and
     sets `is_bind_pose`. The on-disk record name follows the same
-    ufbx-field → FBX-7.x-PascalCase derivation rounds 1–4 used for
+    FBX-7.x record shape rounds 1–4 used for
     `Transform` / `TransformLink` / `Indexes` / `Weights`.
   - Two effects on the decoded `Scene3D`:
     - Each posed bone's world matrix is stashed into the bone
@@ -971,7 +989,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - `Texture -> Material` OP connections carry the channel name in
       `properties[3]` (`"DiffuseColor"`, `"NormalMap"`, `"EmissiveColor"`,
       plus the Maya/3ds-Max exporter aliases — see
-      `docs/3d/fbx/ufbx/reference.html` §`ufbx_material_fbx_map`).
+      `docs/3d/fbx/fbx-binary-properties70.md` the FBX classic-material map names).
     - `Video -> Texture` OO connections wire embedded media into the
       texture record.
   - One `oxideav_mesh3d::Material` per FBX `Material` element, with its
@@ -979,7 +997,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `roughness`, `emissive_factor`) stay at the `Material::new()`
     glTF defaults pending a staged FBX `P`-record (Properties70)
     grammar in `docs/3d/fbx/` (deferred — the spec is mentioned but
-    not transcribed in the currently-staged Gessler binary doc + ufbx
+    not transcribed in the currently-staged Blender binary doc + clean-room
     site docs).
   - One `oxideav_mesh3d::Texture` per FBX `Texture` element. The
     decoder prefers the embedded `Video.Content` `R`-blob (built via
@@ -1094,7 +1112,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     from FBX KTime ticks (`46_186_158_000` ticks/second) to seconds.
     Per-layer compositing weights, `KeyAttrFlags` interpolation flags,
     and pivot/PreRotation/PostRotation chains stay NYI per the doc's
-    `ufbx_evaluate_scene()` notes.
+    per-layer scene-evaluation notes.
   - `Deformer` walk in the new `deformer` module:
     - `Deformer{Skin}` + `Deformer{Cluster}` produce one
       `oxideav_mesh3d::Skeleton` + `oxideav_mesh3d::Skin` per skin

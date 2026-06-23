@@ -14,15 +14,12 @@
 //! Test 2 (`two_uv_sets_surface_in_document_order`) builds a quad
 //! with two `LayerElementUV` records to prove the `Primitive::uvs`
 //! `Vec<Vec<[f32; 2]>>` is populated for every UV channel, mirroring
-//! the existing `LayerElementColor` multi-channel behaviour. Per
-//! `docs/3d/fbx/ufbx/reference.html` §`ufbx_mesh.uv_sets` /
-//! §`ufbx_uv_set`, an FBX mesh may carry several UV channels
-//! (commonly: diffuse + lightmap); the first one is also surfaced at
-//! `ufbx_mesh.vertex_uv`.
+//! the existing `LayerElementColor` multi-channel behaviour. An FBX
+//! mesh may carry several UV channels (commonly: diffuse + lightmap),
+//! each a `LayerElementUV` record; the first is the primary UV set.
 //!
 //! The `MappingInformationType` / `ReferenceInformationType` /
 //! `UV` / `UVIndex` shape follows
-//! `docs/3d/fbx/ufbx/elements-meshes.md` §"Attributes" and
 //! `docs/3d/fbx/fbx-binary-properties70.md` §"LayerElement*
 //! sub-discriminator (within Geometry)".
 

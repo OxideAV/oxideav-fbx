@@ -7,18 +7,21 @@
 //!
 //! # References
 //!
-//! - `docs/3d/fbx/blender-fbx-binary-format.html` — Alexander
-//!   Gessler / Blender Foundation, *FBX Binary File Format
-//!   Specification* (August 2013, public-domain dedication). Covers
-//!   the 27-byte header, the recursive Node Record layout, and the
-//!   property type-code dispatch table.
-//! - `docs/3d/fbx/ufbx/elements-meshes.md` — ufbx project,
-//!   *Meshes* documentation (dual MIT / Unlicense). Documents the
-//!   `Geometry` element, the `LayerElement*` attribute system, and
-//!   the polygon-vertex-index encoding.
-//! - `docs/3d/fbx/ufbx/elements-overview.md` — ufbx project,
-//!   *Elements* overview. Documents the `Objects` / `Connections`
-//!   shape used by the object-graph walker in [`scene`].
+//! - `docs/3d/fbx/blender-fbx-binary-format.html` — Blender Foundation,
+//!   *FBX Binary File Format Specification* (August 2013, public-domain
+//!   dedication). Covers the 27-byte header, the recursive Node Record
+//!   layout, and the property type-code dispatch table.
+//! - `docs/3d/fbx/fbx-binary-properties70.md` — clean-room observer
+//!   trace of the binary node-record / Properties70 / object-record /
+//!   Connections grammar (§1–§7), sample-RE'd from the staged
+//!   `fixtures/box-binary-v7400.fbx` bytes (no FBX-implementation
+//!   source read). Documents the `Geometry` element, the
+//!   `LayerElement*` attribute system, the polygon-vertex-index
+//!   encoding, and the `Objects` / `Connections` shape used by the
+//!   object-graph walker in [`scene`].
+//! - `docs/3d/fbx/fbx-ascii-grammar.md` — clean-room observer grammar
+//!   of the ASCII FBX encoding (§7 sections + the `P:` record),
+//!   isomorphic to the binary form.
 //!
 //! # What's covered
 //!
@@ -70,9 +73,9 @@
 //!   `CustomFrameRate` / `CurrentTimeMarker`) lands on
 //!   `Scene3D::extras` under the `"fbx:<snake_case>"` key convention.
 //!   `UnitScaleFactor` is additionally translated to `Scene3D::unit`:
-//!   `100.0 → Unit::Centimetres` and `1.0 → Unit::Metres` per the
-//!   `unit_meters` documentation in
-//!   `docs/3d/fbx/ufbx/elements-nodes.md`. See [`globals`].
+//!   `100.0 → Unit::Centimetres` and `1.0 → Unit::Metres` — the FBX
+//!   `UnitScaleFactor` is a centimetre count, so factor 100 ⇒ 1 m and
+//!   factor 1 ⇒ 1 cm (observed in the sample fixtures). See [`globals`].
 //! - **Definitions / PropertyTemplate** (round 280) — the top-level
 //!   `Definitions` section (per `docs/3d/fbx/fbx-ascii-grammar.md`
 //!   §7b) decodes via [`definitions::Definitions`]: the section
@@ -120,9 +123,9 @@
 //!   (`Color` / `Intensity` / `LightType` / `DecayType` /
 //!   `InnerAngle` / `OuterAngle` for lights; `CameraProjectionType` /
 //!   `FieldOfViewY` / `FieldOfView` / `AspectWidth` / `AspectHeight` /
-//!   `NearPlane` / `FarPlane` / `OrthoZoom` for cameras) are taken
-//!   from `docs/3d/fbx/ufbx/reference.html` §`ufbx_light` /
-//!   §`ufbx_camera`; the §6 NodeAttribute discriminator + §4 P-record
+//!   `NearPlane` / `FarPlane` / `OrthoZoom` for cameras) are the
+//!   FBX-SDK `P`-record names observed on `NodeAttribute` Light /
+//!   Camera records; the §6 NodeAttribute discriminator + §4 P-record
 //!   grammar live in `docs/3d/fbx/fbx-binary-properties70.md`.
 //!
 //! # What's NOT covered

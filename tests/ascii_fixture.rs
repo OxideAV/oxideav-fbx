@@ -53,8 +53,8 @@ fn ascii_fixture_global_settings_surface_to_scene_extras() {
     // Round 219 — the fixture's `GlobalSettings { Properties70 { ... } }`
     // block (UnitScaleFactor=1, AmbientColor=(0,0,0), TimeMode=11,
     // ...) should reach `Scene3D::extras` via the ASCII front-end
-    // round-trip. UnitScaleFactor=1 maps to `Unit::Metres` per the
-    // documented mapping in `docs/3d/fbx/ufbx/elements-nodes.md`.
+    // round-trip. UnitScaleFactor=1 maps to `Unit::Metres` (the
+    // canonical metre-unit factor; factor 100 = centimetres).
     let mut dec = FbxDecoder::new();
     let scene = dec.decode(FIXTURE).expect("ASCII fixture decodes");
     assert_eq!(scene.unit, oxideav_mesh3d::Unit::Metres);

@@ -7,13 +7,10 @@
 //! triangulation.
 //!
 //! The colour layer follows the same `MappingInformationType` /
-//! `ReferenceInformationType` / `Colors` shape ufbx documents for
-//! every `LayerElement*` record in
-//! `docs/3d/fbx/ufbx/elements-meshes.md` §"Attributes". The on-disk
-//! record name follows the same ufbx-field → FBX-7.x-PascalCase
-//! derivation rounds 1–5 used (`vertex_uv` → `LayerElementUV`,
-//! `vertex_normal` → `LayerElementNormal`, so `vertex_color` →
-//! `LayerElementColor`).
+//! `ReferenceInformationType` / `Colors` shape every `LayerElement*`
+//! record uses (per `docs/3d/fbx/fbx-binary-properties70.md` §6.4).
+//! The colour layer's on-disk record name is `LayerElementColor`,
+//! matching the `LayerElementUV` / `LayerElementNormal` family.
 
 use oxideav_fbx::{FbxDecoder, FBX_MAGIC};
 use oxideav_mesh3d::{Mesh3DDecoder, Topology};
@@ -198,8 +195,8 @@ fn synthetic_quad_with_vertex_colors_surfaces_per_corner_rgba() {
     // Quad fan-triangulated -> 2 triangles -> 6 corners.
     assert_eq!(prim.positions.len(), 6);
 
-    // One colour set on the primitive (mirrors `vertex_color` first
-    // slot per ufbx §`ufbx_mesh.vertex_color`).
+    // One colour set on the primitive (the primary colour set lands
+    // in slot 0).
     assert_eq!(prim.colors.len(), 1, "one colour set surfaced");
     let cset = &prim.colors[0];
     assert_eq!(cset.len(), 6, "one RGBA quad per triangle corner");

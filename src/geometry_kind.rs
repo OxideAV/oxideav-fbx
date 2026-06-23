@@ -117,7 +117,8 @@ pub fn extract_geometry_kinds(
     // 2) Walk `Connections` for `Geometry -> Model` `OO` links and tag
     //    the owning `Model`'s `Node::extras` with the kind string.
     //    Mirrors the Geometry -> Model OO walk the scene builder uses
-    //    for the `Mesh` attachment (per §7 + ufbx elements-overview).
+    //    for the `Mesh` attachment (per
+    //    `docs/3d/fbx/fbx-binary-properties70.md` §7 Connections).
     if let Some(conns) = doc.root.child("Connections") {
         for c in conns.children_named("C") {
             let kind = c.properties.first().and_then(FbxProperty::as_str);

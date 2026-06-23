@@ -3,8 +3,9 @@
 //! `Deformer{BlendShape}` + `Deformer{BlendShapeChannel}` +
 //! `Geometry{Shape}` → [`oxideav_mesh3d::MorphTarget`].
 //!
-//! Per `docs/3d/fbx/ufbx/elements-deformers.md` an FBX skin deformer
-//! is structured as:
+//! An FBX skin deformer is structured as a `Deformer` object tree
+//! wired through `Connections` `OO` records (per
+//! `docs/3d/fbx/fbx-binary-properties70.md` §5–§7):
 //!
 //! ```text
 //! Deformer (subtype "Skin")  --(OO)-->  Geometry
@@ -18,9 +19,9 @@
 //!     - TransformLink : 4x4 — bone-to-world at bind
 //! ```
 //!
-//! `geometry_to_bone` (a.k.a. the inverse-bind matrix) is
-//! `inverse(TransformLink) * Transform` per the doc's
-//! `ufbx_skin_cluster.geometry_to_bone` description.
+//! The inverse-bind (geometry-to-bone) matrix is
+//! `inverse(TransformLink) * Transform`, composed from the cluster's
+//! two 4×4 bind matrices above.
 //!
 //! For blend shapes:
 //!

@@ -43,17 +43,12 @@
 //!    exporter-specific auto-conversion without re-walking the
 //!    document.
 //! 2. **`UnitScaleFactor`** is translated to [`oxideav_mesh3d::Unit`]
-//!    for the two values explicitly documented in
-//!    `docs/3d/fbx/ufbx/elements-nodes.md`: the file states *"Most
-//!    unit-aware FBXs are expressed in centimeters
-//!    (`ufbx_scene_settings.unit_meters = 0.01`), as that is the
-//!    de-facto default of FBX"* and *"meter units
-//!    (`ufbx_scene_settings.unit_meters = 1.0`)"*. The mapping
-//!    `100.0 → Centimetres` / `1.0 → Metres` follows directly: in both
-//!    cases `unit_meters * UnitScaleFactor == 1`, so a `UnitScaleFactor`
-//!    of `100` paired with `unit_meters = 0.01` confirms the centimetre
-//!    convention `box.fbx` ships, and a `UnitScaleFactor` of `1` paired
-//!    with `unit_meters = 1.0` confirms the metre convention. Other
+//!    for the two canonical values. The FBX de-facto default is
+//!    centimetres, where `UnitScaleFactor = 100.0`; a value of `1.0`
+//!    denotes metre units. The mapping `100.0 → Centimetres` /
+//!    `1.0 → Metres` follows directly (the `box-binary-v7400.fbx`
+//!    fixture ships `UnitScaleFactor = 100.0`, confirming the
+//!    centimetre convention). Other
 //!    values fall back to the default `Unit::Metres` and the raw
 //!    factor stays available on `extras["fbx:unit_scale_factor"]` for
 //!    callers that need the literal exporter-side value.
@@ -62,10 +57,10 @@
 //!
 //! The `UpAxis` / `FrontAxis` / `CoordAxis` integer enum mapping to
 //! the [`oxideav_mesh3d::Axis`] (positive/negative X/Y/Z) variants is
-//! **not** documented in either the staged Blender writeup nor the
-//! ufbx site docs (the C-level `ufbx_coordinate_axis` enum is
-//! documented as an enum but its FBX-P-record-int → axis-variant table
-//! is absent). The raw ints surface on `Scene3D::extras` and
+//! **not** documented in the staged clean-room references: the
+//! `UpAxis` / `*Sign` integers are observed as `P`-record values but
+//! the int → axis-variant table is absent. The raw ints surface on
+//! `Scene3D::extras` and
 //! `Scene3D::up_axis` / `front_axis` stay at the [`Scene3D::new`]
 //! defaults (`PosY` / `NegZ`).
 //!
@@ -172,11 +167,10 @@ pub fn extract_global_settings(doc: &FbxDocument, scene: &mut Scene3D) -> usize 
     }
 
     // Translate `UnitScaleFactor` to `Scene3D::unit` for the two
-    // values whose semantics are documented in
-    // `docs/3d/fbx/ufbx/elements-nodes.md` ("centimeters / unit_meters
-    // = 0.01" → factor 100; "meter units / unit_meters = 1.0" → factor
-    // 1). Any other value leaves `scene.unit` at the [`Scene3D::new`]
-    // default; the raw factor stays on extras.
+    // values whose semantics are canonical for FBX: factor 100 →
+    // centimetres (the de-facto default), factor 1 → metres. Any other
+    // value leaves `scene.unit` at the [`Scene3D::new`] default; the
+    // raw factor stays on extras.
     if let Some(f) = props.as_f64("UnitScaleFactor") {
         if let Some(unit) = unit_from_scale_factor(f) {
             scene.unit = unit;
@@ -194,8 +188,7 @@ pub fn extract_global_settings(doc: &FbxDocument, scene: &mut Scene3D) -> usize 
 /// Translate the FBX `UnitScaleFactor` P-record value to a typed
 /// [`Unit`].
 ///
-/// Only the two values explicitly documented in
-/// `docs/3d/fbx/ufbx/elements-nodes.md` are translated:
+/// Only the two canonical values are translated:
 /// `100.0` → [`Unit::Centimetres`] (the de-facto FBX default) and
 /// `1.0` → [`Unit::Metres`] (the Blender "FBX Units Scale" preset).
 /// Other values return `None` so the caller can decide whether to fall

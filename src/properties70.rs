@@ -319,7 +319,7 @@ impl PropertyMap {
     /// enumeration and the binary-doc §4 P-record family; the
     /// cubes-ascii-v7500.fbx fixture has `P: "Lcl Rotation", "Lcl
     /// Rotation", "", "A", 0, 0, 0`. The triple is XYZ Euler in
-    /// degrees per the ufbx-doc convention the [`crate::animation`]
+    /// degrees — the same FBX convention the [`crate::animation`]
     /// module already follows when converting `Lcl Rotation` curves
     /// to quaternions.
     pub fn as_lcl_rotation(&self, name: &str) -> Option<[f64; 3]> {

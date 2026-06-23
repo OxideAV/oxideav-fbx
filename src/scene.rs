@@ -1,8 +1,8 @@
 //! Object-graph walker — turn an [`FbxDocument`] into a [`Scene3D`].
 //!
 //! Reads the top-level `Objects` and `Connections` records (per
-//! `docs/3d/fbx/ufbx/elements-overview.md` + `elements-meshes.md` +
-//! `elements-nodes.md`):
+//! `docs/3d/fbx/fbx-binary-properties70.md` §5–§7 and
+//! `docs/3d/fbx/fbx-ascii-grammar.md` §7c–§7d):
 //!
 //! - **Objects** is a flat container whose direct children are the
 //!   element records keyed by element-type tag (`Geometry`, `Model`,
@@ -88,11 +88,13 @@ pub fn build_scene(doc: &FbxDocument) -> Result<Scene3D> {
                         Error::invalid("FBX Geometry element missing id property")
                     })?;
                     if subtype(child).as_deref() == Some("Mesh") || subtype(child).is_none()
-                    // ufbx elements-meshes.md: every binary FBX
-                    // Geometry node we care about for round 1
-                    // is the polygonal `Mesh` subtype. Nurbs /
-                    // Patch / Boundary subtypes are not yet
-                    // supported.
+                    // Per `docs/3d/fbx/fbx-binary-properties70.md`
+                    // §6: the Geometry prop2 subtype string
+                    // discriminates kinds; the polygonal `"Mesh"`
+                    // subtype is the one we tessellate. NurbsCurve /
+                    // NurbsSurface / Boundary / TrimNurbsSurface /
+                    // Line subtypes are not yet supported (their
+                    // discriminator surfaces via `geometry_kind`).
                     {
                         let (mesh, corners) =
                             extract_geometry_mesh_with_corners(child, element_name(child))?;
@@ -129,7 +131,8 @@ pub fn build_scene(doc: &FbxDocument) -> Result<Scene3D> {
     // Walk Connections to wire Geometry → Model and Model → root /
     // parent Model. Connection records use property tuple
     // (kind, child_id, parent_id [, prop_name]) per
-    // ufbx/elements-overview.md §"Connections".
+    // `docs/3d/fbx/fbx-binary-properties70.md` §7 (binary `C` records)
+    // and `docs/3d/fbx/fbx-ascii-grammar.md` §7d (ASCII `C:` records).
     let mut child_of_model: HashMap<i64, Vec<i64>> = HashMap::new();
     // Per-Geometry FBX id → owning Model's NodeId. Captured here so
     // the deformer module can hang a [`Skin`] off the right scene-graph
@@ -200,7 +203,7 @@ pub fn build_scene(doc: &FbxDocument) -> Result<Scene3D> {
     // If we surfaced Meshes but no Models referenced them, fabricate
     // one root Node per orphan Mesh so a downstream renderer can
     // still draw the geometry. This matches the "Geometry without a
-    // Model" tolerance documented in ufbx/elements-meshes.md.
+    // Model" tolerance other FBX loaders apply.
     let referenced_meshes: std::collections::HashSet<oxideav_mesh3d::MeshId> =
         scene.nodes.iter().filter_map(|n| n.mesh).collect();
     let orphan_mesh_ids: Vec<(i64, oxideav_mesh3d::MeshId)> = geometry_meshes
@@ -325,8 +328,9 @@ pub fn build_scene(doc: &FbxDocument) -> Result<Scene3D> {
 }
 
 /// Read the `id` property of an FBX element record. The convention
-/// per Gessler's worked-example output is property[0] = id (i64),
-/// property[1] = name+subtype string, property[2] = subtype string.
+/// per `docs/3d/fbx/fbx-binary-properties70.md` §5 is property[0] = id
+/// (i64 `L`), property[1] = `Name\x00\x01ClassTag` string, property[2]
+/// = subtype string.
 fn read_element_id(node: &FbxNode) -> Option<i64> {
     node.properties.first().and_then(FbxProperty::as_i64)
 }
@@ -356,9 +360,9 @@ fn subtype(node: &FbxNode) -> Option<String> {
 }
 
 /// Helper to pre-allocate an empty scene with the FBX coordinate
-/// defaults (Y-up, -Z forward, centimetres — Maya-default; ufbx
-/// elements/index.md §"Coordinate spaces" notes that 1 FBX unit ≈
-/// 1 cm by default for files exported from Maya).
+/// defaults (Y-up, -Z forward, centimetres — Maya-default: 1 FBX unit
+/// ≈ 1 cm by default for files exported from Maya, per the
+/// `UnitScaleFactor` observed in the sample fixtures).
 struct Mesh3DEmpty;
 impl Mesh3DEmpty {
     fn scene() -> Scene3D {

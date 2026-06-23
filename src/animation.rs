@@ -1,8 +1,8 @@
 //! Animation extraction — `AnimationStack` / `AnimationLayer` /
 //! `AnimationCurveNode` / `AnimationCurve` → [`oxideav_mesh3d::Animation`].
 //!
-//! Per `docs/3d/fbx/ufbx/elements-animation.md`, animation in an FBX
-//! file is structured as:
+//! Animation in an FBX file (per the object graph described in
+//! `docs/3d/fbx/fbx-binary-properties70.md` §5–§7) is structured as:
 //!
 //! - `AnimationStack` — top-level "take" / clip. One stack per
 //!   logical animation in the file.
@@ -10,8 +10,8 @@
 //!   on a stack composite into the final output; round 2 collapses
 //!   every layer's channels into one [`oxideav_mesh3d::Animation`]
 //!   keyed by stack name (the per-layer compositing semantics —
-//!   weight / blend-mode / additive — are NYI; per the doc those need
-//!   the `ufbx_evaluate_scene()` machinery to handle correctly).
+//!   weight / blend-mode / additive — are NYI; correct compositing
+//!   needs full per-layer scene evaluation).
 //! - `AnimationCurveNode` — parameter binding. Connects (a) one or
 //!   more `AnimationCurve`s carrying x/y/z component scalars to (b)
 //!   one named property on a target `Model` node (e.g.
@@ -24,7 +24,7 @@
 //!
 //! # Connection topology
 //!
-//! Per `elements-overview.md` §"Connections", animation wiring is
+//! Per `docs/3d/fbx/fbx-binary-properties70.md` §7, animation wiring is
 //! conveyed by `OO` (object-object) and `OP` (object-property) records:
 //!
 //! ```text
@@ -35,8 +35,8 @@
 //! ```
 //!
 //! For round 2 we recognise the three FBX node-transform properties
-//! per `docs/3d/fbx/ufbx/fbx-node-transforms.md` (`Lcl Translation`,
-//! `Lcl Rotation`, `Lcl Scaling`) and one deformer-targeted property
+//! (`Lcl Translation`, `Lcl Rotation`, `Lcl Scaling`) and one
+//! deformer-targeted property
 //! (`DeformPercent`) used by morph-target animation. Other property
 //! names round-trip via the underlying [`crate::FbxDocument`] but do
 //! not surface as [`oxideav_mesh3d::AnimationChannel`]s.
@@ -82,7 +82,7 @@ use crate::binary::{FbxDocument, FbxNode, FbxProperty};
 pub const KTIME_TICKS_PER_SECOND: f64 = 46_186_158_000.0;
 
 /// Names this round recognises as targets of an `AnimationCurveNode`
-/// connected to a Model. Matches `docs/3d/fbx/ufbx/fbx-node-transforms.md`
+/// connected to a Model: the FBX node-transform `P`-records
 /// `"Lcl Translation"` / `"Lcl Rotation"` / `"Lcl Scaling"` plus the
 /// deformer-channel `"DeformPercent"` used by morph animation.
 const TARGET_TRANSLATION: &str = "Lcl Translation";
@@ -449,9 +449,8 @@ fn push_times(dst: &mut Vec<f32>, src: &[f32]) {
 /// Linear sampler — clamps at the endpoints, linearly interpolates
 /// between adjacent keyframes. We don't honour `KeyAttrFlags` /
 /// `KeyAttrDataFloat` (cubic / step / TCB) because the docs we have
-/// do not specify their bit layout; calling `Interpolation::Linear`
-/// matches `ufbx_bake_anim`'s default downstream representation per
-/// `elements-animation.md` §"Animation baking".
+/// do not specify their bit layout; emitting `Interpolation::Linear`
+/// matches the common baked-animation downstream representation.
 fn sample_linear(curve: &RawCurve, t: f32) -> f32 {
     if curve.times_secs.is_empty() {
         return 0.0;
@@ -534,8 +533,7 @@ fn element_name(n: &FbxNode) -> Option<String> {
 }
 
 /// Convert an XYZ-order Euler triplet (degrees) to a quaternion in
-/// xyzw layout. Default rotation order per
-/// `docs/3d/fbx/ufbx/fbx-node-transforms.md`.
+/// xyzw layout. XYZ is the FBX default `RotationOrder`.
 ///
 /// Composition order is `R = Rz * Ry * Rx` so that vectors transform
 /// as `v' = Rz * (Ry * (Rx * v))` — this is the standard XYZ

@@ -14,9 +14,9 @@
 //! The attribute's parameters live inside the element's `Properties70`
 //! `P`-record block per `fbx-binary-properties70.md` §4 (and the
 //! ASCII counterpart in `fbx-ascii-grammar.md` §8). The well-known
-//! property names this round consumes — sourced verbatim from
-//! `docs/3d/fbx/ufbx/reference.html` §`ufbx_light` / §`ufbx_camera`
-//! and `§ufbx_aperture_mode` / `§ufbx_aspect_mode`:
+//! `P`-record property names this round consumes are the FBX-SDK
+//! Light / Camera attribute names observed on `NodeAttribute`
+//! records:
 //!
 //! ### Light P-records
 //!
@@ -31,13 +31,14 @@
 //! | `OuterAngle`        | Number    | `Light::Spot.outer_cone_angle` (deg → rad / 2)|
 //! | `CastShadows`       | bool      | round-trips through `Node::extras`            |
 //!
-//! `LightType` enum (per `§ufbx_light_type`): `0` = Point,
-//! `1` = Directional, `2` = Spot, `3` = Area (mapped to Point — area
-//! lights aren't punctual), `4` = Volume (also mapped to Point).
+//! `LightType` enum: `0` = Point, `1` = Directional, `2` = Spot,
+//! `3` = Area (mapped to Point — area lights aren't punctual),
+//! `4` = Volume (also mapped to Point).
 //!
-//! Per `§ufbx_light.intensity`: *"`intensity` is 0.01x of the property
-//! `"Intensity"` as that matches values in DCC programs before
-//! exporting."* — we apply the same 0.01× scale before storing.
+//! The FBX `Intensity` `P`-record value is a DCC-program percentage:
+//! the punctual intensity is `0.01 ×` the stored `Intensity` (so a
+//! stored `100` is unit intensity). We apply the same 0.01× scale
+//! before storing.
 //!
 //! ### Camera P-records
 //!
@@ -55,9 +56,9 @@
 //!
 //! glTF (mesh3d's reference shape) stores vertical FoV in radians;
 //! FBX stores degrees, and `FieldOfView` is *horizontal*. When only
-//! `FieldOfView` is present we derive the vertical angle via the
-//! aspect ratio per `§ufbx_aperture_mode_horizontal`:
-//! `yfov = 2 * atan( tan(xfov/2) / aspect )`.
+//! `FieldOfView` is present we derive the vertical angle from the
+//! horizontal one via the aspect ratio (the FBX horizontal-aperture
+//! convention): `yfov = 2 * atan( tan(xfov/2) / aspect )`.
 //!
 //! # Connection wiring
 //!
@@ -75,12 +76,12 @@
 //!   wires up `Lcl Translation` / `Rotation` / `Scaling` /
 //!   `DeformPercent`. Light / camera animation curves are a follow-up
 //!   round.
-//! - Area-light shape (`UFBX_LIGHT_AREA_SHAPE_RECTANGLE` vs
-//!   `_SPHERE`) — mesh3d's `Light` enum has no area variant; we map
-//!   to `Point` and stash `fbx:light_type = "Area"` in `Node::extras`
-//!   for downstream consumers.
-//! - Camera resolution (`AspectWidth` / `AspectHeight` in pixels per
-//!   `§ufbx_aspect_mode_fixed_resolution`) — only the *ratio* surfaces
+//! - Area-light shape (rectangle vs sphere) — mesh3d's `Light` enum
+//!   has no area variant; we map to `Point` and stash
+//!   `fbx:light_type = "Area"` in `Node::extras` for downstream
+//!   consumers.
+//! - Camera resolution (`AspectWidth` / `AspectHeight` in pixels, the
+//!   fixed-resolution aspect mode) — only the *ratio* surfaces
 //!   on `Camera::Perspective.aspect_ratio`; the absolute resolution
 //!   round-trips via `Node::extras["fbx:camera_resolution"]`.
 //! - Aperture / film-back metadata (`FilmWidth` / `FilmHeight` /
@@ -213,13 +214,13 @@ fn decode_light(node: &FbxNode) -> (Light, Option<String>, Vec<(String, Value)>)
     // Per §6 LightType: 0=Point, 1=Directional, 2=Spot, 3=Area, 4=Volume.
     let light_type = pm.as_i32("LightType").unwrap_or(0);
     let color3 = pm.as_vec3("Color").unwrap_or([1.0, 1.0, 1.0]);
-    // §`ufbx_light.intensity` notes the 0.01x scale.
+    // FBX `Intensity` is a DCC percentage; punctual intensity is 0.01x.
     let intensity_raw = pm.as_f64("Intensity").unwrap_or(100.0);
     let intensity = (intensity_raw * 0.01) as f32;
     let color: [f32; 3] = [color3[0] as f32, color3[1] as f32, color3[2] as f32];
 
-    // DecayType (0=None, 1=Linear, 2=Quadratic, 3=Cubic per
-    // `§ufbx_light_decay`). When non-None we surface DecayStart as
+    // DecayType (0=None, 1=Linear, 2=Quadratic, 3=Cubic — the FBX
+    // light decay enum). When non-None we surface DecayStart as
     // `range`; otherwise the light has no cutoff per mesh3d's
     // `range: None == physical inverse-square no cutoff` convention.
     let decay_type = pm.as_i32("DecayType").unwrap_or(2);
@@ -242,8 +243,8 @@ fn decode_light(node: &FbxNode) -> (Light, Option<String>, Vec<(String, Value)>)
         1 => (Light::Directional { color, intensity }, None),
         // Spot.
         2 => {
-            // FBX stores the full cone angle in degrees per
-            // `§ufbx_light.inner_angle` / `.outer_angle`; mesh3d wants
+            // FBX stores the full cone angle in degrees
+            // (`InnerAngle` / `OuterAngle` P-records); mesh3d wants
             // the half-cone angle in radians (glTF convention).
             let inner_deg = pm.as_f64("InnerAngle").unwrap_or(0.0) as f32;
             let outer_deg = pm.as_f64("OuterAngle").unwrap_or(45.0) as f32;
@@ -300,7 +301,7 @@ fn decode_light(node: &FbxNode) -> (Light, Option<String>, Vec<(String, Value)>)
 fn decode_camera(node: &FbxNode) -> (Camera, Vec<(String, Value)>) {
     let pm = PropertyMap::from_element(node);
     // §6 `CameraProjectionType`: 0=Perspective, 1=Orthographic per the
-    // FBX SDK enum convention referenced by `§ufbx_projection_mode`.
+    // FBX SDK projection-mode enum convention.
     let proj = pm.as_i32("CameraProjectionType").unwrap_or(0);
     let near = pm.as_f64("NearPlane").unwrap_or(0.1) as f32;
     let far = pm.as_f64("FarPlane").unwrap_or(1000.0) as f32;
@@ -313,9 +314,9 @@ fn decode_camera(node: &FbxNode) -> (Camera, Vec<(String, Value)>) {
 
     let mut extras: Vec<(String, Value)> = Vec::new();
     if let (Some(w), Some(h)) = (aspect_w, aspect_h) {
-        // `§ufbx_aspect_mode_fixed_resolution` notes both as pixels in
-        // some modes — round-trip the absolute pair so the downstream
-        // consumer can decide what to do.
+        // In the fixed-resolution aspect mode both are pixel counts —
+        // round-trip the absolute pair so the downstream consumer can
+        // decide what to do.
         let arr = Value::Array(vec![
             Value::Number(serde_json::Number::from_f64(w).unwrap_or_else(|| 0.into())),
             Value::Number(serde_json::Number::from_f64(h).unwrap_or_else(|| 0.into())),
@@ -343,8 +344,8 @@ fn decode_camera(node: &FbxNode) -> (Camera, Vec<(String, Value)>) {
 
     // Perspective. Prefer `FieldOfViewY` (vertical, matches glTF
     // `yfov` 1:1); fall back to `FieldOfView` (horizontal — derive
-    // vertical via aspect ratio per `§ufbx_aperture_mode_horizontal`);
-    // last resort: 60° fallback.
+    // vertical via aspect ratio, the FBX horizontal-aperture
+    // convention); last resort: 60° fallback.
     let yfov_deg = if let Some(yfov) = pm.as_f64("FieldOfViewY") {
         yfov as f32
     } else if let Some(xfov) = pm.as_f64("FieldOfView") {
@@ -473,9 +474,8 @@ mod tests {
     #[test]
     fn decodes_point_light_with_color_and_intensity() {
         // LightType=0 (Point) + Color + Intensity P-records per
-        // fbx-binary-properties70.md §6 + ufbx reference
-        // §ufbx_light. Intensity is scaled 0.01x per
-        // §ufbx_light.intensity.
+        // fbx-binary-properties70.md §6. Intensity is a DCC
+        // percentage, scaled 0.01x to punctual intensity.
         let props70 = properties70(vec![
             p_record(
                 "Color",
@@ -562,8 +562,8 @@ mod tests {
 
     #[test]
     fn decodes_spot_light_with_cone_angles() {
-        // Per §ufbx_light.inner_angle / .outer_angle, FBX stores the
-        // full cone in degrees. mesh3d Spot wants half-cone in radians.
+        // FBX stores the full cone in degrees (`InnerAngle` /
+        // `OuterAngle`). mesh3d Spot wants half-cone in radians.
         let props70 = properties70(vec![
             p_record(
                 "Color",
@@ -725,7 +725,7 @@ mod tests {
     #[test]
     fn perspective_camera_derives_yfov_from_horizontal_fov() {
         // Only FieldOfView (horizontal) is present; we must derive
-        // yfov via the aspect ratio per ufbx_aperture_mode_horizontal:
+        // yfov via the aspect ratio (FBX horizontal-aperture mode):
         // yfov = 2 * atan( tan(xfov/2) / aspect ).
         let props70 = properties70(vec![
             p_record(

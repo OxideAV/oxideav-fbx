@@ -1,23 +1,16 @@
 //! Bind-pose (`Pose` element, subtype `"BindPose"`) surfacing onto
 //! [`Scene3D`].
 //!
-//! Per `docs/3d/fbx/ufbx/reference.html` §`ufbx_pose` /
-//! §`ufbx_bone_pose`, an FBX file records the rest/bind pose of a
-//! rigged skeleton as a `Pose` element whose `bone_poses[]` list pairs
-//! each bone node with its world-space matrix:
+//! An FBX file records the rest/bind pose of a rigged skeleton as a
+//! `Pose` element (subtype `"BindPose"`) whose `PoseNode` children
+//! pair each bone Model with its world-space matrix. FBX stores only
+//! world-space transforms in a `Pose`, so any parent-relative form is
+//! derived from the parent's world transform.
 //!
-//! - `ufbx_pose.is_bind_pose` — set when the pose is the skeleton's
-//!   bind pose (the doc's only documented pose flag).
-//! - `ufbx_pose.bone_poses[]` — list of `ufbx_bone_pose`, each
-//!   carrying `bone_node` (the node the pose applies to) and
-//!   `bone_to_world` ("Matrix from node local space to world space").
-//!   The doc notes: *"FBX only stores world transformations so this is
-//!   approximated from the parent world transform."*
-//!
-//! The on-disk FBX 7.x record this maps to (same ufbx-field →
-//! PascalCase derivation rounds 1–4 used for `Transform` /
-//! `TransformLink` / `Indexes` / `Weights`, all read as direct array
-//! sub-records rather than `Properties70` `P`-records) is:
+//! The on-disk FBX 7.x record (the `Matrix` payload is a direct
+//! `d`-array sub-record, like the deformer module's `Transform` /
+//! `TransformLink` / `Indexes` / `Weights`, not a `Properties70`
+//! `P`-record) is:
 //!
 //! ```text
 //! Objects {
@@ -50,10 +43,9 @@
 //!   whose cluster did not carry an explicit `TransformLink`
 //!   sub-record (the deformer module defaults that slot to identity,
 //!   producing an identity inverse-bind) is back-filled from the bind
-//!   pose as `inverse(bone_to_world)`. This is exactly the
-//!   doc's *"FBX only stores world transformations so this is
-//!   approximated"* case — a `Pose`-only rig with no per-cluster link
-//!   matrix still gets a usable inverse-bind matrix.
+//!   pose as `inverse(bone_to_world)`. This handles the world-only
+//!   case — a `Pose`-only rig with no per-cluster link matrix still
+//!   gets a usable inverse-bind matrix.
 //! - `bone_to_parent` (the doc's parent-space approximation, round
 //!   226) — once every posed bone's world matrix is stashed and the
 //!   scene-graph parent map is materialised from
@@ -61,9 +53,9 @@
 //!   is *also* posed receives a derived
 //!   `node.extras["fbx:bind_pose_parent_local"]` entry (16-element
 //!   `f64` JSON array, row-major) computed as
-//!   `inverse(parent_bone_to_world) * bone_to_world`. This is the
-//!   doc's documented form: ufbx `ufbx_bone_pose.bone_to_parent` is
-//!   *"approximated from the parent world transform"*. Posed bones
+//!   `inverse(parent_bone_to_world) * bone_to_world` — the
+//!   parent-relative bind transform approximated from the two stored
+//!   world transforms. Posed bones
 //!   whose parent has no bind pose (e.g. a bone parented directly to
 //!   the scene root, or to a non-skinned `Null` Model) receive
 //!   `bone_to_parent == bone_to_world` — the implicit-root case where
@@ -118,7 +110,7 @@ pub fn extract_poses(doc: &FbxDocument, scene: &mut Scene3D, model_nodes: &HashM
 
     if let Some(objects) = doc.root.child("Objects") {
         for pose in objects.children_named("Pose") {
-            // Only bind poses are surfaced (ufbx_pose.is_bind_pose).
+            // Only bind poses (subtype "BindPose") are surfaced.
             // The subtype lives in property[2] per the FBX 7.x element
             // record convention the rest of this crate relies on.
             if subtype(pose).as_deref() != Some("BindPose") {
@@ -192,8 +184,8 @@ pub fn extract_poses(doc: &FbxDocument, scene: &mut Scene3D, model_nodes: &HashM
     }
 
     // 3) Derive the parent-space form `bone_to_parent` for every
-    //    posed bone. The doc (ufbx_bone_pose) declares
-    //    bone_to_parent *"approximated from the parent world transform"*.
+    //    posed bone — approximated from the parent's stored world
+    //    transform (FBX stores only world-space pose matrices).
     //    Mechanism:
     //      a. Build a child → parent index from `scene.nodes[*].children`
     //         so each posed bone's ancestor chain is known.

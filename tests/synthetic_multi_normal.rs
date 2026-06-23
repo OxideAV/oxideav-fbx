@@ -30,7 +30,6 @@
 //!
 //! The `MappingInformationType` / `ReferenceInformationType` /
 //! `Normals` / `NormalsIndex` shape follows
-//! `docs/3d/fbx/ufbx/elements-meshes.md` §"Attributes" and
 //! `docs/3d/fbx/fbx-binary-properties70.md` §6.4.
 
 use oxideav_fbx::{FbxDecoder, FBX_MAGIC};

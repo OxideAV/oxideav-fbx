@@ -1,7 +1,8 @@
 //! Polygonal mesh extraction from a `Geometry` node.
 //!
-//! Per `docs/3d/fbx/ufbx/elements-meshes.md`, an FBX `Geometry`
-//! element of subtype `Mesh` carries:
+//! Per `docs/3d/fbx/fbx-binary-properties70.md` §6.4 (the
+//! `LayerElement*` sub-discriminators within a `Geometry`), an FBX
+//! `Geometry` element of subtype `Mesh` carries:
 //!
 //! - `Vertices` (`d` array, length `3 * V` where `V = unique vertex
 //!   count`).
@@ -38,7 +39,7 @@
 //!   canonical `vertex_normal` and the rest ride in `extras`.
 //! - `colors` — every `LayerElementColor` in document order, surfaced
 //!   as RGBA `[f32; 4]` per-corner buffers (one slot per FBX colour
-//!   set, mirroring ufbx's `ufbx_mesh.color_sets`). Mapping / reference
+//!   set). Mapping / reference
 //!   handling matches Normals (`ByPolygonVertex` / `ByVertex` with
 //!   optional `IndexToDirect` indirection).
 //!
@@ -170,12 +171,10 @@ pub fn extract_geometry_mesh_with_corners(
     }
 
     // UVs — every `LayerElementUV` in document order.
-    // Per `docs/3d/fbx/ufbx/elements-meshes.md` §"Attributes" the
-    // first UV set is also exposed at `ufbx_mesh.vertex_uv` and the
-    // full list lives at `ufbx_mesh.uv_sets` (a
-    // `ufbx_uv_set_list` per `docs/3d/fbx/ufbx/reference.html`
-    // §`ufbx_mesh.uv_sets` / §`ufbx_uv_set`). We mirror that by
-    // surfacing every `LayerElementUV` record (in the order they
+    // A `Geometry` may carry several UV sets (`LayerElementUV` records);
+    // the first is the primary UV channel and the rest are additional
+    // channels (lightmap UVs etc.). We
+    // surface every `LayerElementUV` record (in the order they
     // appear inside the FBX `Geometry` node) as a separate entry in
     // `Primitive::uvs`; `prim.uvs[0]` corresponds to the
     // `vertex_uv` slot and `prim.uvs[1..]` to additional channels
@@ -196,15 +195,11 @@ pub fn extract_geometry_mesh_with_corners(
     }
 
     // Vertex colours — every `LayerElementColor` in document order.
-    // Per `docs/3d/fbx/ufbx/elements-meshes.md` §"Attributes" the
-    // `ufbx_mesh.vertex_color` slot exposes the first colour set and
-    // `ufbx_mesh.color_sets` exposes the rest; we mirror that by
-    // surfacing every layer (the order they appear in the FBX node)
+    // A `Geometry` may carry several colour sets; the first is the
+    // primary one and the rest are additional channels. We surface
+    // every layer (the order they appear in the FBX node)
     // as a separate entry in `Primitive::colors`. The on-disk record
-    // name follows the same ufbx-field → FBX-7.x-PascalCase derivation
-    // earlier rounds used (`vertex_uv` → `LayerElementUV`,
-    // `vertex_normal` → `LayerElementNormal`), so `vertex_color` →
-    // `LayerElementColor` with sub-records `Colors` (a `d`-array of
+    // `LayerElementColor` carries sub-records `Colors` (a `d`-array of
     // RGBA quadruples) and an optional `ColorIndex` indirection.
     // Mapping / reference handling is the same as Normals / UVs — the
     // generic `flatten_layer_vec4` puller below mirrors `pull_layer_vec3`.
@@ -362,12 +357,11 @@ pub fn extract_geometry_mesh_with_corners(
     }
 
     // LayerElementMaterial — surface per-polygon material slot
-    // indices on `Primitive::extras` per
-    // `docs/3d/fbx/ufbx/elements-meshes.md` §"Materials": the
-    // `Materials` (`i` array) sub-record carries one slot index per
+    // indices on `Primitive::extras`. The `Materials` (`i` array)
+    // sub-record carries one slot index per
     // polygon (when `MappingInformationType=ByPolygon`) or one slot
     // index for the whole mesh (when `MappingInformationType=AllSame`,
-    // also the FBX default per ufbx reference §`ufbx_mesh.face_material`).
+    // the common single-material default).
     // The per-corner expanded form lands on `fbx:face_material_slots`
     // so a downstream consumer can split the primitive on material
     // boundaries without re-deriving the triangulation; the
@@ -863,8 +857,8 @@ fn pull_layer_vec2(
 ///
 /// Mirrors [`pull_layer_vec3`] (Normals / Tangents / Bitangents) but
 /// for RGBA quadruples (`d`-array of length `4 * N`). FBX vertex
-/// colours always carry an alpha component per ufbx reference
-/// §`ufbx_color_set.vertex_color` (a `ufbx_vec4` slot); exporters that
+/// colours always carry an alpha component (the `Colors` `d`-array is
+/// a sequence of RGBA quadruples); exporters that
 /// only authored RGB pad alpha to `1.0`.
 fn pull_layer_vec4(
     layer: &FbxNode,
@@ -955,23 +949,20 @@ fn pull_layer_vec4(
 /// Pull the per-corner material-slot index buffer from a
 /// `LayerElementMaterial` node.
 ///
-/// FBX `LayerElementMaterial` (per ufbx
-/// `elements-meshes.md` §"Materials") carries:
+/// FBX `LayerElementMaterial` (per
+/// `docs/3d/fbx/fbx-binary-properties70.md` §6.4) carries:
 ///
 /// - `Materials` — `i` array. Length depends on `MappingInformationType`:
 ///   - `AllSame` (the default): exactly one entry — that slot applies
 ///     to every polygon. The buffer often holds the single value `0`.
 ///   - `ByPolygon`: one entry per polygon (length ==
 ///     `Triangulation::polygon_count`). Slot indices key
-///     `Material -> Model` OO connection slots in the order that ufbx
-///     reference §`ufbx_mesh.materials` documents.
-/// - `MappingInformationType` — string (the two values above are the
-///   ones ufbx reference §`ufbx_mesh_part`/§`ufbx_mesh.materials`
-///   documents for materials).
+///     `Material -> Model` OO connection slots in connection order.
+/// - `MappingInformationType` — string (`AllSame` / `ByPolygon` are
+///   the two values observed for materials).
 /// - `ReferenceInformationType` — string. For materials, the
 ///   `IndexToDirect` form is what every binary FBX exporter actually
-///   emits (the slot indices themselves are the "direct" payload —
-///   ufbx documents this with `index_type == UFBX_INDEX_TYPE_DIRECT`).
+///   emits (the slot indices themselves are the "direct" payload).
 ///   `Direct` and missing-reference accepted as synonyms.
 ///
 /// Returned buffer is one `u32` slot index per triangle corner
@@ -1027,9 +1018,8 @@ fn pull_layer_material_slots(
         return Ok(Some(out));
     }
     // Unknown mapping mode (NoMappingInformation, ByVertex on
-    // materials — ufbx documents these as exporter quirks). Skip,
-    // matching ufbx's "fall back to all-same" tolerance per
-    // `elements-meshes.md` §"Materials".
+    // materials — exporter quirks). Skip, falling back to the
+    // all-same tolerance.
     Ok(None)
 }
 
@@ -1159,8 +1149,7 @@ mod tests {
     #[test]
     fn layer_material_single_entry_treated_as_all_same() {
         // Materials with one entry and no mapping mode header is the
-        // exporter shorthand for AllSame per
-        // `docs/3d/fbx/ufbx/elements-meshes.md` §"Materials".
+        // exporter shorthand for AllSame.
         let pvi = vec![0, 1, -3, 4, 5, -7];
         let tris = triangulate(&pvi).unwrap();
         let layer = make_layer_material_node(vec![2], None);
@@ -1170,8 +1159,8 @@ mod tests {
 
     #[test]
     fn layer_material_unknown_mapping_returns_none() {
-        // ByVertex on materials is exporter-quirk territory; per ufbx
-        // we tolerate it as "no surfacing", letting the connection
+        // ByVertex on materials is exporter-quirk territory; we
+        // tolerate it as "no surfacing", letting the connection
         // table do its default first-material-only wiring.
         let pvi = vec![0, 1, -3];
         let tris = triangulate(&pvi).unwrap();
@@ -1182,7 +1171,7 @@ mod tests {
     /// Helper to build a synthetic `LayerElementColor` node with a
     /// `Colors` payload + mapping/reference headers + an optional
     /// `ColorIndex` indirection. Mirrors the shape every binary FBX
-    /// exporter emits per `docs/3d/fbx/ufbx/elements-meshes.md`.
+    /// exporter emits for a `LayerElementColor` record.
     fn make_layer_color_node(
         colors: Vec<f64>,
         mapping: &str,
@@ -1310,8 +1299,8 @@ mod tests {
     fn extract_geometry_mesh_surfaces_two_color_sets_in_document_order() {
         // Triangle with two LayerElementColor sub-records — verify
         // both reach `Primitive::colors` in the order they appear in
-        // the FBX `Geometry` node (mirroring ufbx's
-        // `vertex_color` (first) + `color_sets[1..]` exposure).
+        // the FBX `Geometry` node (primary colour set first, then the
+        // additional sets).
         let triangle = FbxNode {
             name: "Geometry".to_string(),
             properties: vec![

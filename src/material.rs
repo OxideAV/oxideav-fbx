@@ -1,9 +1,8 @@
 //! Material / Texture / Video surfacing onto [`Scene3D`].
 //!
-//! Per `docs/3d/fbx/ufbx/elements-overview.md` + `reference.html`
-//! §`ufbx_material` / §`ufbx_texture` / §`ufbx_video`, an FBX file
+//! Per `docs/3d/fbx/fbx-binary-properties70.md` §5–§7, an FBX file
 //! describes surface appearance via three element types in the
-//! `Objects` block:
+//! `Objects` block (`Material`, `Texture`, `Video`):
 //!
 //! ```text
 //! Objects {
@@ -20,14 +19,12 @@
 //! ```
 //!
 //! `RelativeFilename` and `FileName` are the two well-known direct
-//! sub-records that carry a string-typed image-path payload (ufbx
-//! reference §`ufbx_texture.filename` / `.relative_filename`). The
+//! sub-records that carry a string-typed image-path payload. The
 //! `Content` blob on `Video` records may carry the embedded image
-//! bytes for self-contained FBX exports (ufbx reference
-//! §`ufbx_video.content`).
+//! bytes for self-contained FBX exports.
 //!
-//! The wiring between elements is documented in
-//! `docs/3d/fbx/ufbx/elements-overview.md` §"Connections":
+//! The wiring between elements uses the `Connections` `C`-record graph
+//! (`docs/3d/fbx/fbx-binary-properties70.md` §7):
 //!
 //! ```text
 //! Material  --(OO)--> Model                — surface assignment
@@ -203,8 +200,8 @@ pub fn extract_materials(
         let video_node = video_id.and_then(|v| fbx_videos.get(&v).copied());
 
         // Prefer the embedded Video.Content blob if present — that's
-        // the self-contained-FBX case (`docs/3d/fbx/ufbx/reference.html`
-        // §`ufbx_video.content`).
+        // the self-contained-FBX case (the `Content` R-blob on a
+        // `Video` record).
         let embedded = video_node.and_then(read_content_blob);
         let tex = if let Some(bytes) = embedded {
             let mime = video_node
@@ -287,8 +284,8 @@ pub fn extract_materials(
         let texref = oxideav_mesh3d::TextureRef::new(tex_id);
         match prop.as_str() {
             // Base-colour aliases. Maya / 3ds-Max / standard FBX-2014
-            // exporter all carry one of these names per
-            // `docs/3d/fbx/ufbx/reference.html` §`ufbx_material_fbx_map`.
+            // exporters each carry one of these OP-connection property
+            // names (observed exporter conventions).
             "DiffuseColor"
             | "Maya|TEX_color_map"
             | "Maya|baseColor"
@@ -307,9 +304,9 @@ pub fn extract_materials(
                 mat.emissive_texture = Some(texref);
             }
             // Metallic-roughness packed map (3ds Max Physical / FBX
-            // PBR exporter convention; per ufbx reference there is
-            // no canonical FBX 2014-Lambert name — these are the
-            // recognised PBR exporter slots).
+            // PBR exporter convention; there is no canonical FBX
+            // 2014-Lambert name — these are the recognised PBR exporter
+            // slots).
             "Maya|TEX_metallic_map" | "3dsMax|main|metalness_map" => {
                 mat.metallic_roughness_texture = Some(texref);
             }
@@ -333,9 +330,8 @@ pub fn extract_materials(
     //    the simple FBX-export shape every legacy renderer expects.
     //
     //    Multi-material case (round 178): a `Model` may receive more
-    //    than one `Material -> Model` OO connection, per ufbx
-    //    reference §`ufbx_node.materials`. The N connected materials
-    //    occupy slots 0..N in connection order. The per-corner
+    //    than one `Material -> Model` OO connection. The N connected
+    //    materials occupy slots 0..N in connection order. The per-corner
     //    material-slot indices that `geometry::pull_layer_material_slots`
     //    stashed onto `Primitive::extras["fbx:face_material_slots"]`
     //    key into this same slot vector. We surface the slot table on
@@ -401,8 +397,8 @@ fn element_name(node: &FbxNode) -> Option<String> {
 /// `docs/3d/fbx/fbx-binary-properties70.md` §4 and populate the
 /// matching channels on the typed [`Material`].
 ///
-/// The mapping is the same one the ufbx reference documents in
-/// §`ufbx_material_fbx`: diffuse colour × diffuse factor → base
+/// The mapping is the standard FBX-classic-material → PBR translation:
+/// diffuse colour × diffuse factor → base
 /// colour; opacity → base-colour alpha (+ alpha mode); emissive colour
 /// × emissive factor → emissive factor; specular shininess → roughness
 /// (via the standard Blinn-Phong → GGX conversion `roughness ≈
@@ -437,9 +433,9 @@ fn apply_properties70(node: &FbxNode, mat: &mut Material, template: Option<&Prop
 
     // Diffuse colour × DiffuseFactor → base_color rgb.
     //
-    // ufbx reference: `ufbx_material_fbx.diffuse_color` and
-    // `.diffuse_factor`. `DiffuseColor` is the canonical name; some
-    // exporters also write `Diffuse` (already-baked rgb × factor).
+    // `DiffuseColor` is the canonical FBX classic-material P-record
+    // name; some exporters also write `Diffuse` (already-baked
+    // rgb × factor).
     let mut diffuse_rgb = pm
         .as_vec3("DiffuseColor")
         .or_else(|| pm.as_vec3("Diffuse"))
@@ -481,8 +477,8 @@ fn apply_properties70(node: &FbxNode, mat: &mut Material, template: Option<&Prop
     // Specular shininess → roughness.
     //
     // The Blinn-Phong specular exponent `n` (FBX `Shininess` /
-    // `ShininessExponent` per ufbx §`ufbx_material_fbx.specular_exponent`)
-    // converts to GGX-style roughness via the well-known relation
+    // `ShininessExponent` P-record) converts to GGX-style roughness
+    // via the well-known relation
     // `roughness ≈ sqrt(2 / (n + 2))` — bright/mirror Phong (n→∞)
     // collapses to roughness → 0, matte Phong (n→0) goes to roughness
     // → 1. Cap on input to avoid NaN on n < 0.
@@ -497,7 +493,7 @@ fn apply_properties70(node: &FbxNode, mat: &mut Material, template: Option<&Prop
 
     // ReflectionFactor → metallic. FBX legacy shaders have no proper
     // metallic channel; `ReflectionFactor` is the closest analogue in
-    // both Phong and Lambert per ufbx reference. Phong defaults to a
+    // both Phong and Lambert classic materials. Phong defaults to a
     // matte-dielectric look (metallic = 0) when ReflectionFactor is
     // unset; we honour that by NOT touching `mat.metallic` here unless
     // the file supplies the value.
@@ -540,8 +536,8 @@ fn read_string_child(parent: &FbxNode, name: &str) -> Option<String> {
 }
 
 /// Read a direct-child `Content` node's first `R` (raw blob) property.
-/// FBX `Video` records carry the embedded media payload here per the
-/// ufbx reference (`ufbx_video.content` / `.content_size`).
+/// FBX `Video` records carry the embedded media payload here (the
+/// `Content` R-blob, per `docs/3d/fbx/fbx-binary-properties70.md` §3c).
 fn read_content_blob(node: &FbxNode) -> Option<Vec<u8>> {
     let c = node.child("Content")?;
     match c.properties.first()? {

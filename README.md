@@ -7,11 +7,14 @@ originally developed by Kaydara for MotionBuilder. There is no
 Autodesk-published prose specification — this crate is implemented
 clean-room from third-party documentation:
 
-- **Binary container** — Alexander Gessler / Blender Foundation,
-  *FBX Binary File Format Specification* (August 2013, public-domain
-  dedication). Staged at `docs/3d/fbx/blender-fbx-binary-format.html`.
-- **Object-graph semantics** — ufbx project documentation (dual MIT /
-  Unlicense). Staged under `docs/3d/fbx/ufbx/`.
+- **Binary container** — Blender Foundation, *FBX Binary File Format
+  Specification* (August 2013, public-domain dedication). Staged at
+  `docs/3d/fbx/blender-fbx-binary-format.html`.
+- **Node-record / Properties70 / object-graph semantics** — clean-room
+  observer trace `docs/3d/fbx/fbx-binary-properties70.md`, sample-RE'd
+  from the staged fixture bytes (no FBX-implementation source read).
+- **ASCII FBX grammar** — clean-room observer grammar
+  `docs/3d/fbx/fbx-ascii-grammar.md`.
 
 ## What's covered
 
@@ -68,20 +71,18 @@ clean-room from third-party documentation:
   `Primitive::material` on the bound mesh.
 - **Vertex colours** — every `LayerElementColor` sub-record
   on a `Geometry` element is surfaced as a separate per-corner RGBA
-  buffer on `Primitive::colors` (one slot per FBX colour set,
-  mirroring ufbx's `vertex_color` first slot + `color_sets[1..]`
-  exposure). Mapping / reference handling matches Normals
-  (`ByPolygonVertex` / `ByVertex` with optional `IndexToDirect`
-  indirection); the `d`-array `Colors` payload is 4-component RGBA per
-  ufbx reference §`ufbx_color_set.vertex_color`.
+  buffer on `Primitive::colors` (one slot per FBX colour set, the
+  primary set first then the additional sets). Mapping / reference
+  handling matches Normals (`ByPolygonVertex` / `ByVertex` with
+  optional `IndexToDirect` indirection); the `d`-array `Colors`
+  payload is 4-component RGBA.
 - **Multi-UV-set surfacing** — every `LayerElementUV`
   sub-record on a `Geometry` element is now surfaced as a separate
   per-corner `[f32; 2]` buffer on `Primitive::uvs` (one entry per
-  FBX UV channel, in document order). Per
-  `docs/3d/fbx/ufbx/reference.html` §`ufbx_mesh.uv_sets` /
-  §`ufbx_uv_set`, an FBX mesh may carry multiple UV channels (the
-  canonical diffuse + lightmap pair); the first set is also aliased
-  at `ufbx_mesh.vertex_uv`. Mapping / reference handling reuses the
+  FBX UV channel, in document order). An FBX mesh may carry multiple
+  UV channels (the canonical diffuse + lightmap pair), each a
+  `LayerElementUV` record; the first set is the primary UV channel.
+  Mapping / reference handling reuses the
   2-component puller, so `ByPolygonVertex` / `ByVertex` and
   `Direct` / `IndexToDirect` work for every channel. Round-trip
   tested against `docs/3d/fbx/fixtures/cubes-ascii-v7500.fbx`
@@ -124,11 +125,9 @@ clean-room from third-party documentation:
   `CustomFrameRate` / `CurrentTimeMarker`) lands on `Scene3D::extras`
   under the `"fbx:<snake_case>"` key convention. `UnitScaleFactor` is
   additionally translated to `Scene3D::unit`: `100.0` →
-  `Unit::Centimetres` and `1.0` → `Unit::Metres` per the two values
-  explicitly documented in `docs/3d/fbx/ufbx/elements-nodes.md` (the
-  *"FBX files usually default to centimeters
-  (`ufbx_scene_settings.unit_meters = 0.01`)"* + *"meter units
-  (`ufbx_scene_settings.unit_meters = 1.0`)"* statements). Other
+  `Unit::Centimetres` and `1.0` → `Unit::Metres` (the two canonical
+  values — centimetres is the de-facto FBX default and `1.0` denotes
+  metre units). Other
   `UnitScaleFactor` values surface the raw factor on
   `extras["fbx:unit_scale_factor"]` without claiming a typed
   `Unit` mapping the docs don't provide. Axis ints (`UpAxis = 1`,
@@ -203,20 +202,21 @@ clean-room from third-party documentation:
   `extras["fbx:bind_pose"]` (16-double row-major JSON array). When a
   `Cluster` omitted its `TransformLink` sub-record (so the deformer
   module defaulted that joint's inverse-bind to identity), the bind
-  pose back-fills it as `inverse(bone_to_world)` — the reference's
-  documented *"FBX only stores world transformations so this is
-  approximated"* case. `Matrix` is a direct `d`-array sub-record, so
-  this stays clear of the still-unstaged `Properties70` `P`-record
-  grammar. Joints that already have a real inverse-bind are untouched;
-  non-bind rest poses (`is_bind_pose == false`) are not promoted. The decoder also derives the parent-space form
+  pose back-fills it as `inverse(bone_to_world)` — the world-only
+  case (FBX `Pose` records store world-space matrices). `Matrix` is a
+  direct `d`-array sub-record, so this stays clear of the
+  still-unstaged `Properties70` `P`-record grammar. Joints that
+  already have a real inverse-bind are untouched; non-bind rest poses
+  (subtype other than `"BindPose"`) are not promoted. The decoder
+  also derives the parent-space form
   `bone_to_parent = inverse(parent_bone_to_world) * bone_to_world` for
   every posed bone whose parent in the scene graph is also posed,
   surfaced as `node.extras["fbx:bind_pose_parent_local"]` (16-double
   row-major JSON array). Root bones whose parent has no bind pose
   receive `bone_to_parent == bone_to_world` (implicit-root convention,
-  parent world = identity). Per `docs/3d/fbx/ufbx/reference.html`
-  §`ufbx_bone_pose`, `bone_to_parent` is documented as *"approximated
-  from the parent world transform"*.
+  parent world = identity). The parent-relative form is approximated
+  from the parent's stored world transform, since FBX `Pose` records
+  hold world-space matrices only.
 - **`Properties70` typeName-discriminating accessors** —
   the existing [`PropertyMap::as_vec3`] and [`PropertyMap::as_str`]
   surface every triple-typed and string-typed `P`-record indiscriminately,
@@ -366,11 +366,10 @@ clean-room from third-party documentation:
   `NodeAttribute -> Model` `OO` connection. Inner `Properties70`
   blocks are decoded with the existing `crate::properties70`
   machinery; the well-known `P`-record names this round consumes
-  (sourced verbatim from `docs/3d/fbx/ufbx/reference.html`
-  §`ufbx_light` / §`ufbx_camera` / §`ufbx_aperture_mode` /
-  §`ufbx_aspect_mode`) are:
-  - **Light**: `Color` × `Intensity` (with the documented 0.01x
-    scale per §`ufbx_light.intensity`) → typed `Point` / `Directional`
+  (the FBX-SDK Light / Camera attribute `P`-records observed on
+  `NodeAttribute` records) are:
+  - **Light**: `Color` × `Intensity` (with the DCC-percentage 0.01x
+    scale) → typed `Point` / `Directional`
     / `Spot` variant selected by `LightType` (0/1/2; 3 Area + 4
     Volume fall back to `Point` with `Node::extras["fbx:light_type"]`
     set to `"Area"` / `"Volume"` so the lossy mapping is recoverable).
@@ -380,8 +379,8 @@ clean-room from third-party documentation:
   - **Camera**: `CameraProjectionType` picks `Perspective` (0) /
     `Orthographic` (1). `FieldOfViewY` maps directly to mesh3d's
     `yfov` (degrees → radians); `FieldOfView` / `FieldOfViewX`
-    (horizontal) is converted via the aspect ratio per
-    §`ufbx_aperture_mode_horizontal` — `yfov = 2 * atan(tan(xfov/2)/aspect)`.
+    (horizontal) is converted via the aspect ratio (FBX
+    horizontal-aperture mode) — `yfov = 2 * atan(tan(xfov/2)/aspect)`.
     `NearPlane` / `FarPlane` populate `znear` / `zfar`; `AspectWidth`
     / `AspectHeight` collapse to the `aspect_ratio` field, and the
     absolute pair round-trips through
