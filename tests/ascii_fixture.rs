@@ -214,6 +214,58 @@ fn ascii_fixture_header_info_surfaces_to_scene_extras() {
 }
 
 #[test]
+fn ascii_fixture_model_local_transforms_reach_scene_nodes() {
+    // Round 367 — each `Model`'s `Lcl Translation` / `Lcl Scaling`
+    // P-records should land on the owning scene-graph node's local
+    // `Transform::Trs`. The fixture's Models carry no pivots /
+    // pre-post-rotation and `RotationOrder` defaults to 0 (XYZ), so the
+    // node-transform chain reduces cleanly to `T * R * S`. `Cube3` is
+    // the uniquely-named Model: translation
+    // (-1.0671…, 0.998…, 9.3902…), scale (10, 10, 10), no rotation.
+    use oxideav_mesh3d::Transform;
+
+    let mut dec = FbxDecoder::new();
+    let scene = dec.decode(FIXTURE).expect("ASCII fixture decodes");
+
+    // ASCII object names arrive as the `Class::Name` joined identifier
+    // (the §7c object-opening line), so match on the `Cube3` suffix.
+    let cube3 = scene
+        .nodes
+        .iter()
+        .find(|n| n.name.as_deref().is_some_and(|s| s.ends_with("Cube3")))
+        .expect("Cube3 node present");
+
+    match cube3.transform {
+        Transform::Trs {
+            translation,
+            rotation,
+            scale,
+        } => {
+            assert!((translation[0] - (-1.067_117_6)).abs() < 1e-4);
+            assert!((translation[1] - 0.998_288_8).abs() < 1e-4);
+            assert!((translation[2] - 9.390_235).abs() < 1e-4);
+            assert!((scale[0] - 10.0).abs() < 1e-4);
+            assert!((scale[1] - 10.0).abs() < 1e-4);
+            assert!((scale[2] - 10.0).abs() < 1e-4);
+            // No Lcl Rotation record → identity quaternion.
+            assert!((rotation[3] - 1.0).abs() < 1e-5);
+            assert!(rotation[0].abs() < 1e-5);
+        }
+        Transform::Matrix(_) => panic!("expected decomposed Trs, got Matrix"),
+    }
+
+    // The fixture's reduced chain means no node should carry the
+    // lossy-reduction marker.
+    assert!(
+        scene
+            .nodes
+            .iter()
+            .all(|n| !n.extras.contains_key("fbx:transform_incomplete")),
+        "fixture transforms reduce to TRS; none should be marked incomplete"
+    );
+}
+
+#[test]
 fn ascii_fixture_first_mesh_has_24_vertices() {
     // First Geometry in the fixture is `*24` Vertices (an 8-corner
     // cube emitted as 8 xyz triples) per the grammar §6 / §7c worked

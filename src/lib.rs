@@ -204,6 +204,7 @@ pub mod header_info;
 pub mod lights_cameras;
 pub mod material;
 pub mod node_attribute;
+pub mod node_transform;
 pub mod pose;
 pub mod properties70;
 pub mod scene;

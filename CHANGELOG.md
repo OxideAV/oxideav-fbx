@@ -7,6 +7,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Round 367 — **static `Model` node local-transform decode.** The
+  scene walker created one `oxideav_mesh3d::Node` per FBX `Model` but
+  left every node at `Transform::identity`, so an authored placement
+  (the cubes fixture's four meshes each sit at a distinct translation /
+  scale) collapsed to the origin. The new `node_transform` module
+  resolves each `Model`'s `Properties70` against the
+  `ObjectType: "Model"` `PropertyTemplate` defaults (the same
+  template-resolution path `crate::material` uses, so an
+  exporter-omitted `Lcl Scaling` decodes to the template's `1,1,1`
+  exactly like an explicit record) and pulls the three transform
+  P-records documented in `docs/3d/fbx/fbx-ascii-grammar.md` §8 —
+  `Lcl Translation`, `Lcl Rotation` (XYZ Euler degrees, via the
+  existing `animation::euler_xyz_to_quat`), `Lcl Scaling` — into the
+  node's local `Transform::Trs` (build order `T * R * S`, matching
+  mesh3d's `Trs::to_matrix`). Runs before the deformer / animation
+  passes so an animated node starts from its authored rest transform.
+  - **Reduced-chain guard.** FBX's full node-transform chain also
+    composes rotation/scaling pivots + offsets, a `PreRotation` /
+    `PostRotation` pair, and a `RotationOrder` enum selecting the Euler
+    axis order. That product's *composition order* and the
+    `RotationOrder` int → axis-order table are not in the staged
+    `docs/3d/fbx/` references, so the reduced `T * R(XYZ) * S` form is
+    applied **only** when the chain provably reduces to it (every
+    pivot / offset zero, pre/post-rotation zero, `RotationOrder == 0`
+    XYZ — the fixture's case and the common authored case). When any
+    extension record is non-trivial the node stays at identity and the
+    raw `Lcl` components + a `Node::extras["fbx:transform_incomplete"]`
+    reason marker (`rotation_order` / `pre_rotation` / `post_rotation`
+    / `pivot_offset`) are surfaced so the lossy reduction is detectable
+    and the authored values recoverable, pending a docs-staging round.
+  - 8 new `node_transform` unit tests (pure TRS, missing-record
+    identity defaults, 90°-about-X quaternion, each
+    non-trivial-extension → Incomplete branch, all-zero extension
+    records still reduce to TRS) + 1 cubes-ascii-v7500.fbx end-to-end
+    integration test asserting `Cube3`'s node carries translation
+    (-1.067, 0.998, 9.390) / scale (10,10,10) and that no fixture node
+    is marked incomplete. Test count: 201 → 209 unit (+8), integration
+    +1.
+  - DOCS-GAP: the full FBX node-transform chain composition order +
+    the `RotationOrder` enum-int → Euler-axis-order table are not in
+    `docs/3d/fbx/`. Closing them unblocks pivot / pre-post-rotation /
+    non-XYZ-order meshes (currently surfaced as `Incomplete`).
+
 ### Changed
 
 - Round 363 — **clean-room provenance scrub.** All references to a

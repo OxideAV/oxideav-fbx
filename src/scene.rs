@@ -34,6 +34,7 @@ use crate::header_info::extract_header_info;
 use crate::lights_cameras::extract_lights_and_cameras;
 use crate::material::extract_materials;
 use crate::node_attribute::extract_node_attribute_kinds;
+use crate::node_transform::extract_node_transforms;
 use crate::pose::extract_poses;
 use crate::takes::extract_takes;
 
@@ -230,6 +231,18 @@ pub fn build_scene(doc: &FbxDocument) -> Result<Scene3D> {
     // Drop the unused-warning silencer once `model_subtypes` actually
     // gets read (e.g. when LimbNode → Skeleton wiring lands).
     let _ = model_subtypes;
+
+    // Round 367 — static node local transforms. Each `Model`'s
+    // `Lcl Translation` / `Lcl Rotation` / `Lcl Scaling` P-records
+    // (resolved against the `ObjectType: "Model"` PropertyTemplate
+    // defaults) become the node's local `Transform::Trs`. Runs before
+    // the deformer / animation passes so an animated node starts from
+    // its authored rest transform; the FBX node-transform chain's
+    // pivot / offset / pre-post-rotation extensions are surfaced on
+    // `Node::extras` with a `fbx:transform_incomplete` marker when
+    // present (their composition order is a docs gap). See
+    // `crate::node_transform`.
+    extract_node_transforms(doc, &mut scene, &model_nodes);
 
     // Round 2: deformers (Skin / Cluster / BlendShape) and animations.
     // Deformers must run first — animation morph-weight channels
