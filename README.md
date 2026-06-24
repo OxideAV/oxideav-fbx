@@ -25,6 +25,20 @@ clean-room from third-party documentation:
 - Object-graph walker: indexes `Geometry` and `Model` from `Objects`,
   walks `Connections` `OO` records to wire Geometry → Model and
   Model → root.
+- **Node local transforms** — each `Model`'s `Lcl Translation` /
+  `Lcl Rotation` (XYZ-Euler-degrees → quaternion) / `Lcl Scaling`
+  P-records (resolved against the `ObjectType: "Model"`
+  `PropertyTemplate` defaults) become the scene-graph node's local
+  `Transform::Trs` (`T * R * S`), so an authored placement reaches the
+  `Scene3D` instead of collapsing to the origin. The reduced
+  `T * R(XYZ) * S` form is applied only when the full FBX
+  node-transform chain provably reduces to it (pivots / offsets /
+  pre-post-rotation zero, `RotationOrder == 0` XYZ — the common case);
+  a non-trivial pivot / offset / pre-post-rotation / non-XYZ order
+  leaves the node at identity and surfaces the raw `Lcl` components +
+  a `Node::extras["fbx:transform_incomplete"]` reason marker (the full
+  chain composition order + the `RotationOrder` enum table are a
+  `docs/3d/fbx/` gap).
 - Mesh extraction: `Vertices` + `PolygonVertexIndex` →
   per-corner `Primitive(Topology::Triangles)` (ngons fan-triangulated;
   end-of-polygon negatives bit-NOT decoded). `LayerElementNormal` /

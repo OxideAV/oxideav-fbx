@@ -45,8 +45,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     records still reduce to TRS) + 1 cubes-ascii-v7500.fbx end-to-end
     integration test asserting `Cube3`'s node carries translation
     (-1.067, 0.998, 9.390) / scale (10,10,10) and that no fixture node
-    is marked incomplete. Test count: 201 → 209 unit (+8), integration
-    +1.
+    is marked incomplete + 1 binary-front-end synthetic
+    (`tests/synthetic_node_transform.rs`: a `Placed` Model with
+    `Lcl Translation` / `Lcl Rotation` 90°-about-X / `Lcl Scaling`
+    reduces to a non-identity `Trs`, and a `Pivoted` Model with a
+    non-zero `PreRotation` stays at identity with the
+    `fbx:transform_incomplete = "pre_rotation"` marker + raw-`Lcl`
+    extras). Test count: 201 → 209 unit (+8), integration +2.
   - DOCS-GAP: the full FBX node-transform chain composition order +
     the `RotationOrder` enum-int → Euler-axis-order table are not in
     `docs/3d/fbx/`. Closing them unblocks pivot / pre-post-rotation /
