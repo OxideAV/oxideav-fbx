@@ -15,8 +15,9 @@
 
 use oxideav_fbx::{FbxDecoder, FbxEncoder, FbxOutputForm};
 use oxideav_mesh3d::{
-    AlphaMode, Material, Mesh, Mesh3DDecoder, Mesh3DEncoder, Node, Primitive, Scene3D, Topology,
-    Transform,
+    AlphaMode, Animation, AnimationChannel, AnimationProperty, AnimationSampler, AnimationTarget,
+    AnimationValues, Interpolation, Material, Mesh, Mesh3DDecoder, Mesh3DEncoder, Node, Primitive,
+    Scene3D, Topology, Transform,
 };
 
 /// A unit quad (two triangles) with per-corner normals + one UV set.
@@ -205,6 +206,102 @@ fn ascii_form_round_trips_geometry() {
     assert_eq!(scene2.meshes.len(), 1);
     assert_eq!(scene2.meshes[0].primitives[0].positions.len(), 6);
     assert_eq!(scene2.meshes[0].name.as_deref(), Some("AsciiQuad"));
+}
+
+#[test]
+fn translation_animation_round_trips() {
+    let mut scene = Scene3D::new();
+    let mid = scene.add_mesh(quad_with_normals_and_uvs("M"));
+    let nid = scene.add_node(Node::new().with_name("Animated").with_mesh(mid));
+    scene.roots.push(nid);
+
+    // A two-keyframe translation channel: origin → (10,0,0) over 1 s.
+    let mut anim = Animation::new(Some("Take 001".to_string()));
+    anim.channels.push(AnimationChannel {
+        target: AnimationTarget {
+            node: nid,
+            property: AnimationProperty::Translation,
+        },
+        sampler: AnimationSampler {
+            keyframes: vec![0.0, 1.0],
+            values: AnimationValues::Vec3(vec![[0.0, 0.0, 0.0], [10.0, 0.0, 0.0]]),
+            interpolation: Interpolation::Linear,
+        },
+    });
+    scene.add_animation(anim);
+
+    let scene2 = decode(&encode_binary(&scene));
+
+    assert_eq!(scene2.animations.len(), 1, "animation round-tripped");
+    let a = &scene2.animations[0];
+    assert_eq!(a.name.as_deref(), Some("Take 001"));
+    // One translation channel targeting the animated node.
+    let ch = a
+        .channels
+        .iter()
+        .find(|c| c.target.property == AnimationProperty::Translation)
+        .expect("translation channel survived");
+    // The X component should sweep 0 → 10 across the keyframes.
+    match &ch.sampler.values {
+        AnimationValues::Vec3(v) => {
+            let first_x = v.first().unwrap()[0];
+            let last_x = v.last().unwrap()[0];
+            assert!(first_x.abs() < 1e-3, "starts at x≈0, got {first_x}");
+            assert!((last_x - 10.0).abs() < 1e-2, "ends at x≈10, got {last_x}");
+        }
+        other => panic!("expected Vec3 translation values, got {other:?}"),
+    }
+    // Keyframe times survived (0 s and ~1 s).
+    assert_eq!(ch.sampler.keyframes.len(), 2);
+    assert!((ch.sampler.keyframes[1] - 1.0).abs() < 1e-3);
+}
+
+#[test]
+fn rotation_animation_round_trips() {
+    let mut scene = Scene3D::new();
+    let mid = scene.add_mesh(quad_with_normals_and_uvs("M"));
+    let nid = scene.add_node(Node::new().with_name("Spin").with_mesh(mid));
+    scene.roots.push(nid);
+
+    // Rotate 90° about Z across 1 s. Build the quaternions via the
+    // public mesh3d helper is not exposed, so author them directly:
+    // identity → 90° Z (xyzw = (0,0,sin45,cos45)).
+    let s = (std::f32::consts::FRAC_PI_4).sin();
+    let c = (std::f32::consts::FRAC_PI_4).cos();
+    let mut anim = Animation::new(Some("Spin".to_string()));
+    anim.channels.push(AnimationChannel {
+        target: AnimationTarget {
+            node: nid,
+            property: AnimationProperty::Rotation,
+        },
+        sampler: AnimationSampler {
+            keyframes: vec![0.0, 1.0],
+            values: AnimationValues::Quat(vec![[0.0, 0.0, 0.0, 1.0], [0.0, 0.0, s, c]]),
+            interpolation: Interpolation::Linear,
+        },
+    });
+    scene.add_animation(anim);
+
+    let bytes = FbxEncoder::new().encode(&scene).expect("encode");
+    let scene2 = decode(&bytes);
+
+    assert_eq!(scene2.animations.len(), 1);
+    let ch = scene2.animations[0]
+        .channels
+        .iter()
+        .find(|c| c.target.property == AnimationProperty::Rotation)
+        .expect("rotation channel survived");
+    // Last keyframe should be a ~90° Z rotation (quaternion z ≈ sin45).
+    match &ch.sampler.values {
+        AnimationValues::Quat(q) => {
+            let last = q.last().unwrap();
+            assert!(
+                (last[2].abs() - s).abs() < 1e-2,
+                "expected z≈{s}, got {last:?}"
+            );
+        }
+        other => panic!("expected Quat rotation values, got {other:?}"),
+    }
 }
 
 #[test]

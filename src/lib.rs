@@ -173,6 +173,9 @@
 #![forbid(unsafe_code)]
 #![warn(missing_debug_implementations)]
 
+/// Animation-curve emission for the [`scene_writer`] encoder — the
+/// inverse of [`animation::extract_animations`] (round 377).
+pub mod anim_writer;
 pub mod animation;
 pub mod ascii;
 pub mod ascii_writer;

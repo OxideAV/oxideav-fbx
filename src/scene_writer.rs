@@ -262,6 +262,22 @@ pub fn encode_scene_with_options(scene: &Scene3D, opts: &SceneEncodeOptions) -> 
         }
     }
 
+    // -- Animation graph (round 377) ------------------------------------
+    // One AnimationStack / AnimationLayer per Scene3D::Animation, plus
+    // the AnimationCurveNode / AnimationCurve records + OO/OP chain the
+    // decode path's extract_animations walks. Channels target the Model
+    // record for the scene NodeId via the node-id → fbx-id map below.
+    if !scene.animations.is_empty() {
+        let node_to_fbx =
+            |nid: oxideav_mesh3d::NodeId| -> Option<i64> { node_ids.get(nid.0 as usize).copied() };
+        let anim_emit =
+            crate::anim_writer::build_animation_objects(&scene.animations, node_to_fbx, || {
+                alloc.next()
+            });
+        objects.children.extend(anim_emit.objects);
+        connections.children.extend(anim_emit.connections);
+    }
+
     // -- Top-level sections ---------------------------------------------
     let mut root = FbxNode {
         name: String::new(),
@@ -690,6 +706,12 @@ fn decompose_trs(t: Transform) -> ([f64; 3], [f64; 3], [f64; 3]) {
         [euler[0] as f64, euler[1] as f64, euler[2] as f64],
         [scale[0] as f64, scale[1] as f64, scale[2] as f64],
     )
+}
+
+/// Crate-internal re-export of [`quat_to_euler_xyz_deg`] for the
+/// [`crate::anim_writer`] rotation-curve emitter.
+pub(crate) fn quat_to_euler_xyz_deg_pub(q: [f32; 4]) -> [f32; 3] {
+    quat_to_euler_xyz_deg(q)
 }
 
 /// Inverse of [`crate::animation::euler_xyz_to_quat`] — recover XYZ
