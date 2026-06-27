@@ -269,6 +269,7 @@ pub fn encode_scene_with_options(scene: &Scene3D, opts: &SceneEncodeOptions) -> 
         children: Vec::new(),
     };
     root.children.push(build_header_extension(opts.version));
+    root.children.push(build_global_settings(scene));
     root.children.push(build_definitions(scene));
     root.children.push(objects);
     root.children.push(connections);
@@ -306,6 +307,65 @@ fn build_header_extension(version: u32) -> FbxNode {
             properties: vec![FbxProperty::I32(version as i32)],
             children: Vec::new(),
         }],
+    }
+}
+
+/// `GlobalSettings { Version; Properties70 { UpAxis...; UnitScaleFactor } }`
+/// per `docs/3d/fbx/fbx-binary-properties70.md` §4 + the
+/// cubes-ascii-v7500.fbx fixture.
+///
+/// Emits the `UnitScaleFactor` `double` P-record derived from
+/// [`oxideav_mesh3d::Scene3D::unit`] (the decode path's
+/// `unit_from_scale_factor` maps `100.0 → Centimetres` / `1.0 → Metres`;
+/// other units write the factor as `centimetres-per-unit` so the raw
+/// value survives on `extras["fbx:unit_scale_factor"]`). When the scene
+/// carries axis `extras["fbx:up_axis"]` / `["fbx:front_axis"]` /
+/// `["fbx:coord_axis"]` ints (round-tripped from a decoded FBX), they
+/// are re-emitted as `int` P-records so the axis convention survives a
+/// decode→encode→decode cycle.
+fn build_global_settings(scene: &Scene3D) -> FbxNode {
+    let mut ps: Vec<FbxNode> = Vec::new();
+
+    // Axis ints — re-emit only when the scene actually carries them
+    // (round-tripped from a decoded file). The FBX-int → Axis variant
+    // table is a docs gap, so we don't synthesise them from
+    // `Scene3D::up_axis` / `front_axis` (which would require the table).
+    for (key, name) in [
+        ("fbx:up_axis", "UpAxis"),
+        ("fbx:up_axis_sign", "UpAxisSign"),
+        ("fbx:front_axis", "FrontAxis"),
+        ("fbx:front_axis_sign", "FrontAxisSign"),
+        ("fbx:coord_axis", "CoordAxis"),
+        ("fbx:coord_axis_sign", "CoordAxisSign"),
+    ] {
+        if let Some(i) = scene.extras.get(key).and_then(|v| v.as_i64()) {
+            ps.push(p_int(name, i as i32));
+        }
+    }
+
+    // UnitScaleFactor — centimetres-per-unit. The decode side's
+    // `unit_from_scale_factor` recovers Centimetres (100) / Metres (1);
+    // for the other units we write the literal `cm per unit` so the raw
+    // factor survives on extras even though no typed `Unit` is recovered.
+    let scale_factor = match scene.unit {
+        oxideav_mesh3d::Unit::Centimetres => 100.0,
+        oxideav_mesh3d::Unit::Metres => 1.0,
+        // metres-per-unit → centimetres-per-unit.
+        other => other.to_metres() as f64 * 100.0,
+    };
+    ps.push(p_double("UnitScaleFactor", scale_factor));
+
+    FbxNode {
+        name: "GlobalSettings".to_string(),
+        properties: Vec::new(),
+        children: vec![
+            leaf_i32("Version", 1000),
+            FbxNode {
+                name: "Properties70".to_string(),
+                properties: Vec::new(),
+                children: ps,
+            },
+        ],
     }
 }
 
@@ -874,6 +934,22 @@ fn p_color(name: &str, rgb: [f64; 3]) -> FbxNode {
     }
 }
 
+/// `P: "<name>", "int", "Integer", "", v` — the `int`-typed scalar
+/// shape (`UpAxis` / `FrontAxis` / `CoordAxis` GlobalSettings records).
+fn p_int(name: &str, v: i32) -> FbxNode {
+    FbxNode {
+        name: "P".to_string(),
+        properties: vec![
+            FbxProperty::String(name.as_bytes().to_vec()),
+            FbxProperty::String(b"int".to_vec()),
+            FbxProperty::String(b"Integer".to_vec()),
+            FbxProperty::String(Vec::new()),
+            FbxProperty::I32(v),
+        ],
+        children: Vec::new(),
+    }
+}
+
 /// `P: "<name>", "Number", "", "A", v` — the `Number`-typed scalar
 /// shape (`DiffuseFactor` / `EmissiveFactor` / `ReflectionFactor`).
 fn p_number(name: &str, v: f64) -> FbxNode {
@@ -1108,6 +1184,60 @@ mod tests {
         assert_eq!(scene2.textures.len(), 1);
         // Normal slot bound.
         assert!(scene2.materials[0].normal_texture.is_some());
+    }
+
+    #[test]
+    fn unit_centimetres_round_trips() {
+        let mut scene = Scene3D::new();
+        scene.unit = oxideav_mesh3d::Unit::Centimetres;
+        let mid = scene.add_mesh(triangle_mesh("M"));
+        let nid = scene.add_node(Node::new().with_mesh(mid));
+        scene.roots.push(nid);
+
+        let doc = encode_scene(&scene);
+        let bytes = write_document(&doc).unwrap();
+        let scene2 = build_scene(&binary::parse(&bytes).unwrap()).unwrap();
+        assert_eq!(scene2.unit, oxideav_mesh3d::Unit::Centimetres);
+    }
+
+    #[test]
+    fn unit_metres_round_trips() {
+        let mut scene = Scene3D::new();
+        scene.unit = oxideav_mesh3d::Unit::Metres;
+        let mid = scene.add_mesh(triangle_mesh("M"));
+        let nid = scene.add_node(Node::new().with_mesh(mid));
+        scene.roots.push(nid);
+
+        let doc = encode_scene(&scene);
+        let bytes = write_document(&doc).unwrap();
+        let scene2 = build_scene(&binary::parse(&bytes).unwrap()).unwrap();
+        assert_eq!(scene2.unit, oxideav_mesh3d::Unit::Metres);
+    }
+
+    #[test]
+    fn axis_extras_round_trip() {
+        let mut scene = Scene3D::new();
+        scene
+            .extras
+            .insert("fbx:up_axis".to_string(), serde_json::json!(1));
+        scene
+            .extras
+            .insert("fbx:front_axis".to_string(), serde_json::json!(2));
+        let mid = scene.add_mesh(triangle_mesh("M"));
+        let nid = scene.add_node(Node::new().with_mesh(mid));
+        scene.roots.push(nid);
+
+        let doc = encode_scene(&scene);
+        let bytes = write_document(&doc).unwrap();
+        let scene2 = build_scene(&binary::parse(&bytes).unwrap()).unwrap();
+        assert_eq!(
+            scene2.extras.get("fbx:up_axis").and_then(|v| v.as_i64()),
+            Some(1)
+        );
+        assert_eq!(
+            scene2.extras.get("fbx:front_axis").and_then(|v| v.as_i64()),
+            Some(2)
+        );
     }
 
     #[test]
