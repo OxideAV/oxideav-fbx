@@ -9,6 +9,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Round 377 — **`Scene3D` → FBX encoder (`Mesh3DEncoder`).** The
+  missing inverse of `scene::build_scene`. The new `scene_writer`
+  module builds a fresh `FbxDocument` node tree (`FBXHeaderExtension` +
+  `GlobalSettings` + `Definitions` + `Objects` + `Connections`) from an
+  `oxideav_mesh3d::Scene3D`, and the new `encoder::FbxEncoder` wires it
+  to `write_document` (binary) / `write_ascii_document` (ASCII) behind
+  the `Mesh3DEncoder` trait. `register()` now registers the encoder
+  factory alongside the decoder.
+  - **Geometry** — one `Geometry` per mesh: per-corner `Vertices` +
+    sequential-triangle `PolygonVertexIndex` (last corner bit-NOT'd per
+    `docs/3d/fbx/fbx-binary-properties70.md` §6), with optional
+    `LayerElementNormal` / `LayerElementUV` (`ByPolygonVertex` /
+    `Direct`, the mapping `crate::geometry` flattens 1:1). Indexed
+    primitives expand through their index buffer; positions round-trip
+    exactly.
+  - **Models** — one `Model` per node with `Lcl Translation` /
+    `Lcl Rotation` (XYZ-Euler degrees, the inverse of
+    `animation::euler_xyz_to_quat`) / `Lcl Scaling` P-records (only
+    non-default components emitted). `Transform::Matrix` nodes are
+    decomposed to TRS first.
+  - **Materials / Textures** — `Material` per material (`DiffuseColor` ×
+    `DiffuseFactor`, `Opacity`, `EmissiveColor` × `EmissiveFactor`,
+    `ReflectionFactor` P-records); `Texture` (+ backing `Video` with a
+    `Video.Content` R-blob for embedded `AssetSource` bytes) per
+    material texture slot, with the `Texture -> Material(prop_name)` OP
+    connection (`DiffuseColor` / `NormalMap` / `EmissiveColor` /
+    `Maya|TEX_metallic_map` / `AmbientOcclusion`).
+  - **GlobalSettings** — `UnitScaleFactor` derived from `Scene3D::unit`
+    (Centimetres → 100 / Metres → 1) + axis `int` P-records re-emitted
+    from round-tripped `fbx:*` extras, so the scene unit + axis
+    convention survive a decode→encode→decode cycle.
+  - **Animations** — `anim_writer` emits one `AnimationStack` /
+    `AnimationLayer` per `Animation` plus per-channel
+    `AnimationCurveNode` + per-axis `AnimationCurve` records and the
+    full OO/OP `Connections` chain. Translation / Scale split into
+    `d|X` / `d|Y` / `d|Z`; Rotation quaternions convert to XYZ-Euler
+    degrees per keyframe; `KeyTime` written as KTime ticks. MorphWeight
+    channels are deferred (needs `BlendShapeChannel` / `DeformPercent`
+    deformer synthesis).
+  - **Options** — `SceneEncodeOptions` (version / per-layer emission) +
+    `FbxEncoder` builders (`form` binary/ASCII, `version`,
+    `compress_arrays_at` for zlib-deflated arrays). Full
+    `Scene3D → encode → decode → Scene3D` round-trip tests cover
+    geometry / normals / UVs / hierarchy / materials / external +
+    embedded textures / unit / axis / translation + rotation animation
+    / deflate.
+  - **Still lossy / deferred** — the full FBX node-transform chain
+    (pivots / pre-post-rotation / `RotationOrder`) is *not* synthesised
+    (the encoder emits the reduced `T * R(XYZ) * S` form only, matching
+    the decode-side `docs/3d/fbx/` gap #1957); skin / blend-shape
+    deformers, multi-UV-set / multi-material slot tables, and the
+    Autodesk binary footer are encoder follow-ups.
 - Round 367 — **static `Model` node local-transform decode.** The
   scene walker created one `oxideav_mesh3d::Node` per FBX `Model` but
   left every node at `Transform::identity`, so an authored placement

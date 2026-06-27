@@ -1,6 +1,6 @@
 # oxideav-fbx
 
-Pure-Rust FBX (Filmbox) binary mesh decoder + low-level binary writer.
+Pure-Rust FBX (Filmbox) mesh **decoder + encoder** (binary + ASCII).
 
 FBX is Autodesk's proprietary 3D scene-and-asset interchange format,
 originally developed by Kaydara for MotionBuilder. There is no
@@ -437,6 +437,33 @@ clean-room from third-party documentation:
   form and surface a clean `Error::invalid` rather than silently
   produce broken text. Banner toggle via
   `write_ascii_document_with_options(&doc, &AsciiWriterOptions::default().emit_banner(false))`.
+- **`Scene3D` encoder (`Mesh3DEncoder`)** — `FbxEncoder` /
+  `scene_writer::encode_scene` is the inverse of `scene::build_scene`:
+  it builds a fresh `FbxDocument` (`FBXHeaderExtension` +
+  `GlobalSettings` + `Definitions` + `Objects` + `Connections`) from an
+  `oxideav_mesh3d::Scene3D` and serialises it to binary or ASCII.
+  Geometry emits one `Geometry` per mesh (per-corner `Vertices` +
+  sequential-triangle `PolygonVertexIndex` + optional
+  `LayerElementNormal` / `LayerElementUV` as `ByPolygonVertex` /
+  `Direct`). Nodes emit one `Model` each with `Lcl Translation` /
+  `Lcl Rotation` (XYZ-Euler degrees) / `Lcl Scaling` P-records and the
+  scene-graph parent/child OO edges. Materials emit `DiffuseColor` /
+  `Opacity` / `EmissiveColor` / `ReflectionFactor` P-records; textures
+  emit a `Texture` (+ backing `Video.Content` R-blob for embedded
+  bytes) with the `Texture -> Material(prop_name)` OP connection
+  (`DiffuseColor` / `NormalMap` / `EmissiveColor` /
+  `Maya|TEX_metallic_map` / `AmbientOcclusion`). `GlobalSettings`
+  carries `UnitScaleFactor` (from `Scene3D::unit`) + round-tripped axis
+  ints. Animations emit one `AnimationStack` / `AnimationLayer` per
+  `Animation` plus per-channel `AnimationCurveNode` + per-axis
+  `AnimationCurve` (Translation / Scale split `d|X`/`d|Y`/`d|Z`;
+  Rotation quaternions → XYZ-Euler degrees; `KeyTime` in KTime ticks)
+  with the full OO/OP chain. The complete `Scene3D → encode → decode →
+  Scene3D` closure is round-trip-tested for positions / normals / UVs /
+  hierarchy / materials / external + embedded textures / unit + axis /
+  translation + rotation animation / deflate-compressed arrays.
+  Builder knobs: `FbxEncoder::new().form(FbxOutputForm::Ascii)`,
+  `.version(7700)`, `.compress_arrays_at(256)`.
 
 ## Decode
 

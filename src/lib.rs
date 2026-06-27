@@ -128,13 +128,27 @@
 //!   Camera records; the §6 NodeAttribute discriminator + §4 P-record
 //!   grammar live in `docs/3d/fbx/fbx-binary-properties70.md`.
 //!
+//! - **Scene-graph encoder (`Scene3D` → FBX bytes)** (round 377) —
+//!   [`encoder::FbxEncoder`] implements [`oxideav_mesh3d::Mesh3DEncoder`]
+//!   on top of [`scene_writer::encode_scene`], the inverse of
+//!   [`scene::build_scene`]: it builds a fresh [`FbxDocument`]
+//!   (`FBXHeaderExtension` + `GlobalSettings` + `Definitions` +
+//!   `Objects` + `Connections`) from a `Scene3D` and serialises it to
+//!   binary ([`writer::write_document`]) or ASCII
+//!   ([`ascii_writer::write_ascii_document`]). Covers geometry
+//!   (per-corner `Vertices` + `PolygonVertexIndex` + normal / UV
+//!   layers), `Model` local transforms, materials, textures (external
+//!   URI + embedded `Video.Content`), `UnitScaleFactor`, and the
+//!   animation `Stack` / `Layer` / `CurveNode` / `Curve` graph. The
+//!   full `Scene3D → bytes → Scene3D` round-trip is test-covered. See
+//!   [`encoder`] / [`scene_writer`] / [`anim_writer`].
+//!
 //! # What's NOT covered
-//! - **Scene-graph encoder (`Scene3D` → FBX bytes)** — bytes-out at
-//!   the [`oxideav_mesh3d::Mesh3DEncoder`] level is a separate round.
-//!   This round only ships the lower-level [`writer::write_document`]
-//!   that serialises a parsed [`FbxDocument`] back to bytes; building
-//!   a fresh `FbxDocument` from a `Scene3D` (the inverse of
-//!   [`scene::build_scene`]) is not yet implemented.
+//! - Encoder: skin / blend-shape deformer synthesis, multi-UV-set /
+//!   multi-material slot tables, the full node-transform chain
+//!   (pivots / pre-post-rotation / `RotationOrder` — the same
+//!   `docs/3d/fbx/` gap the decode side hits), and the Autodesk binary
+//!   footer are encoder follow-up rounds.
 //! - Animation: per-layer compositing, cubic / step / TCB
 //!   interpolation, pivot / pre-rotation / post-rotation chains.
 //! - Skin: `SKINNING_METHOD_DUAL_QUATERNION` produces plain LBS
