@@ -183,6 +183,10 @@ pub mod decoder;
 /// each object's own records (round 280).
 pub mod definitions;
 pub mod deformer;
+/// [`encoder::FbxEncoder`] — `Scene3D`-in, FBX bytes-out
+/// ([`oxideav_mesh3d::Mesh3DEncoder`]). The symmetric counterpart to
+/// [`decoder::FbxDecoder`] (round 377).
+pub mod encoder;
 pub mod geometry;
 /// `Geometry` non-`Mesh` subtype-discriminator surfacing
 /// (`NurbsCurve` / `NurbsSurface` / `Boundary` / `TrimNurbsSurface` /
@@ -208,6 +212,10 @@ pub mod node_transform;
 pub mod pose;
 pub mod properties70;
 pub mod scene;
+/// `Scene3D` → [`FbxDocument`] builder (the inverse of
+/// [`scene::build_scene`]) — emits the `Objects` / `Connections` node
+/// tree the binary + ASCII front-ends read back (round 377).
+pub mod scene_writer;
 /// `Takes` section decoder — animation-take time-span metadata
 /// (`Current` active-take name + per-take `FileName` / `LocalTime` /
 /// `ReferenceTime` KTime pairs) surfaced onto
@@ -222,6 +230,8 @@ pub use ascii_writer::{
 };
 pub use binary::{FbxDocument, FbxNode, FbxProperty, FBX_MAGIC, FBX_VERSION_64BIT_THRESHOLD};
 pub use decoder::{is_binary_fbx, FbxDecoder};
+pub use encoder::{FbxEncoder, FbxOutputForm};
+pub use scene_writer::{encode_scene, encode_scene_with_options, SceneEncodeOptions};
 pub use writer::{write_document, write_document_with_options, WriterOptions};
 
 /// Format-id string used in the [`oxideav_mesh3d::Mesh3DRegistry`].
@@ -232,13 +242,19 @@ pub const EXTENSIONS: &[&str] = &["fbx"];
 
 /// Wire `oxideav-fbx` into a [`oxideav_mesh3d::Mesh3DRegistry`].
 ///
-/// Registers a decoder factory under format id [`FORMAT_ID`] and
-/// extensions [`EXTENSIONS`]. The encoder side is NYI (round 2+).
+/// Registers a decoder factory ([`FbxDecoder`]) and an encoder factory
+/// ([`FbxEncoder`]) under format id [`FORMAT_ID`] and extensions
+/// [`EXTENSIONS`] (round 377 added the encoder side).
 #[cfg(feature = "registry")]
 pub fn register(registry: &mut oxideav_mesh3d::Mesh3DRegistry) {
     registry.register_decoder(
         FORMAT_ID,
         EXTENSIONS,
         Box::new(|| Box::new(FbxDecoder::new())),
+    );
+    registry.register_encoder(
+        FORMAT_ID,
+        EXTENSIONS,
+        Box::new(|| Box::new(FbxEncoder::new())),
     );
 }
