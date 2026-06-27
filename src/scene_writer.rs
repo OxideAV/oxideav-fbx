@@ -131,11 +131,15 @@ pub fn encode_scene(scene: &Scene3D) -> FbxDocument {
 pub fn encode_scene_with_options(scene: &Scene3D, opts: &SceneEncodeOptions) -> FbxDocument {
     let mut alloc = IdAllocator::new();
 
-    // FBX id per mesh / node / material, allocated up-front so the
-    // Connections pass can reference them.
+    // FBX id per mesh / node / material / texture, allocated up-front
+    // so the Connections pass can reference them.
     let mesh_ids: Vec<i64> = (0..scene.meshes.len()).map(|_| alloc.next()).collect();
     let node_ids: Vec<i64> = (0..scene.nodes.len()).map(|_| alloc.next()).collect();
     let material_ids: Vec<i64> = (0..scene.materials.len()).map(|_| alloc.next()).collect();
+    let texture_ids: Vec<i64> = (0..scene.textures.len()).map(|_| alloc.next()).collect();
+    // A `Video` element backs each emitted embedded texture; one id per
+    // texture slot (only used when the texture carries embedded bytes).
+    let video_ids: Vec<i64> = (0..scene.textures.len()).map(|_| alloc.next()).collect();
 
     let mut objects = FbxNode {
         name: "Objects".to_string(),
@@ -158,6 +162,54 @@ pub fn encode_scene_with_options(scene: &Scene3D, opts: &SceneEncodeOptions) -> 
     for (xi, mat) in scene.materials.iter().enumerate() {
         let node = build_material(mat, material_ids[xi]);
         objects.children.push(node);
+    }
+
+    // -- Texture / Video records + OP wiring ----------------------------
+    // Each `Scene3D::Texture` referenced by a material slot becomes a
+    // `Texture` element. When the texture carries embedded bytes (an
+    // `AssetSource` blob) a `Video` element + `Video.Content` R-blob is
+    // emitted and OO-connected (the self-contained-FBX shape); otherwise
+    // the external URI lands on `RelativeFilename` / `FileName`. The
+    // `Texture -> Material(prop_name)` OP connection wires the texture
+    // back into the typed PBR slot the decode path reads (§7).
+    let emit_texture =
+        |tex_idx: usize, objs: &mut FbxNode, conns: &mut FbxNode, emitted: &mut [bool]| {
+            if emitted[tex_idx] {
+                return;
+            }
+            emitted[tex_idx] = true;
+            let tex = &scene.textures[tex_idx];
+            let (tex_node, video_node) =
+                build_texture(tex, texture_ids[tex_idx], video_ids[tex_idx]);
+            objs.children.push(tex_node);
+            if let Some(vnode) = video_node {
+                objs.children.push(vnode);
+                // Video -> Texture OO (backing media).
+                conns
+                    .children
+                    .push(connection_oo(video_ids[tex_idx], texture_ids[tex_idx]));
+            }
+        };
+    let mut texture_emitted = vec![false; scene.textures.len()];
+    for (xi, mat) in scene.materials.iter().enumerate() {
+        for (slot, prop_name) in material_texture_slots(mat) {
+            let tex_idx = slot.0 as usize;
+            if tex_idx >= scene.textures.len() {
+                continue;
+            }
+            emit_texture(
+                tex_idx,
+                &mut objects,
+                &mut connections,
+                &mut texture_emitted,
+            );
+            // Texture -> Material(prop_name) OP connection.
+            connections.children.push(connection_op(
+                texture_ids[tex_idx],
+                material_ids[xi],
+                prop_name,
+            ));
+        }
     }
 
     // -- Model records (one per node) -----------------------------------
@@ -680,6 +732,130 @@ fn build_material(mat: &Material, id: i64) -> FbxNode {
     }
 }
 
+/// Enumerate a material's bound texture slots as
+/// `(TextureId, OP-prop-name)` pairs. The prop names are the canonical
+/// FBX-SDK channel names the decode path's [`crate::material`] OP walk
+/// maps back into the typed PBR slots (`DiffuseColor` → base colour,
+/// `NormalMap` → normal, `EmissiveColor` → emission,
+/// `Maya|TEX_metallic_map` → metallic-roughness, `AmbientOcclusion` →
+/// occlusion).
+fn material_texture_slots(mat: &Material) -> Vec<(oxideav_mesh3d::TextureId, &'static str)> {
+    let mut slots = Vec::new();
+    if let Some(t) = &mat.base_color_texture {
+        slots.push((t.texture, "DiffuseColor"));
+    }
+    if let Some(t) = &mat.normal_texture {
+        slots.push((t.texture, "NormalMap"));
+    }
+    if let Some(t) = &mat.emissive_texture {
+        slots.push((t.texture, "EmissiveColor"));
+    }
+    if let Some(t) = &mat.metallic_roughness_texture {
+        slots.push((t.texture, "Maya|TEX_metallic_map"));
+    }
+    if let Some(t) = &mat.occlusion_texture {
+        slots.push((t.texture, "AmbientOcclusion"));
+    }
+    slots
+}
+
+/// Build a `Texture` element (and, for an embedded-blob texture, a
+/// backing `Video` element with the bytes on `Video.Content`).
+///
+/// Returns `(texture_node, Option<video_node>)`. An
+/// [`oxideav_mesh3d::ImageData::External`] texture writes its URI to
+/// `RelativeFilename` + `FileName`; a `Source` blob whose bytes resolve
+/// synchronously is emitted as a `Video.Content` R-blob (the
+/// self-contained-FBX shape the decode path prefers). Embedded
+/// already-decoded pixel buffers (no encoded bytes) fall back to an
+/// empty `RelativeFilename` so the texture element still round-trips.
+fn build_texture(
+    tex: &oxideav_mesh3d::Texture,
+    tex_id: i64,
+    video_id: i64,
+) -> (FbxNode, Option<FbxNode>) {
+    let name = tex.name.clone().unwrap_or_default();
+    let mut tex_children: Vec<FbxNode> = vec![leaf_i32("Version", 202)];
+
+    let (uri, embedded): (String, Option<Vec<u8>>) = match &tex.image {
+        oxideav_mesh3d::ImageData::External { uri, .. } => (uri.clone(), None),
+        oxideav_mesh3d::ImageData::Source(src) => {
+            // Pull the raw encoded bytes if the source exposes them
+            // synchronously (in-memory asset). Streaming-only sources
+            // fall back to the URI-less embedded-empty case.
+            let bytes = read_source_bytes(src.as_ref());
+            (String::new(), bytes)
+        }
+        #[cfg(feature = "registry")]
+        oxideav_mesh3d::ImageData::Embedded(_) => (String::new(), None),
+    };
+
+    tex_children.push(leaf_string("RelativeFilename", &uri));
+    tex_children.push(leaf_string("FileName", &uri));
+
+    let tex_node = FbxNode {
+        name: "Texture".to_string(),
+        properties: vec![
+            FbxProperty::I64(tex_id),
+            FbxProperty::String(name_class(&name, "Texture")),
+            FbxProperty::String(Vec::new()),
+        ],
+        children: tex_children,
+    };
+
+    let video_node = embedded.map(|bytes| FbxNode {
+        name: "Video".to_string(),
+        properties: vec![
+            FbxProperty::I64(video_id),
+            FbxProperty::String(name_class(&name, "Video")),
+            FbxProperty::String(b"Clip".to_vec()),
+        ],
+        children: vec![
+            leaf_string("RelativeFilename", &uri),
+            FbxNode {
+                name: "Content".to_string(),
+                properties: vec![FbxProperty::Raw(bytes)],
+                children: Vec::new(),
+            },
+        ],
+    });
+
+    (tex_node, video_node)
+}
+
+/// Best-effort synchronous read of an [`oxideav_mesh3d::AssetSource`]'s
+/// bytes — used to embed a texture blob in a `Video.Content` record.
+/// Returns `None` when the source can't be opened or read.
+fn read_source_bytes(src: &dyn oxideav_mesh3d::AssetSource) -> Option<Vec<u8>> {
+    use std::io::Read;
+    // `raw_storage()` hands back the stored payload slice for sources
+    // that expose a scheme-matched passthrough (ZIP / USDZ / GLB); for
+    // an in-memory asset it's `None`, so fall back to the streaming
+    // `open()` reader (synchronous Cursor for the InMemoryAsset case).
+    if let Some(rs) = src.raw_storage() {
+        return Some(rs.bytes.to_vec());
+    }
+    let mut reader = src.open().ok()?;
+    let mut buf = Vec::new();
+    reader.read_to_end(&mut buf).ok()?;
+    Some(buf)
+}
+
+/// `C: "OP", child_id, parent_id, prop_name` connection record (the
+/// object→property binding the decode path's texture walk reads).
+fn connection_op(child_id: i64, parent_id: i64, prop_name: &str) -> FbxNode {
+    FbxNode {
+        name: "C".to_string(),
+        properties: vec![
+            FbxProperty::String(b"OP".to_vec()),
+            FbxProperty::I64(child_id),
+            FbxProperty::I64(parent_id),
+            FbxProperty::String(prop_name.as_bytes().to_vec()),
+        ],
+        children: Vec::new(),
+    }
+}
+
 /// `P: "<name>", "Color", "", "A", r, g, b` — the material colour
 /// P-record shape (`as_color_rgb` accepts `"Color"` / `"ColorRGB"`).
 fn p_color(name: &str, rgb: [f64; 3]) -> FbxNode {
@@ -859,6 +1035,79 @@ mod tests {
         // The mesh's primitive should bind the material.
         let prim = &scene2.meshes[0].primitives[0];
         assert_eq!(prim.material.map(|x| x.0), Some(0));
+    }
+
+    #[test]
+    fn external_texture_uri_round_trips() {
+        use oxideav_mesh3d::{Texture, TextureRef};
+        let mut scene = Scene3D::new();
+        let tid = scene.add_texture(Texture::from_uri("textures/diffuse.png"));
+        let mut mat = Material::new();
+        mat.base_color_texture = Some(TextureRef::new(tid));
+        let matid = scene.add_material(mat);
+        let mut mesh = triangle_mesh("M");
+        mesh.primitives[0].material = Some(matid);
+        let mid = scene.add_mesh(mesh);
+        let nid = scene.add_node(Node::new().with_mesh(mid));
+        scene.roots.push(nid);
+
+        let doc = encode_scene(&scene);
+        let bytes = write_document(&doc).unwrap();
+        let scene2 = build_scene(&binary::parse(&bytes).unwrap()).unwrap();
+
+        assert_eq!(scene2.textures.len(), 1, "one texture round-tripped");
+        // The material's base-colour slot binds the texture.
+        let m = &scene2.materials[0];
+        let bind = m
+            .base_color_texture
+            .as_ref()
+            .expect("base_color_texture wired via OP");
+        // The bound texture's URI survived.
+        match &scene2.textures[bind.texture.0 as usize].image {
+            oxideav_mesh3d::ImageData::External { uri, .. } => {
+                assert_eq!(uri, "textures/diffuse.png");
+            }
+            other => panic!("expected External uri, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn embedded_texture_blob_round_trips() {
+        use oxideav_mesh3d::{Texture, TextureRef};
+        let mut scene = Scene3D::new();
+        // A tiny PNG-ish blob (content is opaque to the encoder).
+        let blob = vec![0x89, b'P', b'N', b'G', 1, 2, 3, 4, 5, 6];
+        let tex = Texture::from_encoded("image/png", blob.clone());
+        let tid = scene.add_texture(tex);
+        let mut mat = Material::new();
+        mat.normal_texture = Some(TextureRef::new(tid));
+        let matid = scene.add_material(mat);
+        let mut mesh = triangle_mesh("M");
+        mesh.primitives[0].material = Some(matid);
+        let mid = scene.add_mesh(mesh);
+        let nid = scene.add_node(Node::new().with_mesh(mid));
+        scene.roots.push(nid);
+
+        let doc = encode_scene(&scene);
+        // The Objects block should carry both a Texture and a Video
+        // element with the embedded Content blob.
+        let objects = doc.root.child("Objects").unwrap();
+        let video = objects
+            .children
+            .iter()
+            .find(|c| c.name == "Video")
+            .expect("Video element emitted for embedded blob");
+        let content = video.child("Content").expect("Content R-blob");
+        match &content.properties[0] {
+            FbxProperty::Raw(b) => assert_eq!(b, &blob, "embedded bytes preserved"),
+            other => panic!("expected Raw blob, got {other:?}"),
+        }
+
+        let bytes = write_document(&doc).unwrap();
+        let scene2 = build_scene(&binary::parse(&bytes).unwrap()).unwrap();
+        assert_eq!(scene2.textures.len(), 1);
+        // Normal slot bound.
+        assert!(scene2.materials[0].normal_texture.is_some());
     }
 
     #[test]
