@@ -816,7 +816,7 @@ fn build_material(mat: &Material, id: i64) -> FbxNode {
 
 /// Enumerate a material's bound texture slots as
 /// `(TextureId, OP-prop-name)` pairs. The prop names are the canonical
-/// FBX-SDK channel names the decode path's [`crate::material`] OP walk
+/// FBX material channel names the decode path's [`crate::material`] OP walk
 /// maps back into the typed PBR slots (`DiffuseColor` → base colour,
 /// `NormalMap` → normal, `EmissiveColor` → emission,
 /// `Maya|TEX_metallic_map` → metallic-roughness, `AmbientOcclusion` →
