@@ -1,5 +1,7 @@
 # oxideav-fbx
 
+[![CI](https://github.com/OxideAV/oxideav-fbx/actions/workflows/ci.yml/badge.svg)](https://github.com/OxideAV/oxideav-fbx/actions/workflows/ci.yml) [![crates.io](https://img.shields.io/crates/v/oxideav-fbx.svg)](https://crates.io/crates/oxideav-fbx) [![docs.rs](https://docs.rs/oxideav-fbx/badge.svg)](https://docs.rs/oxideav-fbx) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 Pure-Rust FBX (Filmbox) mesh **decoder + encoder** (binary + ASCII).
 
 FBX is Autodesk's proprietary 3D scene-and-asset interchange format,
