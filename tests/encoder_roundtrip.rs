@@ -1123,3 +1123,71 @@ fn node_attribute_kind_markers_survive_round_trip() {
     assert_eq!(kind("Bone").as_deref(), Some("LimbNode"));
     assert_eq!(kind("Loc").as_deref(), Some("Null"));
 }
+
+/// Explicitly-authored binormals (extras-borne, xyz + w sign) and an
+/// additional normal layer survive re-encode as
+/// `LayerElementBinormal` / second `LayerElementNormal` records.
+#[test]
+fn binormals_and_extra_normal_layer_survive_round_trip() {
+    let mut mesh = quad_with_normals_and_uvs("ExtraLayers");
+    {
+        let prim = &mut mesh.primitives[0];
+        // One binormal layer: 6 corners × [x, y, z, w].
+        let mut flat = Vec::new();
+        for c in 0..6 {
+            flat.extend([0.0, 1.0, 0.0, if c % 2 == 0 { 1.0 } else { -1.0 }]);
+        }
+        prim.extras
+            .insert("fbx:binormals".to_string(), serde_json::json!([flat]));
+        prim.extras.insert(
+            "fbx:binormals_mapping".to_string(),
+            serde_json::json!(["ByPolygonVertex"]),
+        );
+        // One extra normal layer (all +X), TypedIndex 1.
+        let extra: Vec<f64> = (0..6).flat_map(|_| [1.0, 0.0, 0.0]).collect();
+        prim.extras
+            .insert("fbx:extra_normals".to_string(), serde_json::json!([extra]));
+        prim.extras.insert(
+            "fbx:extra_normals_typed_index".to_string(),
+            serde_json::json!([1]),
+        );
+    }
+
+    let mut scene = Scene3D::new();
+    let mid = scene.add_mesh(mesh);
+    let nid = scene.add_node(Node::new().with_mesh(mid));
+    scene.roots.push(nid);
+
+    let scene2 = decode(&encode_binary(&scene));
+    let prim = &scene2.meshes[0].primitives[0];
+
+    // Binormal layer rebuilt.
+    let bn = prim
+        .extras
+        .get("fbx:binormals")
+        .and_then(|v| v.as_array())
+        .expect("binormals survive");
+    assert_eq!(bn.len(), 1, "one binormal layer");
+    let flat = bn[0].as_array().expect("flat buffer");
+    assert_eq!(flat.len(), 24, "6 corners x 4 components");
+    assert_eq!(flat[1].as_f64(), Some(1.0), "y component");
+    assert_eq!(flat[3].as_f64(), Some(1.0), "corner 0 w sign");
+    assert_eq!(flat[7].as_f64(), Some(-1.0), "corner 1 w sign");
+
+    // Extra normal layer rebuilt (canonical slot untouched).
+    let n0 = prim.normals.as_ref().expect("canonical normals");
+    assert!((n0[0][2] - 1.0).abs() < 1e-6, "canonical layer is +Z");
+    let extra = prim
+        .extras
+        .get("fbx:extra_normals")
+        .and_then(|v| v.as_array())
+        .expect("extra normal layer survives");
+    assert_eq!(extra.len(), 1);
+    let eflat = extra[0].as_array().expect("flat buffer");
+    assert_eq!(eflat.len(), 18, "6 corners x 3 components");
+    assert_eq!(eflat[0].as_f64(), Some(1.0), "extra layer is +X");
+    assert_eq!(
+        prim.extras.get("fbx:extra_normals_typed_index"),
+        Some(&serde_json::json!([1]))
+    );
+}

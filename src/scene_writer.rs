@@ -972,6 +972,18 @@ fn build_geometry(mesh: &Mesh, id: i64, opts: &SceneEncodeOptions) -> FbxNode {
     if have_face_slots && !face_slots.is_empty() {
         children.push(layer_element_material(face_slots));
     }
+    // Extras-borne extra layers (round 384) — additional normal /
+    // tangent layers + explicitly-authored binormals the decode side
+    // flattened onto `Primitive::extras`. Only re-emitted for a
+    // single-primitive mesh (the flattened extras are per-primitive,
+    // and concatenating them across primitives would be ambiguous —
+    // the decode side itself only ever produces one primitive per
+    // Geometry).
+    if mesh.primitives.len() == 1 {
+        let prim = &mesh.primitives[0];
+        let n_corners = corner as usize;
+        emit_extra_layers(prim, n_corners, &mut children);
+    }
 
     FbxNode {
         name: "Geometry".to_string(),
@@ -981,6 +993,107 @@ fn build_geometry(mesh: &Mesh, id: i64, opts: &SceneEncodeOptions) -> FbxNode {
             FbxProperty::String(b"Mesh".to_vec()),
         ],
         children,
+    }
+}
+
+/// Re-emit the extras-borne extra layers the decode side flattened:
+///
+/// - `fbx:extra_normals` (per-layer flat `[x,y,z,…]`, 3 components
+///   per corner) → additional `LayerElementNormal` records.
+/// - `fbx:extra_tangents` (per-layer flat `[x,y,z,w,…]`) → additional
+///   `LayerElementTangent` records (`Tangents` xyz + `TangentsW` w).
+/// - `fbx:binormals` (per-layer flat `[x,y,z,w,…]`) →
+///   `LayerElementBinormal` records (`Binormals` xyz + `BinormalsW`).
+///
+/// The flattened buffers are already per-corner, so every re-emitted
+/// layer uses the `ByPolygonVertex` / `Direct` mapping regardless of
+/// the source file's original mode (the companion `*_mapping` extras
+/// record what it was). Layers whose length doesn't match the corner
+/// count are skipped. The layer's `TypedIndex` integer is recovered
+/// from the `*_typed_index` companion when present, else `i + 1`
+/// (slot 0 is the canonical layer).
+fn emit_extra_layers(prim: &Primitive, n_corners: usize, children: &mut Vec<FbxNode>) {
+    let flat_layers = |key: &str| -> Vec<Vec<f64>> {
+        prim.extras
+            .get(key)
+            .and_then(|v| v.as_array())
+            .map(|layers| {
+                layers
+                    .iter()
+                    .filter_map(|l| l.as_array())
+                    .map(|a| a.iter().filter_map(|x| x.as_f64()).collect())
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let typed_index = |key: &str, i: usize| -> i32 {
+        prim.extras
+            .get(key)
+            .and_then(|v| v.as_array())
+            .and_then(|a| a.get(i))
+            .and_then(|v| v.as_i64())
+            .unwrap_or((i + 1) as i64) as i32
+    };
+    // Split a flat `[x,y,z,w,…]` buffer into the xyz triple array +
+    // the per-corner w sign array FBX stores separately.
+    let split_xyzw = |flat: &[f64]| -> (Vec<f64>, Vec<f64>) {
+        let mut xyz = Vec::with_capacity(flat.len() / 4 * 3);
+        let mut w = Vec::with_capacity(flat.len() / 4);
+        for chunk in flat.chunks_exact(4) {
+            xyz.extend_from_slice(&chunk[..3]);
+            w.push(chunk[3]);
+        }
+        (xyz, w)
+    };
+
+    for (i, flat) in flat_layers("fbx:extra_normals").into_iter().enumerate() {
+        if flat.len() != n_corners * 3 {
+            continue;
+        }
+        let mut layer = layer_element_vec3("LayerElementNormal", "Normals", flat);
+        layer.properties = vec![FbxProperty::I32(typed_index(
+            "fbx:extra_normals_typed_index",
+            i,
+        ))];
+        children.push(layer);
+    }
+    for (i, flat) in flat_layers("fbx:extra_tangents").into_iter().enumerate() {
+        if flat.len() != n_corners * 4 {
+            continue;
+        }
+        let (xyz, w) = split_xyzw(&flat);
+        let mut layer = layer_element_tangent(xyz, w);
+        layer.properties = vec![FbxProperty::I32(typed_index(
+            "fbx:extra_tangents_typed_index",
+            i,
+        ))];
+        children.push(layer);
+    }
+    for (i, flat) in flat_layers("fbx:binormals").into_iter().enumerate() {
+        if flat.len() != n_corners * 4 {
+            continue;
+        }
+        let (xyz, w) = split_xyzw(&flat);
+        children.push(FbxNode {
+            name: "LayerElementBinormal".to_string(),
+            properties: vec![FbxProperty::I32(i as i32)],
+            children: vec![
+                leaf_i32("Version", 101),
+                leaf_string("Name", ""),
+                leaf_string("MappingInformationType", "ByPolygonVertex"),
+                leaf_string("ReferenceInformationType", "Direct"),
+                FbxNode {
+                    name: "Binormals".to_string(),
+                    properties: vec![FbxProperty::F64Array(xyz)],
+                    children: Vec::new(),
+                },
+                FbxNode {
+                    name: "BinormalsW".to_string(),
+                    properties: vec![FbxProperty::F64Array(w)],
+                    children: Vec::new(),
+                },
+            ],
+        });
     }
 }
 
