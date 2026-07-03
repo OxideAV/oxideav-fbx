@@ -97,10 +97,19 @@ pub struct SceneEncodeOptions {
     /// Emit a `LayerElementNormal` record for primitives that carry
     /// per-corner normals. Default `true`.
     pub emit_normals: bool,
-    /// Emit a `LayerElementUV` record for primitives that carry at
-    /// least one UV set (set 0 only — additional sets are a follow-up).
-    /// Default `true`.
+    /// Emit one `LayerElementUV` record per UV set the mesh's
+    /// primitives carry (every set — the first is the primary channel,
+    /// the rest additional channels, matching the decode side's
+    /// document-order `Primitive::uvs` surfacing). Default `true`.
     pub emit_uvs: bool,
+    /// Emit one `LayerElementColor` record per vertex-colour set the
+    /// mesh's primitives carry (RGBA `Colors` `d`-array, one record
+    /// per `Primitive::colors` entry in order). Default `true`.
+    pub emit_colors: bool,
+    /// Emit a `LayerElementTangent` record (xyz `Tangents` + `w`
+    /// handedness-sign `TangentsW`) for primitives that carry the
+    /// canonical glTF-style `Primitive::tangents` slot. Default `true`.
+    pub emit_tangents: bool,
 }
 
 impl Default for SceneEncodeOptions {
@@ -109,6 +118,8 @@ impl Default for SceneEncodeOptions {
             version: DEFAULT_ENCODE_VERSION,
             emit_normals: true,
             emit_uvs: true,
+            emit_colors: true,
+            emit_tangents: true,
         }
     }
 }
@@ -449,8 +460,37 @@ fn build_geometry(mesh: &Mesh, id: i64, opts: &SceneEncodeOptions) -> FbxNode {
     let mut pvi: Vec<i32> = Vec::new();
     let mut normals: Vec<f64> = Vec::new();
     let mut have_normals = true;
-    let mut uvs: Vec<f64> = Vec::new();
-    let mut have_uvs = true;
+
+    // Per-set attribute accumulators. The decode side surfaces every
+    // `LayerElementUV` / `LayerElementColor` in document order as one
+    // `Primitive::uvs` / `Primitive::colors` entry each, so the
+    // encoder emits one layer record per set. A multi-primitive mesh
+    // concatenates per set index; only the set count common to every
+    // primitive is emitted (a ragged per-primitive set count has no
+    // representation in the one-Geometry-per-mesh layout this writer
+    // uses).
+    let n_uv_sets = mesh
+        .primitives
+        .iter()
+        .map(|p| p.uvs.len())
+        .min()
+        .unwrap_or(0);
+    let mut uv_sets: Vec<Vec<f64>> = vec![Vec::new(); n_uv_sets];
+    let mut uv_valid: Vec<bool> = vec![true; n_uv_sets];
+    let n_color_sets = mesh
+        .primitives
+        .iter()
+        .map(|p| p.colors.len())
+        .min()
+        .unwrap_or(0);
+    let mut color_sets: Vec<Vec<f64>> = vec![Vec::new(); n_color_sets];
+    let mut color_valid: Vec<bool> = vec![true; n_color_sets];
+    // Canonical tangent slot — FBX splits the glTF-style `[x,y,z,w]`
+    // into an xyz `Tangents` triple array + a per-corner `TangentsW`
+    // handedness-sign array (the shape the decode side recombines).
+    let mut tangents_xyz: Vec<f64> = Vec::new();
+    let mut tangents_w: Vec<f64> = Vec::new();
+    let mut have_tangents = true;
 
     let mut corner: i32 = 0;
     for prim in &mesh.primitives {
@@ -486,20 +526,58 @@ fn build_geometry(mesh: &Mesh, id: i64, opts: &SceneEncodeOptions) -> FbxNode {
             }
             _ => have_normals = false,
         }
-        // UVs — set 0.
-        match prim.uvs.first() {
-            Some(set) if set.len() == prim.positions.len() => {
-                let buf = expand_uv(prim, set);
-                if buf.len() == n_corners {
-                    for [u, v] in &buf {
-                        uvs.push(*u as f64);
-                        uvs.push(*v as f64);
-                    }
-                } else {
-                    have_uvs = false;
+        // UV sets — every channel present on all primitives.
+        for k in 0..n_uv_sets {
+            let set = &prim.uvs[k];
+            if set.len() != prim.positions.len() {
+                uv_valid[k] = false;
+                continue;
+            }
+            let buf = expand_uv(prim, set);
+            if buf.len() != n_corners {
+                uv_valid[k] = false;
+                continue;
+            }
+            for [u, v] in &buf {
+                uv_sets[k].push(*u as f64);
+                uv_sets[k].push(*v as f64);
+            }
+        }
+        // Vertex-colour sets — RGBA quadruples per corner.
+        for k in 0..n_color_sets {
+            let set = &prim.colors[k];
+            if set.len() != prim.positions.len() {
+                color_valid[k] = false;
+                continue;
+            }
+            let buf = expand_vec4(prim, set);
+            if buf.len() != n_corners {
+                color_valid[k] = false;
+                continue;
+            }
+            for rgba in &buf {
+                for comp in rgba {
+                    color_sets[k].push(*comp as f64);
                 }
             }
-            _ => have_uvs = false,
+        }
+        // Tangents — canonical glTF-style slot only (extras-borne
+        // extra layers / binormals are re-emitted separately).
+        match &prim.tangents {
+            Some(t) if t.len() == prim.positions.len() => {
+                let buf = expand_vec4(prim, t);
+                if buf.len() == n_corners {
+                    for [x, y, z, w] in &buf {
+                        tangents_xyz.push(*x as f64);
+                        tangents_xyz.push(*y as f64);
+                        tangents_xyz.push(*z as f64);
+                        tangents_w.push(*w as f64);
+                    }
+                } else {
+                    have_tangents = false;
+                }
+            }
+            _ => have_tangents = false,
         }
     }
 
@@ -519,8 +597,22 @@ fn build_geometry(mesh: &Mesh, id: i64, opts: &SceneEncodeOptions) -> FbxNode {
     if opts.emit_normals && have_normals && !normals.is_empty() {
         children.push(layer_element_vec3("LayerElementNormal", "Normals", normals));
     }
-    if opts.emit_uvs && have_uvs && !uvs.is_empty() {
-        children.push(layer_element_uv(uvs));
+    if opts.emit_uvs {
+        for (k, data) in uv_sets.into_iter().enumerate() {
+            if uv_valid[k] && !data.is_empty() {
+                children.push(layer_element_uv(k, data));
+            }
+        }
+    }
+    if opts.emit_colors {
+        for (k, data) in color_sets.into_iter().enumerate() {
+            if color_valid[k] && !data.is_empty() {
+                children.push(layer_element_color(k, data));
+            }
+        }
+    }
+    if opts.emit_tangents && have_tangents && !tangents_xyz.is_empty() {
+        children.push(layer_element_tangent(tangents_xyz, tangents_w));
     }
 
     FbxNode {
@@ -591,6 +683,22 @@ fn expand_uv(prim: &Primitive, set: &[[f32; 2]]) -> Vec<[f32; 2]> {
     }
 }
 
+/// Expand a per-vertex 4-component attribute (vertex colours RGBA /
+/// tangents xyzw) into a per-corner stream.
+fn expand_vec4(prim: &Primitive, set: &[[f32; 4]]) -> Vec<[f32; 4]> {
+    match &prim.indices {
+        Some(Indices::U16(v)) => v
+            .iter()
+            .filter_map(|&i| set.get(i as usize).copied())
+            .collect(),
+        Some(Indices::U32(v)) => v
+            .iter()
+            .filter_map(|&i| set.get(i as usize).copied())
+            .collect(),
+        None => set.to_vec(),
+    }
+}
+
 /// `LayerElement{Normal}` (or similar vec3 layer) with the
 /// `ByPolygonVertex` / `Direct` mapping the geometry puller flattens
 /// 1:1. The `d`-array data name matches what the puller looks up
@@ -614,19 +722,69 @@ fn layer_element_vec3(layer_name: &str, data_name: &str, data: Vec<f64>) -> FbxN
 }
 
 /// `LayerElementUV` — same mapping shape as the vec3 layer but the
-/// data record is named `UV`.
-fn layer_element_uv(data: Vec<f64>) -> FbxNode {
+/// data record is named `UV`. `index` is the layer's `TypedIndex`
+/// integer (the §6-point-4 sub-discriminator distinguishing multiple
+/// UV channels on one `Geometry`).
+fn layer_element_uv(index: usize, data: Vec<f64>) -> FbxNode {
     FbxNode {
         name: "LayerElementUV".to_string(),
-        properties: vec![FbxProperty::I32(0)],
+        properties: vec![FbxProperty::I32(index as i32)],
         children: vec![
             leaf_i32("Version", 101),
-            leaf_string("Name", "map1"),
+            leaf_string("Name", &format!("map{}", index + 1)),
             leaf_string("MappingInformationType", "ByPolygonVertex"),
             leaf_string("ReferenceInformationType", "Direct"),
             FbxNode {
                 name: "UV".to_string(),
                 properties: vec![FbxProperty::F64Array(data)],
+                children: Vec::new(),
+            },
+        ],
+    }
+}
+
+/// `LayerElementColor` — RGBA vertex-colour layer. The `Colors`
+/// `d`-array carries 4-component quadruples (the decode side's
+/// `pull_layer_vec4` shape); mapping is the same `ByPolygonVertex` /
+/// `Direct` form the other layers use.
+fn layer_element_color(index: usize, data: Vec<f64>) -> FbxNode {
+    FbxNode {
+        name: "LayerElementColor".to_string(),
+        properties: vec![FbxProperty::I32(index as i32)],
+        children: vec![
+            leaf_i32("Version", 101),
+            leaf_string("Name", &format!("colorSet{}", index + 1)),
+            leaf_string("MappingInformationType", "ByPolygonVertex"),
+            leaf_string("ReferenceInformationType", "Direct"),
+            FbxNode {
+                name: "Colors".to_string(),
+                properties: vec![FbxProperty::F64Array(data)],
+                children: Vec::new(),
+            },
+        ],
+    }
+}
+
+/// `LayerElementTangent` — xyz `Tangents` triple array + companion
+/// per-corner `TangentsW` handedness-sign array (the split the decode
+/// side recombines into the glTF-style `[x,y,z,w]` slot).
+fn layer_element_tangent(xyz: Vec<f64>, w: Vec<f64>) -> FbxNode {
+    FbxNode {
+        name: "LayerElementTangent".to_string(),
+        properties: vec![FbxProperty::I32(0)],
+        children: vec![
+            leaf_i32("Version", 101),
+            leaf_string("Name", ""),
+            leaf_string("MappingInformationType", "ByPolygonVertex"),
+            leaf_string("ReferenceInformationType", "Direct"),
+            FbxNode {
+                name: "Tangents".to_string(),
+                properties: vec![FbxProperty::F64Array(xyz)],
+                children: Vec::new(),
+            },
+            FbxNode {
+                name: "TangentsW".to_string(),
+                properties: vec![FbxProperty::F64Array(w)],
                 children: Vec::new(),
             },
         ],

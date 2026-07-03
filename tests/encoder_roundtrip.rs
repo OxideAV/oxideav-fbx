@@ -341,3 +341,148 @@ fn deflate_compressed_binary_round_trips() {
     assert_eq!(n % 3, 0);
     assert!(n >= 300, "all corner positions survived");
 }
+
+// ---------------------------------------------------------------------
+// Round 384 — encoder attribute-layer completeness (multi-UV / vertex
+// colours / tangents).
+// ---------------------------------------------------------------------
+
+/// Two UV sets (diffuse + lightmap, the canonical pair) each become a
+/// `LayerElementUV` record and decode back as two `Primitive::uvs`
+/// entries in the same order.
+#[test]
+fn two_uv_sets_survive_round_trip() {
+    let mut mesh = quad_with_normals_and_uvs("MultiUv");
+    let set1: Vec<[f32; 2]> = vec![
+        [0.0, 0.5],
+        [0.5, 0.5],
+        [0.5, 1.0],
+        [0.0, 0.5],
+        [0.5, 1.0],
+        [0.0, 1.0],
+    ];
+    mesh.primitives[0].uvs.push(set1.clone());
+    let set0 = mesh.primitives[0].uvs[0].clone();
+
+    let mut scene = Scene3D::new();
+    let mid = scene.add_mesh(mesh);
+    let nid = scene.add_node(Node::new().with_mesh(mid));
+    scene.roots.push(nid);
+
+    let scene2 = decode(&encode_binary(&scene));
+    let prim = &scene2.meshes[0].primitives[0];
+    assert_eq!(prim.uvs.len(), 2, "both UV sets survive");
+    for (a, b) in prim.uvs[0].iter().zip(&set0) {
+        assert!((a[0] - b[0]).abs() < 1e-6 && (a[1] - b[1]).abs() < 1e-6);
+    }
+    for (a, b) in prim.uvs[1].iter().zip(&set1) {
+        assert!((a[0] - b[0]).abs() < 1e-6 && (a[1] - b[1]).abs() < 1e-6);
+    }
+}
+
+/// Vertex-colour sets become `LayerElementColor` records (RGBA
+/// `Colors` d-array) and decode back onto `Primitive::colors`.
+#[test]
+fn vertex_color_sets_survive_round_trip() {
+    let mut mesh = quad_with_normals_and_uvs("Colored");
+    let set0: Vec<[f32; 4]> = vec![
+        [1.0, 0.0, 0.0, 1.0],
+        [0.0, 1.0, 0.0, 1.0],
+        [0.0, 0.0, 1.0, 1.0],
+        [1.0, 0.0, 0.0, 1.0],
+        [0.0, 0.0, 1.0, 1.0],
+        [1.0, 1.0, 0.0, 0.5],
+    ];
+    let set1: Vec<[f32; 4]> = vec![[0.25, 0.5, 0.75, 1.0]; 6];
+    mesh.primitives[0].colors.push(set0.clone());
+    mesh.primitives[0].colors.push(set1.clone());
+
+    let mut scene = Scene3D::new();
+    let mid = scene.add_mesh(mesh);
+    let nid = scene.add_node(Node::new().with_mesh(mid));
+    scene.roots.push(nid);
+
+    let scene2 = decode(&encode_binary(&scene));
+    let prim = &scene2.meshes[0].primitives[0];
+    assert_eq!(prim.colors.len(), 2, "both colour sets survive");
+    for (got, want) in [(&prim.colors[0], &set0), (&prim.colors[1], &set1)] {
+        for (a, b) in got.iter().zip(want) {
+            for c in 0..4 {
+                assert!((a[c] - b[c]).abs() < 1e-6, "colour {a:?} vs {b:?}");
+            }
+        }
+    }
+}
+
+/// The canonical glTF-style tangent slot round-trips through the FBX
+/// `Tangents` (xyz) + `TangentsW` (handedness sign) split, including a
+/// mixed-handedness buffer.
+#[test]
+fn tangents_survive_round_trip() {
+    let mut mesh = quad_with_normals_and_uvs("Tangent");
+    let tangents: Vec<[f32; 4]> = vec![
+        [1.0, 0.0, 0.0, 1.0],
+        [1.0, 0.0, 0.0, 1.0],
+        [1.0, 0.0, 0.0, -1.0],
+        [0.0, 1.0, 0.0, 1.0],
+        [0.0, 1.0, 0.0, -1.0],
+        [0.0, 0.0, 1.0, -1.0],
+    ];
+    mesh.primitives[0].tangents = Some(tangents.clone());
+
+    let mut scene = Scene3D::new();
+    let mid = scene.add_mesh(mesh);
+    let nid = scene.add_node(Node::new().with_mesh(mid));
+    scene.roots.push(nid);
+
+    let scene2 = decode(&encode_binary(&scene));
+    let prim = &scene2.meshes[0].primitives[0];
+    let got = prim.tangents.as_ref().expect("tangents survive");
+    assert_eq!(got.len(), tangents.len());
+    for (a, b) in got.iter().zip(&tangents) {
+        for c in 0..4 {
+            assert!((a[c] - b[c]).abs() < 1e-6, "tangent {a:?} vs {b:?}");
+        }
+    }
+}
+
+/// An indexed primitive expands its UV / colour / tangent sets through
+/// the index buffer exactly like the position stream.
+#[test]
+fn indexed_attributes_expand_through_index_buffer() {
+    use oxideav_mesh3d::Indices;
+    let mut prim = Primitive::new(Topology::Triangles);
+    // 4 shared vertices, 2 triangles.
+    prim.positions = vec![
+        [0.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [1.0, 1.0, 0.0],
+        [0.0, 1.0, 0.0],
+    ];
+    prim.indices = Some(Indices::U16(vec![0, 1, 2, 0, 2, 3]));
+    prim.uvs = vec![vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]];
+    prim.colors = vec![vec![
+        [1.0, 0.0, 0.0, 1.0],
+        [0.0, 1.0, 0.0, 1.0],
+        [0.0, 0.0, 1.0, 1.0],
+        [1.0, 1.0, 1.0, 1.0],
+    ]];
+    let mut mesh = Mesh::new(Some("Indexed".to_string()));
+    mesh.primitives.push(prim);
+
+    let mut scene = Scene3D::new();
+    let mid = scene.add_mesh(mesh);
+    let nid = scene.add_node(Node::new().with_mesh(mid));
+    scene.roots.push(nid);
+
+    let scene2 = decode(&encode_binary(&scene));
+    let prim = &scene2.meshes[0].primitives[0];
+    assert_eq!(prim.positions.len(), 6, "index buffer expanded");
+    assert_eq!(prim.uvs.len(), 1);
+    assert_eq!(prim.uvs[0].len(), 6);
+    // Corner 4 references shared vertex 2 → uv (1,1) / colour blue.
+    assert!((prim.uvs[0][4][0] - 1.0).abs() < 1e-6);
+    assert!((prim.uvs[0][4][1] - 1.0).abs() < 1e-6);
+    assert_eq!(prim.colors.len(), 1);
+    assert!((prim.colors[0][4][2] - 1.0).abs() < 1e-6, "blue expanded");
+}
