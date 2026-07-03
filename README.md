@@ -440,30 +440,69 @@ clean-room from third-party documentation:
 - **`Scene3D` encoder (`Mesh3DEncoder`)** — `FbxEncoder` /
   `scene_writer::encode_scene` is the inverse of `scene::build_scene`:
   it builds a fresh `FbxDocument` (`FBXHeaderExtension` +
-  `GlobalSettings` + `Definitions` + `Objects` + `Connections`) from an
-  `oxideav_mesh3d::Scene3D` and serialises it to binary or ASCII.
-  Geometry emits one `Geometry` per mesh (per-corner `Vertices` +
-  sequential-triangle `PolygonVertexIndex` + optional
-  `LayerElementNormal` / `LayerElementUV` as `ByPolygonVertex` /
-  `Direct`). Nodes emit one `Model` each with `Lcl Translation` /
-  `Lcl Rotation` (XYZ-Euler degrees) / `Lcl Scaling` P-records and the
-  scene-graph parent/child OO edges. Materials emit `DiffuseColor` /
-  `Opacity` / `EmissiveColor` / `ReflectionFactor` P-records; textures
-  emit a `Texture` (+ backing `Video.Content` R-blob for embedded
-  bytes) with the `Texture -> Material(prop_name)` OP connection
-  (`DiffuseColor` / `NormalMap` / `EmissiveColor` /
-  `Maya|TEX_metallic_map` / `AmbientOcclusion`). `GlobalSettings`
-  carries `UnitScaleFactor` (from `Scene3D::unit`) + round-tripped axis
-  ints. Animations emit one `AnimationStack` / `AnimationLayer` per
-  `Animation` plus per-channel `AnimationCurveNode` + per-axis
-  `AnimationCurve` (Translation / Scale split `d|X`/`d|Y`/`d|Z`;
-  Rotation quaternions → XYZ-Euler degrees; `KeyTime` in KTime ticks)
-  with the full OO/OP chain. The complete `Scene3D → encode → decode →
-  Scene3D` closure is round-trip-tested for positions / normals / UVs /
-  hierarchy / materials / external + embedded textures / unit + axis /
-  translation + rotation animation / deflate-compressed arrays.
-  Builder knobs: `FbxEncoder::new().form(FbxOutputForm::Ascii)`,
-  `.version(7700)`, `.compress_arrays_at(256)`.
+  `GlobalSettings` + `Definitions` + `Objects` + `Connections` +
+  `Takes`) from an `oxideav_mesh3d::Scene3D` and serialises it to
+  binary or ASCII.
+  - **Geometry** — one `Geometry` per mesh (per-corner `Vertices` +
+    sequential-triangle `PolygonVertexIndex`), with one
+    `LayerElementNormal` per normal buffer, one `LayerElementUV` per
+    UV set, one `LayerElementColor` per vertex-colour set (RGBA), a
+    `LayerElementTangent` for the canonical glTF-style tangent slot
+    (`Tangents` xyz + `TangentsW` handedness split), and the
+    extras-borne extra normal / tangent layers + explicitly-authored
+    binormals (`LayerElementBinormal`) re-emitted for
+    single-primitive meshes — all `ByPolygonVertex` / `Direct`, the
+    mapping the decode side flattens 1:1. Indexed primitives expand
+    every attribute through the index buffer.
+  - **Nodes / hierarchy** — one `Model` per node with
+    `Lcl Translation` / `Lcl Rotation` (XYZ-Euler degrees) /
+    `Lcl Scaling` P-records + the parent/child OO edges;
+    `fbx:node_attribute_kind` `"LimbNode"` / `"Null"` markers re-emit
+    their `NodeAttribute` so bone / locator tags survive re-encode.
+  - **Materials / Textures** — `DiffuseColor` / `Opacity` /
+    `EmissiveColor` / `ReflectionFactor` P-records; `Texture`
+    (+ backing `Video.Content` R-blob for embedded bytes) with the
+    `Texture -> Material(prop_name)` OP connection. Multi-material
+    meshes re-emit the `LayerElementMaterial` `ByPolygon` per-face
+    slot table + slot-ordered `Material -> Model` OO connections from
+    the `fbx:face_material_slots` / `fbx:material_slots` extras.
+  - **Deformers** — `Deformer{Skin}` + per-joint `Deformer{Cluster}`
+    per skinned node (cluster order = skeleton joint order;
+    `Transform` = inverse-bind + `TransformLink` = identity so the
+    decode-side composition reproduces the authored inverse-bind
+    matrices exactly); `Deformer{BlendShape}` + `BlendShapeChannel` +
+    `Geometry{Shape}` (sparse `Indexes` + `Vertices` + `Normals`
+    deltas) per morph target.
+  - **Lights / Cameras** — one `NodeAttribute` per bound node
+    (`LightType` / `Color` / `Intensity`×100 / `DecayType` +
+    `DecayStart` / cone angles; `CameraProjectionType` /
+    `FieldOfViewY` / `NearPlane` / `FarPlane` / aspect pair /
+    `OrthoZoom`), OO-connected to the owning `Model`.
+  - **Scene-wide metadata** — `GlobalSettings` re-renders the full
+    decode-side recognised-name set (axis ints, time-mode enums,
+    i64-exact `KTime` spans, `DefaultCamera`, `AmbientColor`,
+    `CustomFrameRate`; a round-tripped non-canonical
+    `UnitScaleFactor` survives verbatim). `FBXHeaderExtension`
+    re-renders `Creator` / `CreationTimeStamp` / `SceneInfo`
+    `MetaData` + `Original|Application*` provenance from `fbx:*`
+    extras; `Takes` re-renders the take catalogue
+    (`fbx:current_take` / `fbx:takes`).
+  - **Animations** — one `AnimationStack` / `AnimationLayer` per
+    `Animation` plus per-channel `AnimationCurveNode` + per-axis
+    `AnimationCurve` (Translation / Scale split `d|X`/`d|Y`/`d|Z`;
+    Rotation quaternions → XYZ-Euler degrees; MorphWeights → a
+    `DeformPercent` curve OP-connected to the node's
+    `BlendShapeChannel`; `KeyTime` in KTime ticks) with the full
+    OO/OP chain.
+  - The complete `Scene3D → encode → decode → Scene3D` closure is
+    round-trip-tested for positions / normals / multi-UV / vertex
+    colours / tangents / binormals / hierarchy / multi-material slot
+    tables / skins / morph targets / lights / cameras / external +
+    embedded textures / unit + axis / header + takes metadata /
+    translation + rotation + morph-weight animation /
+    deflate-compressed arrays. Builder knobs:
+    `FbxEncoder::new().form(FbxOutputForm::Ascii)`, `.version(7700)`,
+    `.compress_arrays_at(256)`.
 
 ## Decode
 
@@ -502,9 +541,14 @@ the partial-support edges and the not-yet-implemented surfaces.
   accepts). Bytes matching neither the binary magic nor the ASCII
   banner return a single sniff-failure error. The ASCII writer is
   described under "ASCII writer" above.
-- `Mesh3DEncoder` (Scene3D → bytes) — `write_document` operates on the
-  parsed `FbxDocument` tree only; building a fresh `FbxDocument` from a
-  `Scene3D` (the inverse of `scene::build_scene`) is a follow-up round.
+- Encoder lossy edges — the full FBX node-transform chain (pivots /
+  pre-post-rotation / `RotationOrder`) is not synthesised (reduced
+  `T * R(XYZ) * S` only, matching the decode-side docs gap);
+  `Mesh::weights` static per-target morph weights have no FBX
+  read-back home (the decode side initialises them to `0.0`);
+  multi-primitive meshes skip the extras-borne extra-layer
+  re-emission (no unambiguous per-primitive concatenation); emitted
+  `Definitions` are count-only (no `PropertyTemplate` synthesis).
 - Autodesk binary footer — the Blender doc records its contents as
   "unknown"; `write_document` emits no footer at all. Files round-trip
   through our own parser but may be flagged by SDKs that validate the

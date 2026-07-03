@@ -9,6 +9,82 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Round 384 — **encoder round-trip parity drive.** Seven encoder
+  surfaces the round-377 `Scene3D` → FBX encoder deferred now survive
+  a full `decode → encode → decode` cycle:
+  - **Multi-UV / vertex colours / tangents** — one `LayerElementUV`
+    per `Primitive::uvs` set (TypedIndex-discriminated per
+    `docs/3d/fbx/fbx-binary-properties70.md` §6 point 4), one
+    `LayerElementColor` per `Primitive::colors` set (RGBA `Colors`
+    `d`-array), and a `LayerElementTangent` carrying the canonical
+    glTF-style slot as the FBX `Tangents` xyz + `TangentsW`
+    handedness split. Indexed primitives expand every set through
+    the index buffer. New `SceneEncodeOptions::emit_colors` /
+    `emit_tangents` knobs (default on).
+  - **Multi-material slot tables** — `Material -> Model` OO
+    connections emitted in slot order from
+    `extras["fbx:material_slots"]` + the `LayerElementMaterial`
+    `ByPolygon` / `IndexToDirect` per-polygon `Materials` array
+    re-emitted from `extras["fbx:face_material_slots"]`.
+  - **Skin deformers** — new `deformer_writer` module:
+    `Deformer{Skin}` OO → Geometry + one `Deformer{Cluster}` per
+    skeleton joint (`Cluster -> Skin` connection order defines the
+    decode-side joint index, so it follows `Skeleton::joints` order);
+    per-cluster `Indexes` / `Weights` rebuilt from the per-corner
+    top-4 buffers (shared-vertex index == corner index under the
+    identity `PolygonVertexIndex`); bind matrices written as
+    `Transform` = inverse-bind + `TransformLink` = identity so the
+    decode-side `inverse(TransformLink) * Transform` composition
+    reproduces the authored inverse-binds **exactly** (no float
+    inversion in either direction).
+  - **Blend shapes + morph-weight animation** —
+    `Deformer{BlendShape}` + `BlendShapeChannel` + `Geometry{Shape}`
+    (sparse `Indexes` + `Vertices` position deltas + optional
+    `Normals` deltas, one shared index set) per morph target;
+    `anim_writer` now emits MorphWeights (Scalar) channels as an
+    `AnimationCurveNode` OP-connected to the node's first
+    `BlendShapeChannel` under `DeformPercent` with a single
+    `d|DeformPercent` curve. Documented lossy edge: `Mesh::weights`
+    static per-target weights have no FBX read-back home (the
+    decode side initialises them to `0.0`).
+  - **Lights / Cameras** — one `NodeAttribute` (subtype `"Light"` /
+    `"Camera"` per docs §6) per bound node, OO-connected to the
+    owning `Model`: `LightType` recovered from the typed variant
+    (the Area / Volume collapse undone via `fbx:light_type`),
+    `Intensity` ×100, `range` → `DecayType` + `DecayStart`, Spot
+    half-cone radians → full-cone degrees, `CastShadows`;
+    `CameraProjectionType` + `FieldOfViewY` / `NearPlane` /
+    `FarPlane` / aspect pair (authored resolution from
+    `fbx:camera_resolution`) / `OrthoZoom` = `ymag`.
+  - **Takes + `FBXHeaderExtension` metadata** — §7e `Takes`
+    (`Current` + per-take `FileName` / `LocalTime` / `ReferenceTime`
+    two-`L` KTime pairs, i64-exact) re-rendered from `fbx:takes` /
+    `fbx:current_take`; §7a `FBXHeaderVersion` / `Creator` /
+    `CreationTimeStamp` (re-parsed from the composed
+    `YYYY-MM-DDThh:mm:ss.mmm` stamp) / `SceneInfo` `MetaData` +
+    `Original|Application*` / `DocumentUrl` KString provenance
+    re-rendered from the `fbx:*` extras.
+  - **GlobalSettings parity + kind markers** — the full decode-side
+    recognised-name set re-emitted (`OriginalUpAxis*` /
+    `CurrentTimeMarker` ints, `TimeMode` / `TimeProtocol` /
+    `SnapOnFrameMode` as `enum`-typeName records, `TimeSpanStart` /
+    `TimeSpanStop` as i64-exact `KTime` `L` records,
+    `OriginalUnitScaleFactor` / `CustomFrameRate`, `DefaultCamera`,
+    `AmbientColor`); a round-tripped **non-canonical**
+    `UnitScaleFactor` (e.g. 2.54) now survives verbatim instead of
+    collapsing to the `Scene3D::unit` derivation. Nodes tagged
+    `fbx:node_attribute_kind` `"LimbNode"` / `"Null"` re-emit their
+    `NodeAttribute` marker.
+  - **Extra layers / binormals** — single-primitive meshes re-emit
+    the extras-borne `fbx:extra_normals` / `fbx:extra_tangents`
+    layers and `fbx:binormals` (`LayerElementBinormal`, `Binormals`
+    xyz + `BinormalsW` sign), closing the geometry-layer parity gap.
+  - 13 new round-trip integration tests (encoder_roundtrip 9 → 22);
+    test count 273 → 287. Remaining encoder gaps: full
+    node-transform chain (docs gap #1957), Autodesk binary footer
+    (docs gap), count-only `Definitions`, multi-primitive
+    extras-layer re-emission.
+
 - Round 377 — **`Scene3D` → FBX encoder (`Mesh3DEncoder`).** The
   missing inverse of `scene::build_scene`. The new `scene_writer`
   module builds a fresh `FbxDocument` node tree (`FBXHeaderExtension` +
