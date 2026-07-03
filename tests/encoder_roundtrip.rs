@@ -1020,3 +1020,106 @@ fn header_metadata_survives_ascii_round_trip() {
         Some("T1")
     );
 }
+
+// ---------------------------------------------------------------------
+// Round 384 — encoder GlobalSettings parity + NodeAttribute kind
+// markers.
+// ---------------------------------------------------------------------
+
+/// The full decode-side GlobalSettings recognised-name set survives a
+/// decode → encode → decode cycle: time-mode enums, i64-exact KTime
+/// spans, doubles, DefaultCamera, AmbientColor, and a non-canonical
+/// UnitScaleFactor (2.54 — neither cm nor m) round-trip via extras.
+#[test]
+fn global_settings_parity_survives_round_trip() {
+    let mut scene = Scene3D::new();
+    let mid = scene.add_mesh(quad_with_normals_and_uvs("M"));
+    let nid = scene.add_node(Node::new().with_mesh(mid));
+    scene.roots.push(nid);
+
+    for (k, v) in [
+        ("fbx:up_axis", serde_json::json!(1)),
+        ("fbx:up_axis_sign", serde_json::json!(1)),
+        ("fbx:original_up_axis", serde_json::json!(2)),
+        ("fbx:original_up_axis_sign", serde_json::json!(-1)),
+        ("fbx:time_mode", serde_json::json!(6)),
+        ("fbx:time_protocol", serde_json::json!(2)),
+        ("fbx:snap_on_frame_mode", serde_json::json!(0)),
+        ("fbx:current_time_marker", serde_json::json!(-1)),
+        ("fbx:time_span_start", serde_json::json!(1924423250i64)),
+        ("fbx:time_span_stop", serde_json::json!(230930790000i64)),
+        ("fbx:original_unit_scale_factor", serde_json::json!(2.54)),
+        ("fbx:custom_frame_rate", serde_json::json!(-1.0)),
+        (
+            "fbx:default_camera",
+            serde_json::json!("Producer Perspective"),
+        ),
+        ("fbx:ambient_color", serde_json::json!([0.1, 0.2, 0.3])),
+        ("fbx:unit_scale_factor", serde_json::json!(2.54)),
+    ] {
+        scene.extras.insert(k.to_string(), v);
+    }
+
+    let scene2 = decode(&encode_binary(&scene));
+    let gi = |k: &str| scene2.extras.get(k).and_then(|v| v.as_i64());
+    assert_eq!(gi("fbx:up_axis"), Some(1));
+    assert_eq!(gi("fbx:original_up_axis"), Some(2));
+    assert_eq!(gi("fbx:original_up_axis_sign"), Some(-1));
+    assert_eq!(gi("fbx:time_mode"), Some(6));
+    assert_eq!(gi("fbx:time_protocol"), Some(2));
+    assert_eq!(gi("fbx:snap_on_frame_mode"), Some(0));
+    assert_eq!(gi("fbx:current_time_marker"), Some(-1));
+    assert_eq!(gi("fbx:time_span_start"), Some(1924423250));
+    assert_eq!(gi("fbx:time_span_stop"), Some(230930790000));
+    let gf = |k: &str| scene2.extras.get(k).and_then(|v| v.as_f64());
+    assert_eq!(gf("fbx:original_unit_scale_factor"), Some(2.54));
+    assert_eq!(gf("fbx:custom_frame_rate"), Some(-1.0));
+    // The non-canonical factor survives verbatim (the decode side
+    // leaves scene.unit at default and stashes the raw value).
+    assert_eq!(gf("fbx:unit_scale_factor"), Some(2.54));
+    assert_eq!(
+        scene2
+            .extras
+            .get("fbx:default_camera")
+            .and_then(|v| v.as_str()),
+        Some("Producer Perspective")
+    );
+    assert_eq!(
+        scene2.extras.get("fbx:ambient_color"),
+        Some(&serde_json::json!([0.1, 0.2, 0.3]))
+    );
+}
+
+/// A bone (LimbNode) / locator (Null) kind marker on a node survives
+/// re-encode via the NodeAttribute element.
+#[test]
+fn node_attribute_kind_markers_survive_round_trip() {
+    let mut scene = Scene3D::new();
+    let mut bone = Node::new().with_name("Bone");
+    bone.extras.insert(
+        "fbx:node_attribute_kind".to_string(),
+        serde_json::json!("LimbNode"),
+    );
+    let mut locator = Node::new().with_name("Loc");
+    locator.extras.insert(
+        "fbx:node_attribute_kind".to_string(),
+        serde_json::json!("Null"),
+    );
+    let b = scene.add_node(bone);
+    let l = scene.add_node(locator);
+    scene.roots.push(b);
+    scene.roots.push(l);
+
+    let scene2 = decode(&encode_binary(&scene));
+    let kind = |n: &str| {
+        scene2
+            .nodes
+            .iter()
+            .find(|x| x.name.as_deref() == Some(n))
+            .and_then(|x| x.extras.get("fbx:node_attribute_kind"))
+            .and_then(|v| v.as_str())
+            .map(str::to_owned)
+    };
+    assert_eq!(kind("Bone").as_deref(), Some("LimbNode"));
+    assert_eq!(kind("Loc").as_deref(), Some("Null"));
+}

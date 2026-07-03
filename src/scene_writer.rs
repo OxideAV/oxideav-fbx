@@ -248,6 +248,25 @@ pub fn encode_scene_with_options(scene: &Scene3D, opts: &SceneEncodeOptions) -> 
                 .children
                 .push(connection_oo(attr_id, node_ids[ni]));
         }
+        // LimbNode / Null kind markers (round 384) — the decode side
+        // records the §6 NodeAttribute discriminator on
+        // `extras["fbx:node_attribute_kind"]`; re-emit the attribute
+        // element so a bone / locator marker survives re-encode.
+        if let Some(kind) = node
+            .extras
+            .get("fbx:node_attribute_kind")
+            .and_then(|v| v.as_str())
+        {
+            if kind == "LimbNode" || kind == "Null" {
+                let attr_id = alloc.next();
+                objects
+                    .children
+                    .push(node_attribute(attr_id, kind, Vec::new()));
+                connections
+                    .children
+                    .push(connection_oo(attr_id, node_ids[ni]));
+            }
+        }
         // Geometry → Model attribute attachment.
         if let Some(mid) = node.mesh {
             let gid = mesh_ids[mid.0 as usize];
@@ -606,22 +625,85 @@ fn build_global_settings(scene: &Scene3D) -> FbxNode {
         ("fbx:front_axis_sign", "FrontAxisSign"),
         ("fbx:coord_axis", "CoordAxis"),
         ("fbx:coord_axis_sign", "CoordAxisSign"),
+        ("fbx:original_up_axis", "OriginalUpAxis"),
+        ("fbx:original_up_axis_sign", "OriginalUpAxisSign"),
+        ("fbx:current_time_marker", "CurrentTimeMarker"),
     ] {
         if let Some(i) = scene.extras.get(key).and_then(|v| v.as_i64()) {
             ps.push(p_int(name, i as i32));
         }
     }
+    // Enum-typed time-mode ints (the fixture's `"enum"` typeName; the
+    // decode side's generic `as_i32` reads either, but the typed
+    // `as_enum` accessor only fires on the correct typeName).
+    for (key, name) in [
+        ("fbx:time_mode", "TimeMode"),
+        ("fbx:time_protocol", "TimeProtocol"),
+        ("fbx:snap_on_frame_mode", "SnapOnFrameMode"),
+    ] {
+        if let Some(i) = scene.extras.get(key).and_then(|v| v.as_i64()) {
+            ps.push(p_enum(name, i as i32));
+        }
+    }
+    // KTime spans — i64-exact `L`-wire records.
+    for (key, name) in [
+        ("fbx:time_span_start", "TimeSpanStart"),
+        ("fbx:time_span_stop", "TimeSpanStop"),
+    ] {
+        if let Some(t) = scene.extras.get(key).and_then(|v| v.as_i64()) {
+            ps.push(p_ktime(name, t));
+        }
+    }
+    // Remaining doubles / string / colour from the decode-side
+    // recognised-name set.
+    for (key, name) in [
+        ("fbx:original_unit_scale_factor", "OriginalUnitScaleFactor"),
+        ("fbx:custom_frame_rate", "CustomFrameRate"),
+    ] {
+        if let Some(v) = scene.extras.get(key).and_then(|v| v.as_f64()) {
+            ps.push(p_double(name, v));
+        }
+    }
+    if let Some(s) = scene
+        .extras
+        .get("fbx:default_camera")
+        .and_then(|v| v.as_str())
+    {
+        ps.push(p_kstring("DefaultCamera", s));
+    }
+    if let Some(rgb) = scene
+        .extras
+        .get("fbx:ambient_color")
+        .and_then(|v| v.as_array())
+        .and_then(|a| {
+            Some([
+                a.first().and_then(|v| v.as_f64())?,
+                a.get(1).and_then(|v| v.as_f64())?,
+                a.get(2).and_then(|v| v.as_f64())?,
+            ])
+        })
+    {
+        ps.push(p_color("AmbientColor", rgb));
+    }
 
     // UnitScaleFactor — centimetres-per-unit. The decode side's
     // `unit_from_scale_factor` recovers Centimetres (100) / Metres (1);
-    // for the other units we write the literal `cm per unit` so the raw
-    // factor survives on extras even though no typed `Unit` is recovered.
-    let scale_factor = match scene.unit {
+    // a round-tripped *non-canonical* factor (the decode side left
+    // `scene.unit` at its default and stashed the raw value on
+    // `extras["fbx:unit_scale_factor"]`) is preferred so the literal
+    // exporter-side factor survives re-encode. Other typed units write
+    // their `cm per unit` equivalent.
+    let extras_factor = scene
+        .extras
+        .get("fbx:unit_scale_factor")
+        .and_then(|v| v.as_f64())
+        .filter(|&f| crate::globals::unit_from_scale_factor(f).is_none());
+    let scale_factor = extras_factor.unwrap_or(match scene.unit {
         oxideav_mesh3d::Unit::Centimetres => 100.0,
         oxideav_mesh3d::Unit::Metres => 1.0,
         // metres-per-unit → centimetres-per-unit.
         other => other.to_metres() as f64 * 100.0,
-    };
+    });
     ps.push(p_double("UnitScaleFactor", scale_factor));
 
     FbxNode {
@@ -1629,6 +1711,38 @@ fn p_number(name: &str, v: f64) -> FbxNode {
 /// shape (`Opacity`).
 fn p_double(name: &str, v: f64) -> FbxNode {
     p_scalar(name, "double", v)
+}
+
+/// `P: "<name>", "enum", "", "", v` — the `enum`-typed scalar shape
+/// (`TimeMode` / `TimeProtocol` / `SnapOnFrameMode`).
+fn p_enum(name: &str, v: i32) -> FbxNode {
+    FbxNode {
+        name: "P".to_string(),
+        properties: vec![
+            FbxProperty::String(name.as_bytes().to_vec()),
+            FbxProperty::String(b"enum".to_vec()),
+            FbxProperty::String(Vec::new()),
+            FbxProperty::String(Vec::new()),
+            FbxProperty::I32(v),
+        ],
+        children: Vec::new(),
+    }
+}
+
+/// `P: "<name>", "KTime", "Time", "", v` — the `KTime`-typed int64
+/// shape (`TimeSpanStart` / `TimeSpanStop`), i64-exact `L` wire.
+fn p_ktime(name: &str, v: i64) -> FbxNode {
+    FbxNode {
+        name: "P".to_string(),
+        properties: vec![
+            FbxProperty::String(name.as_bytes().to_vec()),
+            FbxProperty::String(b"KTime".to_vec()),
+            FbxProperty::String(b"Time".to_vec()),
+            FbxProperty::String(Vec::new()),
+            FbxProperty::I64(v),
+        ],
+        children: Vec::new(),
+    }
 }
 
 /// `P: "<name>", "KString", "", "", "<v>"` — the `KString`-typed
