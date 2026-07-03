@@ -749,3 +749,152 @@ fn morph_target_and_weight_animation_survive_round_trip() {
         Some("MorphNode")
     );
 }
+
+// ---------------------------------------------------------------------
+// Round 384 — encoder light / camera NodeAttribute emission.
+// ---------------------------------------------------------------------
+
+/// Point / Directional / Spot lights round-trip through the
+/// `NodeAttribute : "Light"` P-record set (LightType / Color /
+/// Intensity ×100 / DecayType + DecayStart / cone angles).
+#[test]
+fn lights_survive_round_trip() {
+    use oxideav_mesh3d::Light;
+
+    let mut scene = Scene3D::new();
+    let point = scene.add_light(Light::Point {
+        color: [1.0, 0.5, 0.25],
+        intensity: 2.0,
+        range: Some(12.5),
+    });
+    let sun = scene.add_light(Light::Directional {
+        color: [1.0, 1.0, 0.9],
+        intensity: 1.5,
+    });
+    let spot = scene.add_light(Light::Spot {
+        color: [0.0, 1.0, 0.0],
+        intensity: 0.75,
+        range: None,
+        inner_cone_angle: 0.25,
+        outer_cone_angle: 0.5,
+    });
+    for (name, lid) in [("P", point), ("D", sun), ("S", spot)] {
+        let mut node = Node::new().with_name(name);
+        node.light = Some(lid);
+        let nid = scene.add_node(node);
+        scene.roots.push(nid);
+    }
+
+    let scene2 = decode(&encode_binary(&scene));
+    assert_eq!(scene2.lights.len(), 3, "all three lights survive");
+    let by_name = |n: &str| -> &Light {
+        let node = scene2
+            .nodes
+            .iter()
+            .find(|x| x.name.as_deref() == Some(n))
+            .expect("node");
+        &scene2.lights[node.light.expect("light bound").0 as usize]
+    };
+    match by_name("P") {
+        Light::Point {
+            color,
+            intensity,
+            range,
+        } => {
+            assert!((color[1] - 0.5).abs() < 1e-6);
+            assert!((intensity - 2.0).abs() < 1e-5);
+            assert!((range.expect("range survives") - 12.5).abs() < 1e-5);
+        }
+        other => panic!("expected Point, got {other:?}"),
+    }
+    match by_name("D") {
+        Light::Directional { color, intensity } => {
+            assert!((color[2] - 0.9).abs() < 1e-6);
+            assert!((intensity - 1.5).abs() < 1e-5);
+        }
+        other => panic!("expected Directional, got {other:?}"),
+    }
+    match by_name("S") {
+        Light::Spot {
+            intensity,
+            inner_cone_angle,
+            outer_cone_angle,
+            ..
+        } => {
+            assert!((intensity - 0.75).abs() < 1e-5);
+            assert!((inner_cone_angle - 0.25).abs() < 1e-5);
+            assert!((outer_cone_angle - 0.5).abs() < 1e-5);
+        }
+        other => panic!("expected Spot, got {other:?}"),
+    }
+}
+
+/// Perspective + orthographic cameras round-trip through the
+/// `NodeAttribute : "Camera"` P-record set (projection type /
+/// FieldOfViewY / near-far planes / aspect pair / OrthoZoom).
+#[test]
+fn cameras_survive_round_trip() {
+    use oxideav_mesh3d::Camera;
+
+    let mut scene = Scene3D::new();
+    let persp = scene.add_camera(Camera::Perspective {
+        aspect_ratio: Some(16.0 / 9.0),
+        yfov: 1.0,
+        znear: 0.5,
+        zfar: Some(500.0),
+    });
+    let ortho = scene.add_camera(Camera::Orthographic {
+        xmag: 4.0,
+        ymag: 2.0,
+        znear: 0.1,
+        zfar: 100.0,
+    });
+    for (name, cid) in [("Persp", persp), ("Ortho", ortho)] {
+        let mut node = Node::new().with_name(name);
+        node.camera = Some(cid);
+        let nid = scene.add_node(node);
+        scene.roots.push(nid);
+    }
+
+    let scene2 = decode(&encode_binary(&scene));
+    assert_eq!(scene2.cameras.len(), 2, "both cameras survive");
+    let by_name = |n: &str| -> &Camera {
+        let node = scene2
+            .nodes
+            .iter()
+            .find(|x| x.name.as_deref() == Some(n))
+            .expect("node");
+        &scene2.cameras[node.camera.expect("camera bound").0 as usize]
+    };
+    match by_name("Persp") {
+        Camera::Perspective {
+            aspect_ratio,
+            yfov,
+            znear,
+            zfar,
+        } => {
+            assert!((yfov - 1.0).abs() < 1e-5, "yfov {yfov}");
+            assert!((znear - 0.5).abs() < 1e-6);
+            assert!((zfar.expect("far plane") - 500.0).abs() < 1e-3);
+            assert!(
+                (aspect_ratio.expect("aspect") - 16.0 / 9.0).abs() < 1e-5,
+                "aspect {aspect_ratio:?}"
+            );
+        }
+        other => panic!("expected Perspective, got {other:?}"),
+    }
+    match by_name("Ortho") {
+        Camera::Orthographic {
+            xmag,
+            ymag,
+            znear,
+            zfar,
+        } => {
+            assert!((xmag - 4.0).abs() < 1e-5, "xmag {xmag}");
+            assert!((ymag - 2.0).abs() < 1e-5, "ymag {ymag}");
+            assert!((znear - 0.1).abs() < 1e-6);
+            assert!((zfar - 100.0).abs() < 1e-4);
+        }
+        other => panic!("expected Orthographic, got {other:?}"),
+    }
+}

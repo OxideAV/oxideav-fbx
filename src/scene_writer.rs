@@ -227,6 +227,27 @@ pub fn encode_scene_with_options(scene: &Scene3D, opts: &SceneEncodeOptions) -> 
     for (ni, node) in scene.nodes.iter().enumerate() {
         let model = build_model(node, node_ids[ni]);
         objects.children.push(model);
+        // Light / Camera NodeAttribute (round 384) — one attribute
+        // element per bound node, OO-connected to the owning Model
+        // (the wiring the decode side's lights_cameras walk reads).
+        if let Some(light) = node.light.and_then(|l| scene.lights.get(l.0 as usize)) {
+            let attr_id = alloc.next();
+            objects
+                .children
+                .push(build_light_attribute(light, node, attr_id));
+            connections
+                .children
+                .push(connection_oo(attr_id, node_ids[ni]));
+        }
+        if let Some(camera) = node.camera.and_then(|c| scene.cameras.get(c.0 as usize)) {
+            let attr_id = alloc.next();
+            objects
+                .children
+                .push(build_camera_attribute(camera, node, attr_id));
+            connections
+                .children
+                .push(connection_oo(attr_id, node_ids[ni]));
+        }
         // Geometry → Model attribute attachment.
         if let Some(mid) = node.mesh {
             let gid = mesh_ids[mid.0 as usize];
@@ -1008,6 +1029,168 @@ fn p_lcl(name: &str, v: [f64; 3]) -> FbxNode {
     }
 }
 
+/// Build a `NodeAttribute : "Light"` element — the inverse of the
+/// decode side's light decoder. The `LightType` enum int (0=Point,
+/// 1=Directional, 2=Spot, 3=Area, 4=Volume) is recovered from the
+/// typed [`oxideav_mesh3d::Light`] variant, with the lossy
+/// `Area` / `Volume` → `Point` collapse undone via the owning node's
+/// `extras["fbx:light_type"]` tag. `Intensity` re-applies the DCC
+/// percentage scale (mesh3d intensity × 100); a `range` becomes
+/// `DecayType != 0` + `DecayStart` (the decode-side promotion rule).
+fn build_light_attribute(light: &oxideav_mesh3d::Light, node: &Node, id: i64) -> FbxNode {
+    use oxideav_mesh3d::Light;
+
+    let kind_tag = node
+        .extras
+        .get("fbx:light_type")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let (light_type, color, intensity, range) = match light {
+        Light::Directional { color, intensity } => (1, *color, *intensity, None),
+        Light::Spot {
+            color,
+            intensity,
+            range,
+            ..
+        } => (2, *color, *intensity, *range),
+        Light::Point {
+            color,
+            intensity,
+            range,
+        } => {
+            let lt = match kind_tag {
+                "Area" => 3,
+                "Volume" => 4,
+                _ => 0,
+            };
+            (lt, *color, *intensity, *range)
+        }
+    };
+
+    let mut ps: Vec<FbxNode> = vec![
+        p_int("LightType", light_type),
+        p_color("Color", [color[0] as f64, color[1] as f64, color[2] as f64]),
+        p_number("Intensity", intensity as f64 * 100.0),
+    ];
+    // DecayType: keep the round-tripped enum value when the node
+    // carries it; otherwise 1 (linear) when a range cutoff exists and
+    // 0 (none) when it doesn't — the decode side only promotes
+    // DecayStart to `range` when DecayType != 0.
+    let decay_type = node
+        .extras
+        .get("fbx:decay_type")
+        .and_then(|v| v.as_i64())
+        .map(|v| v as i32)
+        .unwrap_or(if range.is_some() { 1 } else { 0 });
+    ps.push(p_int("DecayType", decay_type));
+    if let Some(r) = range {
+        ps.push(p_double("DecayStart", r as f64));
+    }
+    if let Light::Spot {
+        inner_cone_angle,
+        outer_cone_angle,
+        ..
+    } = light
+    {
+        // mesh3d half-cone radians → FBX full-cone degrees.
+        let to_full_deg = |half_rad: f32| (half_rad as f64) * 2.0 * 180.0 / std::f64::consts::PI;
+        ps.push(p_double("InnerAngle", to_full_deg(*inner_cone_angle)));
+        ps.push(p_double("OuterAngle", to_full_deg(*outer_cone_angle)));
+    }
+    if let Some(b) = node
+        .extras
+        .get("fbx:cast_shadows")
+        .and_then(|v| v.as_bool())
+    {
+        ps.push(p_bool("CastShadows", b));
+    }
+
+    node_attribute(id, "Light", ps)
+}
+
+/// Build a `NodeAttribute : "Camera"` element — the inverse of the
+/// decode side's camera decoder. Perspective cameras emit
+/// `FieldOfViewY` (the decode side's highest-priority source, a 1:1
+/// `yfov` mapping); orthographic cameras emit `OrthoZoom` (the
+/// vertical half-extent, `ymag`). `AspectWidth` / `AspectHeight`
+/// reproduce the authored resolution pair from
+/// `extras["fbx:camera_resolution"]` when present, else encode the
+/// bare ratio as `w = ratio, h = 1`.
+fn build_camera_attribute(camera: &oxideav_mesh3d::Camera, node: &Node, id: i64) -> FbxNode {
+    use oxideav_mesh3d::Camera;
+
+    let resolution = node
+        .extras
+        .get("fbx:camera_resolution")
+        .and_then(|v| v.as_array())
+        .and_then(|a| {
+            let w = a.first().and_then(|v| v.as_f64())?;
+            let h = a.get(1).and_then(|v| v.as_f64())?;
+            Some((w, h))
+        });
+
+    let mut ps: Vec<FbxNode> = Vec::new();
+    match camera {
+        Camera::Perspective {
+            aspect_ratio,
+            yfov,
+            znear,
+            zfar,
+        } => {
+            ps.push(p_int("CameraProjectionType", 0));
+            ps.push(p_double(
+                "FieldOfViewY",
+                (*yfov as f64) * 180.0 / std::f64::consts::PI,
+            ));
+            ps.push(p_double("NearPlane", *znear as f64));
+            if let Some(far) = zfar {
+                ps.push(p_double("FarPlane", *far as f64));
+            }
+            let (w, h) = resolution
+                .or(aspect_ratio.map(|ar| (ar as f64, 1.0)))
+                .unwrap_or((16.0, 9.0));
+            ps.push(p_double("AspectWidth", w));
+            ps.push(p_double("AspectHeight", h));
+        }
+        Camera::Orthographic {
+            xmag,
+            ymag,
+            znear,
+            zfar,
+        } => {
+            ps.push(p_int("CameraProjectionType", 1));
+            // OrthoZoom is the vertical half-extent; the horizontal
+            // extent reconstructs via the aspect ratio.
+            ps.push(p_double("OrthoZoom", *ymag as f64));
+            let (w, h) = resolution.unwrap_or((*xmag as f64, *ymag as f64));
+            ps.push(p_double("AspectWidth", w));
+            ps.push(p_double("AspectHeight", h));
+            ps.push(p_double("NearPlane", *znear as f64));
+            ps.push(p_double("FarPlane", *zfar as f64));
+        }
+    }
+
+    node_attribute(id, "Camera", ps)
+}
+
+/// Build a `NodeAttribute` element with the given §6 subtype
+/// discriminator and `Properties70` P-records.
+fn node_attribute(id: i64, subtype: &str, ps: Vec<FbxNode>) -> FbxNode {
+    FbxNode {
+        name: "NodeAttribute".to_string(),
+        properties: vec![
+            FbxProperty::I64(id),
+            FbxProperty::String(name_class("", "NodeAttribute")),
+            FbxProperty::String(subtype.as_bytes().to_vec()),
+        ],
+        children: vec![FbxNode {
+            name: "Properties70".to_string(),
+            properties: Vec::new(),
+            children: ps,
+        }],
+    }
+}
+
 /// Build a `Material` element record from a [`Material`].
 fn build_material(mat: &Material, id: i64) -> FbxNode {
     let name = mat.name.clone().unwrap_or_default();
@@ -1258,6 +1441,22 @@ fn p_number(name: &str, v: f64) -> FbxNode {
 /// shape (`Opacity`).
 fn p_double(name: &str, v: f64) -> FbxNode {
     p_scalar(name, "double", v)
+}
+
+/// `P: "<name>", "bool", "", "", v` — the `bool`-typed scalar shape
+/// (`CastShadows`).
+fn p_bool(name: &str, v: bool) -> FbxNode {
+    FbxNode {
+        name: "P".to_string(),
+        properties: vec![
+            FbxProperty::String(name.as_bytes().to_vec()),
+            FbxProperty::String(b"bool".to_vec()),
+            FbxProperty::String(Vec::new()),
+            FbxProperty::String(Vec::new()),
+            FbxProperty::Bool(v),
+        ],
+        children: Vec::new(),
+    }
 }
 
 fn p_scalar(name: &str, type_name: &str, v: f64) -> FbxNode {
