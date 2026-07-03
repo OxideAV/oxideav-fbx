@@ -349,11 +349,18 @@ pub fn encode_scene_with_options(scene: &Scene3D, opts: &SceneEncodeOptions) -> 
         properties: Vec::new(),
         children: Vec::new(),
     };
-    root.children.push(build_header_extension(opts.version));
+    root.children
+        .push(build_header_extension(scene, opts.version));
     root.children.push(build_global_settings(scene));
     root.children.push(build_definitions(scene));
     root.children.push(objects);
     root.children.push(connections);
+    // `Takes` — the last §7 ordered section, re-rendered from the
+    // round-tripped `fbx:takes` / `fbx:current_take` extras (round
+    // 384). Omitted entirely when the scene carries neither.
+    if let Some(takes) = build_takes(scene) {
+        root.children.push(takes);
+    }
 
     FbxDocument {
         version: opts.version,
@@ -377,18 +384,199 @@ impl IdAllocator {
     }
 }
 
-/// `FBXHeaderExtension { FBXVersion: <version> }` — the minimal §7a
-/// section the ASCII reader's version sniff + the decode path tolerate.
-fn build_header_extension(version: u32) -> FbxNode {
+/// `FBXHeaderExtension { FBXHeaderVersion; FBXVersion;
+/// CreationTimeStamp; Creator; SceneInfo }` — the §7a authoring
+/// section. The minimal form (bare `FBXVersion`) is always emitted;
+/// the metadata leaves are re-rendered from the round-tripped
+/// `fbx:header_version` / `fbx:creator` / `fbx:creation_time` /
+/// `fbx:meta_*` / `fbx:application_*` / `fbx:document_url` extras the
+/// decode side surfaces, so authoring provenance survives a
+/// decode → encode → decode cycle.
+fn build_header_extension(scene: &Scene3D, version: u32) -> FbxNode {
+    let mut children = Vec::new();
+
+    if let Some(hv) = scene
+        .extras
+        .get("fbx:header_version")
+        .and_then(|v| v.as_i64())
+    {
+        children.push(leaf_i32("FBXHeaderVersion", hv as i32));
+    }
+    children.push(FbxNode {
+        name: "FBXVersion".to_string(),
+        properties: vec![FbxProperty::I32(version as i32)],
+        children: Vec::new(),
+    });
+    if let Some(ts) = scene
+        .extras
+        .get("fbx:creation_time")
+        .and_then(|v| v.as_str())
+        .and_then(creation_timestamp_node)
+    {
+        children.push(ts);
+    }
+    if let Some(creator) = scene.extras.get("fbx:creator").and_then(|v| v.as_str()) {
+        children.push(leaf_string("Creator", creator));
+    }
+    if let Some(scene_info) = build_scene_info(scene) {
+        children.push(scene_info);
+    }
+
     FbxNode {
         name: "FBXHeaderExtension".to_string(),
         properties: Vec::new(),
-        children: vec![FbxNode {
-            name: "FBXVersion".to_string(),
-            properties: vec![FbxProperty::I32(version as i32)],
-            children: Vec::new(),
-        }],
+        children,
     }
+}
+
+/// Parse the decode side's composed `YYYY-MM-DDThh:mm:ss.mmm` stamp
+/// back into the §7a `CreationTimeStamp` integer sub-leaves. Returns
+/// `None` for a string that doesn't match the composed shape (the
+/// stamp is then simply not re-emitted — no guessing).
+fn creation_timestamp_node(stamp: &str) -> Option<FbxNode> {
+    let parts: Vec<i64> = stamp
+        .split(['-', 'T', ':', '.'])
+        .map(str::parse)
+        .collect::<std::result::Result<_, _>>()
+        .ok()?;
+    if parts.len() != 7 {
+        return None;
+    }
+    let names = [
+        "Year",
+        "Month",
+        "Day",
+        "Hour",
+        "Minute",
+        "Second",
+        "Millisecond",
+    ];
+    let mut children = vec![leaf_i32("Version", 1000)];
+    for (name, value) in names.iter().zip(&parts) {
+        children.push(leaf_i32(name, *value as i32));
+    }
+    Some(FbxNode {
+        name: "CreationTimeStamp".to_string(),
+        properties: Vec::new(),
+        children,
+    })
+}
+
+/// Build the §7a/§7c `SceneInfo` object (document `MetaData` block +
+/// `Original|*` application-provenance `Properties70`) from the
+/// round-tripped extras. Returns `None` when the scene carries no
+/// metadata / provenance keys at all.
+fn build_scene_info(scene: &Scene3D) -> Option<FbxNode> {
+    let mut meta_children = Vec::new();
+    for field in [
+        "Title", "Subject", "Author", "Keywords", "Revision", "Comment",
+    ] {
+        let key = format!("fbx:meta_{}", field.to_ascii_lowercase());
+        if let Some(val) = scene.extras.get(&key).and_then(|v| v.as_str()) {
+            meta_children.push(leaf_string(field, val));
+        }
+    }
+
+    let mut ps = Vec::new();
+    for (p_name, key) in [
+        ("Original|ApplicationVendor", "fbx:application_vendor"),
+        ("Original|ApplicationName", "fbx:application_name"),
+        ("Original|ApplicationVersion", "fbx:application_version"),
+        ("DocumentUrl", "fbx:document_url"),
+    ] {
+        if let Some(val) = scene.extras.get(key).and_then(|v| v.as_str()) {
+            ps.push(p_kstring(p_name, val));
+        }
+    }
+
+    if meta_children.is_empty() && ps.is_empty() {
+        return None;
+    }
+
+    let mut children = Vec::new();
+    if !meta_children.is_empty() {
+        let mut meta = vec![leaf_i32("Version", 100)];
+        meta.extend(meta_children);
+        children.push(FbxNode {
+            name: "MetaData".to_string(),
+            properties: Vec::new(),
+            children: meta,
+        });
+    }
+    if !ps.is_empty() {
+        children.push(FbxNode {
+            name: "Properties70".to_string(),
+            properties: Vec::new(),
+            children: ps,
+        });
+    }
+
+    Some(FbxNode {
+        name: "SceneInfo".to_string(),
+        properties: vec![
+            FbxProperty::String(b"SceneInfo::GlobalInfo".to_vec()),
+            FbxProperty::String(b"UserData".to_vec()),
+        ],
+        children,
+    })
+}
+
+/// `Takes { Current: "<name>"; Take: "<name>" { FileName; LocalTime;
+/// ReferenceTime } }` per `docs/3d/fbx/fbx-ascii-grammar.md` §7e —
+/// re-rendered from the `fbx:takes` / `fbx:current_take` extras the
+/// decode side surfaces (KTime pairs re-emitted as two `L` scalars,
+/// the shape the decode-side pair reader requires).
+fn build_takes(scene: &Scene3D) -> Option<FbxNode> {
+    let current = scene
+        .extras
+        .get("fbx:current_take")
+        .and_then(|v| v.as_str());
+    let takes = scene.extras.get("fbx:takes").and_then(|v| v.as_array());
+    if current.is_none() && takes.is_none() {
+        return None;
+    }
+
+    let mut children = Vec::new();
+    if let Some(name) = current {
+        children.push(leaf_string("Current", name));
+    }
+    for take in takes.into_iter().flatten() {
+        let Some(name) = take.get("name").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let mut take_children = Vec::new();
+        if let Some(fname) = take.get("file_name").and_then(|v| v.as_str()) {
+            take_children.push(leaf_string("FileName", fname));
+        }
+        for (leaf, key) in [
+            ("LocalTime", "local_time"),
+            ("ReferenceTime", "reference_time"),
+        ] {
+            if let Some(pair) = take.get(key).and_then(|v| v.as_array()) {
+                if let (Some(start), Some(stop)) = (
+                    pair.first().and_then(|v| v.as_i64()),
+                    pair.get(1).and_then(|v| v.as_i64()),
+                ) {
+                    take_children.push(FbxNode {
+                        name: leaf.to_string(),
+                        properties: vec![FbxProperty::I64(start), FbxProperty::I64(stop)],
+                        children: Vec::new(),
+                    });
+                }
+            }
+        }
+        children.push(FbxNode {
+            name: "Take".to_string(),
+            properties: vec![FbxProperty::String(name.as_bytes().to_vec())],
+            children: take_children,
+        });
+    }
+
+    Some(FbxNode {
+        name: "Takes".to_string(),
+        properties: Vec::new(),
+        children,
+    })
 }
 
 /// `GlobalSettings { Version; Properties70 { UpAxis...; UnitScaleFactor } }`
@@ -1441,6 +1629,22 @@ fn p_number(name: &str, v: f64) -> FbxNode {
 /// shape (`Opacity`).
 fn p_double(name: &str, v: f64) -> FbxNode {
     p_scalar(name, "double", v)
+}
+
+/// `P: "<name>", "KString", "", "", "<v>"` — the `KString`-typed
+/// string shape (`Original|Application*` / `DocumentUrl`).
+fn p_kstring(name: &str, v: &str) -> FbxNode {
+    FbxNode {
+        name: "P".to_string(),
+        properties: vec![
+            FbxProperty::String(name.as_bytes().to_vec()),
+            FbxProperty::String(b"KString".to_vec()),
+            FbxProperty::String(Vec::new()),
+            FbxProperty::String(Vec::new()),
+            FbxProperty::String(v.as_bytes().to_vec()),
+        ],
+        children: Vec::new(),
+    }
 }
 
 /// `P: "<name>", "bool", "", "", v` — the `bool`-typed scalar shape

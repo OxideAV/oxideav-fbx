@@ -898,3 +898,125 @@ fn cameras_survive_round_trip() {
         other => panic!("expected Orthographic, got {other:?}"),
     }
 }
+
+// ---------------------------------------------------------------------
+// Round 384 — encoder Takes + FBXHeaderExtension metadata emission.
+// ---------------------------------------------------------------------
+
+/// Authoring metadata (creator / creation time / document MetaData /
+/// application provenance) and the Takes catalogue survive a
+/// decode → encode → decode cycle via the round-tripped extras.
+#[test]
+fn header_metadata_and_takes_survive_round_trip() {
+    let mut scene = Scene3D::new();
+    let mid = scene.add_mesh(quad_with_normals_and_uvs("M"));
+    let nid = scene.add_node(Node::new().with_mesh(mid));
+    scene.roots.push(nid);
+
+    for (k, v) in [
+        ("fbx:creator", serde_json::json!("OxideAV test writer")),
+        ("fbx:header_version", serde_json::json!(1003)),
+        (
+            "fbx:creation_time",
+            serde_json::json!("2019-01-07T16:17:31.730"),
+        ),
+        ("fbx:meta_title", serde_json::json!("A quad")),
+        ("fbx:meta_author", serde_json::json!("A. Author")),
+        ("fbx:application_name", serde_json::json!("Maya")),
+        ("fbx:application_vendor", serde_json::json!("Autodesk")),
+        ("fbx:application_version", serde_json::json!("201800")),
+        ("fbx:document_url", serde_json::json!("/tmp/a.fbx")),
+        ("fbx:current_take", serde_json::json!("Take 001")),
+        (
+            "fbx:takes",
+            serde_json::json!([{
+                "name": "Take 001",
+                "file_name": "Take_001.tak",
+                "local_time": [1924423250i64, 230930790000i64],
+                "reference_time": [1924423250i64, 230930790000i64],
+            }]),
+        ),
+    ] {
+        scene.extras.insert(k.to_string(), v);
+    }
+
+    let scene2 = decode(&encode_binary(&scene));
+    let s = |k: &str| {
+        scene2
+            .extras
+            .get(k)
+            .and_then(|v| v.as_str())
+            .map(str::to_owned)
+    };
+    assert_eq!(s("fbx:creator").as_deref(), Some("OxideAV test writer"));
+    assert_eq!(
+        scene2
+            .extras
+            .get("fbx:header_version")
+            .and_then(|v| v.as_i64()),
+        Some(1003)
+    );
+    assert_eq!(
+        s("fbx:creation_time").as_deref(),
+        Some("2019-01-07T16:17:31.730")
+    );
+    assert_eq!(s("fbx:meta_title").as_deref(), Some("A quad"));
+    assert_eq!(s("fbx:meta_author").as_deref(), Some("A. Author"));
+    assert_eq!(s("fbx:application_name").as_deref(), Some("Maya"));
+    assert_eq!(s("fbx:application_vendor").as_deref(), Some("Autodesk"));
+    assert_eq!(s("fbx:application_version").as_deref(), Some("201800"));
+    assert_eq!(s("fbx:document_url").as_deref(), Some("/tmp/a.fbx"));
+    assert_eq!(s("fbx:current_take").as_deref(), Some("Take 001"));
+    let takes = scene2
+        .extras
+        .get("fbx:takes")
+        .and_then(|v| v.as_array())
+        .expect("takes survive");
+    assert_eq!(takes.len(), 1);
+    assert_eq!(
+        takes[0].get("name").and_then(|v| v.as_str()),
+        Some("Take 001")
+    );
+    assert_eq!(
+        takes[0].get("file_name").and_then(|v| v.as_str()),
+        Some("Take_001.tak")
+    );
+    assert_eq!(
+        takes[0].get("local_time"),
+        Some(&serde_json::json!([1924423250i64, 230930790000i64]))
+    );
+}
+
+/// The same metadata survives through the ASCII writer form too (one
+/// walker covers both front-ends).
+#[test]
+fn header_metadata_survives_ascii_round_trip() {
+    let mut scene = Scene3D::new();
+    let mid = scene.add_mesh(quad_with_normals_and_uvs("M"));
+    let nid = scene.add_node(Node::new().with_mesh(mid));
+    scene.roots.push(nid);
+    scene.extras.insert(
+        "fbx:creator".to_string(),
+        serde_json::json!("ASCII writer test"),
+    );
+    scene
+        .extras
+        .insert("fbx:current_take".to_string(), serde_json::json!("T1"));
+
+    let bytes = FbxEncoder::new()
+        .form(FbxOutputForm::Ascii)
+        .encode(&scene)
+        .expect("ascii encode");
+    let scene2 = decode(&bytes);
+    assert_eq!(
+        scene2.extras.get("fbx:creator").and_then(|v| v.as_str()),
+        Some("ASCII writer test")
+    );
+    assert_eq!(
+        scene2
+            .extras
+            .get("fbx:current_take")
+            .and_then(|v| v.as_str()),
+        Some("T1")
+    );
+}
