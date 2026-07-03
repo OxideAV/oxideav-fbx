@@ -280,18 +280,44 @@ pub fn encode_scene_with_options(scene: &Scene3D, opts: &SceneEncodeOptions) -> 
         }
     }
 
+    // -- Deformers (round 384) -------------------------------------------
+    // Skin / Cluster trees for every skinned node + BlendShape /
+    // BlendShapeChannel / Geometry{Shape} trees for every primitive
+    // carrying morph targets. Runs before the animation pass so
+    // MorphWeights channels can target the emitted BlendShapeChannel
+    // element ids.
+    let deformer_emit = crate::deformer_writer::build_deformer_objects(
+        scene,
+        |mi| mesh_ids.get(mi).copied(),
+        |ni| node_ids.get(ni).copied(),
+        || alloc.next(),
+    );
+    let morph_channels = deformer_emit.morph_channels;
+    objects.children.extend(deformer_emit.objects);
+    connections.children.extend(deformer_emit.connections);
+
     // -- Animation graph (round 377) ------------------------------------
     // One AnimationStack / AnimationLayer per Scene3D::Animation, plus
     // the AnimationCurveNode / AnimationCurve records + OO/OP chain the
     // decode path's extract_animations walks. Channels target the Model
-    // record for the scene NodeId via the node-id → fbx-id map below.
+    // record for the scene NodeId via the node-id → fbx-id map below;
+    // MorphWeights channels target the node's first BlendShapeChannel
+    // via a DeformPercent OP connection (round 384).
     if !scene.animations.is_empty() {
         let node_to_fbx =
             |nid: oxideav_mesh3d::NodeId| -> Option<i64> { node_ids.get(nid.0 as usize).copied() };
-        let anim_emit =
-            crate::anim_writer::build_animation_objects(&scene.animations, node_to_fbx, || {
-                alloc.next()
-            });
+        let morph_channel_for = |nid: oxideav_mesh3d::NodeId| -> Option<i64> {
+            morph_channels
+                .iter()
+                .find(|(n, _)| *n == nid)
+                .and_then(|(_, ids)| ids.first().copied())
+        };
+        let anim_emit = crate::anim_writer::build_animation_objects(
+            &scene.animations,
+            node_to_fbx,
+            morph_channel_for,
+            || alloc.next(),
+        );
         objects.children.extend(anim_emit.objects);
         connections.children.extend(anim_emit.connections);
     }

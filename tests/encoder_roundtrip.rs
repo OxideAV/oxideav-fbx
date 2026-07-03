@@ -550,3 +550,202 @@ fn multi_material_slot_table_survives_round_trip() {
         Some("ByPolygon"),
     );
 }
+
+// ---------------------------------------------------------------------
+// Round 384 — encoder deformer emission (skin + blend shapes) and
+// morph-weight animation channels.
+// ---------------------------------------------------------------------
+
+/// A two-bone skinned quad survives decode → encode → decode: the
+/// Skin / Cluster tree rebuilds the skeleton (joint order preserved),
+/// the exact inverse-bind matrices, the per-corner top-4 joint /
+/// weight buffers, and the node's skin binding.
+#[test]
+fn skinned_mesh_survives_round_trip() {
+    use oxideav_mesh3d::{Skeleton, Skin};
+
+    let mut scene = Scene3D::new();
+    let mut mesh = quad_with_normals_and_uvs("Skinned");
+    {
+        let prim = &mut mesh.primitives[0];
+        // Corners 0..2 → joint 0 only; corners 3..5 → blended 0.75/0.25.
+        prim.joints = Some(vec![
+            [0, 0, 0, 0],
+            [0, 0, 0, 0],
+            [0, 0, 0, 0],
+            [0, 1, 0, 0],
+            [0, 1, 0, 0],
+            [0, 1, 0, 0],
+        ]);
+        prim.weights = Some(vec![
+            [1.0, 0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0, 0.0],
+            [0.75, 0.25, 0.0, 0.0],
+            [0.75, 0.25, 0.0, 0.0],
+            [0.75, 0.25, 0.0, 0.0],
+        ]);
+    }
+    let mid = scene.add_mesh(mesh);
+    let bone0 = scene.add_node(Node::new().with_name("B0"));
+    let bone1 = scene.add_node(Node::new().with_name("B1"));
+
+    let mut skel = Skeleton::new();
+    skel.joints.push(bone0);
+    skel.joints.push(bone1);
+    // Distinct, exactly-representable inverse-bind translations.
+    let ib0 = [
+        [1.0, 0.0, 0.0, -2.0],
+        [0.0, 1.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0, 0.0],
+        [0.0, 0.0, 0.0, 1.0],
+    ];
+    let ib1 = [
+        [1.0, 0.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0, -3.5],
+        [0.0, 0.0, 1.0, 0.0],
+        [0.0, 0.0, 0.0, 1.0],
+    ];
+    skel.inverse_bind_matrices.push(ib0);
+    skel.inverse_bind_matrices.push(ib1);
+    let skel_id = scene.add_skeleton(skel);
+    let skin_id = scene.add_skin(Skin::new(skel_id));
+
+    let mut mesh_node = Node::new().with_name("SkinnedNode").with_mesh(mid);
+    mesh_node.skin = Some(skin_id);
+    let nid = scene.add_node(mesh_node);
+    scene.roots.push(nid);
+
+    let scene2 = decode(&encode_binary(&scene));
+    assert_eq!(scene2.skins.len(), 1, "one skin rebuilt");
+    assert_eq!(scene2.skeletons.len(), 1, "one skeleton rebuilt");
+    let skel2 = &scene2.skeletons[0];
+    assert_eq!(skel2.joints.len(), 2, "both joints rebuilt");
+    // Joint order preserved (Cluster -> Skin connection order).
+    assert_eq!(
+        scene2.nodes[skel2.joints[0].0 as usize].name.as_deref(),
+        Some("B0")
+    );
+    assert_eq!(
+        scene2.nodes[skel2.joints[1].0 as usize].name.as_deref(),
+        Some("B1")
+    );
+    // Inverse-bind matrices survive exactly (Transform = inverse-bind,
+    // TransformLink = identity — no float inversion on either side).
+    for (got, want) in [
+        (&skel2.inverse_bind_matrices[0], &ib0),
+        (&skel2.inverse_bind_matrices[1], &ib1),
+    ] {
+        for r in 0..4 {
+            for c in 0..4 {
+                assert!(
+                    (got[r][c] - want[r][c]).abs() < 1e-6,
+                    "inverse-bind [{r}][{c}]: {} vs {}",
+                    got[r][c],
+                    want[r][c]
+                );
+            }
+        }
+    }
+    // The mesh's node carries the skin.
+    let skinned = scene2
+        .nodes
+        .iter()
+        .find(|n| n.name.as_deref() == Some("SkinnedNode"))
+        .expect("mesh node survives");
+    assert!(skinned.skin.is_some(), "node.skin rebound");
+    // Per-corner buffers.
+    let prim = &scene2.meshes[0].primitives[0];
+    let joints = prim.joints.as_ref().expect("joints buffer");
+    let weights = prim.weights.as_ref().expect("weights buffer");
+    assert_eq!(joints.len(), 6);
+    assert!((weights[0][0] - 1.0).abs() < 1e-6, "corner 0 fully joint 0");
+    assert_eq!(joints[0][0], 0);
+    assert!((weights[3][0] - 0.75).abs() < 1e-6, "corner 3 blended");
+    assert!((weights[3][1] - 0.25).abs() < 1e-6);
+    assert_eq!(joints[3][0], 0);
+    assert_eq!(joints[3][1], 1);
+}
+
+/// A morph target (sparse position + normal deltas) and its
+/// MorphWeights animation channel survive the round trip through the
+/// BlendShape / BlendShapeChannel / Geometry{Shape} tree + the
+/// DeformPercent curve chain.
+#[test]
+fn morph_target_and_weight_animation_survive_round_trip() {
+    use oxideav_mesh3d::MorphTarget;
+
+    let mut scene = Scene3D::new();
+    let mut mesh = quad_with_normals_and_uvs("Morphed");
+    {
+        let prim = &mut mesh.primitives[0];
+        let mut tgt = MorphTarget::new();
+        // Sparse deltas: corners 0 and 4 move; the rest stay.
+        let mut pos = vec![[0.0f32; 3]; 6];
+        pos[0] = [0.0, 0.0, 1.5];
+        pos[4] = [0.25, -0.5, 0.0];
+        let mut nrm = vec![[0.0f32; 3]; 6];
+        nrm[0] = [0.0, 1.0, 0.0];
+        tgt.position = Some(pos.clone());
+        tgt.normal = Some(nrm.clone());
+        prim.targets.push(tgt);
+        mesh.weights.push(0.0);
+    }
+    let mid = scene.add_mesh(mesh);
+    let nid = scene.add_node(Node::new().with_name("MorphNode").with_mesh(mid));
+    scene.roots.push(nid);
+
+    // MorphWeights animation: DeformPercent ramps 0 → 100.
+    let mut anim = Animation::new(Some("MorphClip".to_string()));
+    anim.channels.push(AnimationChannel {
+        target: AnimationTarget {
+            node: nid,
+            property: AnimationProperty::MorphWeights,
+        },
+        sampler: AnimationSampler {
+            keyframes: vec![0.0, 1.0, 2.0],
+            values: AnimationValues::Scalar(vec![0.0, 50.0, 100.0]),
+            interpolation: Interpolation::Linear,
+        },
+    });
+    scene.add_animation(anim);
+
+    let scene2 = decode(&encode_binary(&scene));
+
+    // Morph target rebuilt on the primitive.
+    let prim = &scene2.meshes[0].primitives[0];
+    assert_eq!(prim.targets.len(), 1, "one morph target");
+    let tgt = &prim.targets[0];
+    let pos = tgt.position.as_ref().expect("position deltas");
+    assert_eq!(pos.len(), 6);
+    assert!((pos[0][2] - 1.5).abs() < 1e-6);
+    assert!((pos[4][0] - 0.25).abs() < 1e-6);
+    assert!((pos[4][1] + 0.5).abs() < 1e-6);
+    assert_eq!(pos[1], [0.0, 0.0, 0.0], "untouched corner stays zero");
+    let nrm = tgt.normal.as_ref().expect("normal deltas");
+    assert!((nrm[0][1] - 1.0).abs() < 1e-6);
+
+    // MorphWeights channel rebuilt through the DeformPercent chain.
+    assert_eq!(scene2.animations.len(), 1);
+    let anim2 = &scene2.animations[0];
+    assert_eq!(anim2.name.as_deref(), Some("MorphClip"));
+    let ch = anim2
+        .channels
+        .iter()
+        .find(|c| c.target.property == AnimationProperty::MorphWeights)
+        .expect("MorphWeights channel survives");
+    assert_eq!(ch.sampler.keyframes.len(), 3);
+    match &ch.sampler.values {
+        AnimationValues::Scalar(v) => {
+            assert!((v[0] - 0.0).abs() < 1e-4);
+            assert!((v[1] - 50.0).abs() < 1e-4);
+            assert!((v[2] - 100.0).abs() < 1e-4);
+        }
+        other => panic!("expected Scalar values, got {other:?}"),
+    }
+    // The channel targets the mesh's node.
+    assert_eq!(
+        scene2.nodes[ch.target.node.0 as usize].name.as_deref(),
+        Some("MorphNode")
+    );
+}

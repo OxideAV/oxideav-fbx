@@ -200,6 +200,10 @@ pub mod decoder;
 /// each object's own records (round 280).
 pub mod definitions;
 pub mod deformer;
+/// Deformer emission for the encoder — `Skin` / `Cluster` /
+/// `BlendShape` / `BlendShapeChannel` / `Geometry{Shape}` object
+/// trees, the inverse of [`deformer::extract_deformers`] (round 384).
+pub(crate) mod deformer_writer;
 /// [`encoder::FbxEncoder`] — `Scene3D`-in, FBX bytes-out
 /// ([`oxideav_mesh3d::Mesh3DEncoder`]). The symmetric counterpart to
 /// [`decoder::FbxDecoder`] (round 377).

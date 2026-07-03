@@ -24,11 +24,13 @@
 //!   quaternion keyframe is converted to XYZ-Euler degrees (the inverse
 //!   of [`crate::animation::euler_xyz_to_quat`], the convention the
 //!   decode path reads) and split into the same three component curves.
-//! - **MorphWeights** ([`oxideav_mesh3d::AnimationValues::Scalar`]) are
-//!   *not* emitted here: round-tripping them needs the
-//!   `BlendShapeChannel -> DeformPercent` deformer wiring, which the
-//!   encoder doesn't yet synthesise (a follow-up). The static deformer
-//!   surface is unaffected.
+//! - **MorphWeights** ([`oxideav_mesh3d::AnimationValues::Scalar`]) —
+//!   one `AnimationCurveNode` per channel, OP-connected to the target
+//!   node's first `BlendShapeChannel` (emitted by
+//!   [`crate::deformer_writer`]) under the `"DeformPercent"` property
+//!   name, with a single `"d|DeformPercent"` curve carrying the raw
+//!   scalar keyframes (the decode side reads them back verbatim — no
+//!   scaling is applied in either direction).
 //!
 //! # Time units
 //!
@@ -55,11 +57,14 @@ pub(crate) struct AnimEmit {
 /// `node_fbx_id(node_id)` resolves a scene [`NodeId`] to the FBX
 /// `Model` element id the [`crate::scene_writer`] assigned (so the
 /// `AnimationCurveNode -> Model` OP connection points at the right
-/// Model record). `alloc` hands out fresh FBX ids for the animation
-/// elements.
+/// Model record). `morph_channel_id(node_id)` resolves a node to its
+/// first emitted `BlendShapeChannel` element id (the `DeformPercent`
+/// OP target for MorphWeights channels). `alloc` hands out fresh FBX
+/// ids for the animation elements.
 pub(crate) fn build_animation_objects(
     animations: &[Animation],
     node_fbx_id: impl Fn(NodeId) -> Option<i64>,
+    morph_channel_id: impl Fn(NodeId) -> Option<i64>,
     mut alloc: impl FnMut() -> i64,
 ) -> AnimEmit {
     let mut objects = Vec::new();
@@ -90,9 +95,36 @@ pub(crate) fn build_animation_objects(
                 AnimationProperty::Translation => "Lcl Translation",
                 AnimationProperty::Rotation => "Lcl Rotation",
                 AnimationProperty::Scale => "Lcl Scaling",
-                // MorphWeights needs the deformer wiring; skip (the
-                // static morph surface still round-trips).
-                AnimationProperty::MorphWeights => continue,
+                // MorphWeights — a single-curve DeformPercent channel
+                // targeting the node's BlendShapeChannel deformer.
+                AnimationProperty::MorphWeights => {
+                    let Some(channel_fbx) = morph_channel_id(ch.target.node) else {
+                        continue;
+                    };
+                    let AnimationValues::Scalar(vals) = &ch.sampler.values else {
+                        continue;
+                    };
+                    let times = &ch.sampler.keyframes;
+                    if vals.len() != times.len() {
+                        continue;
+                    }
+                    let curve_node_id = alloc();
+                    objects.push(element(
+                        "AnimationCurveNode",
+                        curve_node_id,
+                        "DeformPercent",
+                        "",
+                        Vec::new(),
+                    ));
+                    // AnimationCurveNode -> BlendShapeChannel OP.
+                    connections.push(conn_op(curve_node_id, channel_fbx, "DeformPercent"));
+                    // AnimationCurveNode -> AnimationLayer OO.
+                    connections.push(conn_oo(curve_node_id, layer_id));
+                    let curve_id = alloc();
+                    objects.push(build_curve(curve_id, times, vals));
+                    connections.push(conn_op(curve_id, curve_node_id, "d|DeformPercent"));
+                    continue;
+                }
             };
             let model_id = match node_fbx_id(ch.target.node) {
                 Some(id) => id,
