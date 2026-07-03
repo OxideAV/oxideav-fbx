@@ -486,3 +486,67 @@ fn indexed_attributes_expand_through_index_buffer() {
     assert_eq!(prim.colors.len(), 1);
     assert!((prim.colors[0][4][2] - 1.0).abs() < 1e-6, "blue expanded");
 }
+
+/// A two-material mesh (per-face slot split) re-emits the
+/// `LayerElementMaterial` `ByPolygon` table + slot-ordered
+/// `Material -> Model` OO connections, and the decode side rebuilds
+/// the same slot tables.
+#[test]
+fn multi_material_slot_table_survives_round_trip() {
+    let mut scene = Scene3D::new();
+    let mat_a = scene.add_material(
+        Material::new()
+            .with_name("A")
+            .with_base_color([0.9, 0.1, 0.1, 1.0]),
+    );
+    let mat_b = scene.add_material(
+        Material::new()
+            .with_name("B")
+            .with_base_color([0.1, 0.1, 0.9, 1.0]),
+    );
+
+    let mut mesh = quad_with_normals_and_uvs("TwoMat");
+    {
+        let prim = &mut mesh.primitives[0];
+        prim.material = Some(mat_a);
+        // Triangle 0 → slot 0, triangle 1 → slot 1 (per-corner form,
+        // the shape the decode side stashes).
+        prim.extras.insert(
+            "fbx:face_material_slots".to_string(),
+            serde_json::json!([0, 0, 0, 1, 1, 1]),
+        );
+        prim.extras.insert(
+            "fbx:material_slots".to_string(),
+            serde_json::json!([mat_a.0, mat_b.0]),
+        );
+    }
+    let mid = scene.add_mesh(mesh);
+    let nid = scene.add_node(Node::new().with_mesh(mid));
+    scene.roots.push(nid);
+
+    let scene2 = decode(&encode_binary(&scene));
+    assert_eq!(scene2.materials.len(), 2, "both materials survive");
+    let prim = &scene2.meshes[0].primitives[0];
+    // Slot 0 binding preserved.
+    let m0 = prim.material.expect("slot-0 material bound");
+    assert!(
+        (scene2.materials[m0.0 as usize].base_color[0] - 0.9).abs() < 1e-3,
+        "slot 0 is the red material"
+    );
+    // Full slot table rebuilt from the OO connections.
+    assert_eq!(
+        prim.extras.get("fbx:material_slots"),
+        Some(&serde_json::json!([m0.0, 1 - m0.0])),
+    );
+    // Per-face table rebuilt from LayerElementMaterial.
+    assert_eq!(
+        prim.extras.get("fbx:face_material_slots"),
+        Some(&serde_json::json!([0, 0, 0, 1, 1, 1])),
+    );
+    assert_eq!(
+        prim.extras
+            .get("fbx:material_mapping")
+            .and_then(|v| v.as_str()),
+        Some("ByPolygon"),
+    );
+}

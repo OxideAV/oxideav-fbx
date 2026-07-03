@@ -232,17 +232,24 @@ pub fn encode_scene_with_options(scene: &Scene3D, opts: &SceneEncodeOptions) -> 
             let gid = mesh_ids[mid.0 as usize];
             connections.children.push(connection_oo(gid, node_ids[ni]));
         }
-        // Material → Model surface assignment. The first material on
-        // the mesh's first primitive binds to the model.
+        // Material → Model surface assignment. Slot order matters:
+        // the decode side rebuilds `fbx:material_slots` from the
+        // `Material -> Model` OO connections in document order, and
+        // the `LayerElementMaterial` per-polygon indices key into
+        // that same slot vector. Multi-material primitives carry the
+        // full slot table on `extras["fbx:material_slots"]`
+        // (round-tripped from a decoded mesh); single-binding
+        // primitives contribute their lone `Primitive::material`.
         if let Some(mid) = node.mesh {
             if let Some(prim) = scene
                 .meshes
                 .get(mid.0 as usize)
                 .and_then(|m| m.primitives.first())
             {
-                if let Some(matid) = prim.material {
-                    let xid = material_ids[matid.0 as usize];
-                    connections.children.push(connection_oo(xid, node_ids[ni]));
+                for slot in material_slot_table(prim, scene.materials.len()) {
+                    connections
+                        .children
+                        .push(connection_oo(material_ids[slot], node_ids[ni]));
                 }
             }
         }
@@ -491,6 +498,14 @@ fn build_geometry(mesh: &Mesh, id: i64, opts: &SceneEncodeOptions) -> FbxNode {
     let mut tangents_xyz: Vec<f64> = Vec::new();
     let mut tangents_w: Vec<f64> = Vec::new();
     let mut have_tangents = true;
+    // Per-triangle material slot indices (`LayerElementMaterial`
+    // `ByPolygon` payload — every emitted polygon is a triangle).
+    // Only emitted when at least one primitive carries the
+    // extras-borne `fbx:face_material_slots` table (round-tripped
+    // from a decoded multi-material mesh); primitives without one
+    // contribute slot 0.
+    let mut face_slots: Vec<i32> = Vec::new();
+    let mut have_face_slots = false;
 
     let mut corner: i32 = 0;
     for prim in &mesh.primitives {
@@ -579,6 +594,29 @@ fn build_geometry(mesh: &Mesh, id: i64, opts: &SceneEncodeOptions) -> FbxNode {
             }
             _ => have_tangents = false,
         }
+        // Per-face material slots — one entry per triangle, pulled
+        // from the per-corner extras table (corner 3t speaks for the
+        // whole triangle; the decode side broadcast it per corner).
+        match prim
+            .extras
+            .get("fbx:face_material_slots")
+            .and_then(|v| v.as_array())
+        {
+            Some(arr) if arr.len() == n_corners => {
+                have_face_slots = true;
+                for t in 0..tri_count {
+                    let s = arr
+                        .get(t * 3)
+                        .and_then(|v| v.as_i64())
+                        .unwrap_or(0)
+                        .clamp(0, i32::MAX as i64) as i32;
+                    face_slots.push(s);
+                }
+            }
+            _ => {
+                face_slots.resize(face_slots.len() + tri_count, 0);
+            }
+        }
     }
 
     let mut children = vec![
@@ -613,6 +651,9 @@ fn build_geometry(mesh: &Mesh, id: i64, opts: &SceneEncodeOptions) -> FbxNode {
     }
     if opts.emit_tangents && have_tangents && !tangents_xyz.is_empty() {
         children.push(layer_element_tangent(tangents_xyz, tangents_w));
+    }
+    if have_face_slots && !face_slots.is_empty() {
+        children.push(layer_element_material(face_slots));
     }
 
     FbxNode {
@@ -785,6 +826,28 @@ fn layer_element_tangent(xyz: Vec<f64>, w: Vec<f64>) -> FbxNode {
             FbxNode {
                 name: "TangentsW".to_string(),
                 properties: vec![FbxProperty::F64Array(w)],
+                children: Vec::new(),
+            },
+        ],
+    }
+}
+
+/// `LayerElementMaterial` — per-polygon material slot indices
+/// (`ByPolygon` / `IndexToDirect`, the form the decode side's
+/// material-slot puller reads; slot indices key the
+/// `Material -> Model` OO connections in document order).
+fn layer_element_material(per_polygon_slots: Vec<i32>) -> FbxNode {
+    FbxNode {
+        name: "LayerElementMaterial".to_string(),
+        properties: vec![FbxProperty::I32(0)],
+        children: vec![
+            leaf_i32("Version", 101),
+            leaf_string("Name", ""),
+            leaf_string("MappingInformationType", "ByPolygon"),
+            leaf_string("ReferenceInformationType", "IndexToDirect"),
+            FbxNode {
+                name: "Materials".to_string(),
+                properties: vec![FbxProperty::I32Array(per_polygon_slots)],
                 children: Vec::new(),
             },
         ],
@@ -970,6 +1033,35 @@ fn build_material(mat: &Material, id: i64) -> FbxNode {
         ],
         children,
     }
+}
+
+/// A primitive's material slot table in FBX OO-connection order —
+/// the extras-borne multi-material table
+/// (`extras["fbx:material_slots"]`, a JSON array of `MaterialId.0`
+/// indices the decode side stashed from the N `Material -> Model`
+/// connections) when present, else the single bound
+/// [`Primitive::material`]. Out-of-range indices are dropped.
+fn material_slot_table(prim: &Primitive, n_materials: usize) -> Vec<usize> {
+    if let Some(arr) = prim
+        .extras
+        .get("fbx:material_slots")
+        .and_then(|v| v.as_array())
+    {
+        let slots: Vec<usize> = arr
+            .iter()
+            .filter_map(|v| v.as_u64())
+            .map(|v| v as usize)
+            .filter(|&i| i < n_materials)
+            .collect();
+        if !slots.is_empty() {
+            return slots;
+        }
+    }
+    prim.material
+        .map(|m| m.0 as usize)
+        .into_iter()
+        .filter(|&i| i < n_materials)
+        .collect()
 }
 
 /// Enumerate a material's bound texture slots as
