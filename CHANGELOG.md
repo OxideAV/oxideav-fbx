@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Round 398 — **`ByPolygon` + `AllSame` LayerElement mapping modes.**
+  The `LayerElementNormal` / `LayerElementUV` / `LayerElementColor` /
+  `LayerElementTangent` / `LayerElementBinormal` pullers previously
+  flattened only `ByPolygonVertex` and `ByVertex` (`ByVertice`)
+  mapping modes, deferring `ByPolygon` (per-source-polygon / flat
+  attributes) and `AllSame` (one value for the whole mesh). Both are
+  now flattened per `docs/3d/fbx/fbx-binary-properties70.md` §6.4:
+  `ByPolygon` keys the data array by the source polygon each triangle
+  was fanned from (`tri_polygon_index`), `AllSame` broadcasts element
+  0 to every corner. Both `Direct` and `IndexToDirect`
+  `ReferenceInformationType` are honoured for the new modes. A single
+  shared `resolve_layer_indices` helper now backs all four
+  scalar/vec2/vec3/vec4 pullers, so the mapping/reference matrix is
+  resolved identically across every attribute arity. Genuinely
+  un-flattenable modes (`ByEdge` — needs an edge table the mesh does
+  not carry) still surface no per-corner buffer rather than
+  mis-attribute the payload. New `synthetic_multi_normal` tests cover
+  `ByPolygon`/`Direct`, `ByPolygon`/`IndexToDirect`, and `AllSame`.
+
 - Round 384 — **encoder round-trip parity drive.** Seven encoder
   surfaces the round-377 `Scene3D` → FBX encoder deferred now survive
   a full `decode → encode → decode` cycle:

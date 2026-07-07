@@ -339,3 +339,116 @@ fn two_normal_layers_first_canonical_rest_in_extras() {
     assert_eq!(mapping.len(), 1);
     assert_eq!(mapping[0].as_str(), Some("ByVertex"));
 }
+
+// ---------------------------------------------------------------------------
+// `ByPolygon` and `AllSame` mapping modes (canonical channel-0 normals).
+//
+// A two-triangle-polygon mesh: 6 vertices, PVI = [0,1,~2, 3,4,~5], i.e.
+// polygon 0 = (v0,v1,v2), polygon 1 = (v3,v4,v5). Fan-triangulates 1:1
+// (each polygon is already a triangle) -> 2 triangles / 6 corners with
+// `tri_polygon_index = [0, 1]`.
+// ---------------------------------------------------------------------------
+
+const TWO_TRI_VERTICES: &[f64] = &[
+    0.0, 0.0, 0.0, // v0
+    1.0, 0.0, 0.0, // v1
+    0.0, 1.0, 0.0, // v2
+    2.0, 0.0, 0.0, // v3
+    3.0, 0.0, 0.0, // v4
+    2.0, 1.0, 0.0, // v5
+];
+const TWO_TRI_PVI: &[i32] = &[0, 1, !2, 3, 4, !5];
+
+fn build_fbx_custom_geometry(normal0: Rec, vertices: &[f64], pvi: &[i32]) -> Vec<u8> {
+    let geom = Rec::new("Geometry")
+        .with_prop_i64(100)
+        .with_prop_string(b"Quad\x00\x01Geometry")
+        .with_prop_string(b"Mesh")
+        .with_child(Rec::new("Vertices").with_prop_f64_array(vertices))
+        .with_child(Rec::new("PolygonVertexIndex").with_prop_i32_array(pvi))
+        .with_child(normal0);
+    let objects = Rec::new("Objects").with_child(geom).with_child(
+        Rec::new("Model")
+            .with_prop_i64(200)
+            .with_prop_string(b"QuadModel\x00\x01Model")
+            .with_prop_string(b"Mesh"),
+    );
+    let mut buf = Vec::new();
+    buf.extend_from_slice(FBX_MAGIC);
+    buf.extend_from_slice(&[0x1A, 0x00]);
+    buf.extend_from_slice(&7400u32.to_le_bytes());
+    let base_offset = buf.len();
+    let mut body = Vec::new();
+    serialize_node(&objects, &mut body, base_offset);
+    serialize_node(&build_connections(), &mut body, base_offset);
+    body.extend_from_slice(&[0u8; NULL_RECORD_BYTES_32]);
+    buf.extend_from_slice(&body);
+    buf
+}
+
+#[test]
+fn by_polygon_normals_flatten_per_polygon() {
+    // Two polygons, one normal each: poly0 = +Z, poly1 = +X.
+    let normals = &[
+        0.0, 0.0, 1.0, // polygon 0 (+Z)
+        1.0, 0.0, 0.0, // polygon 1 (+X)
+    ];
+    let layer0 = normal_layer(0, b"ByPolygon", normals);
+    let bytes = build_fbx_custom_geometry(layer0, TWO_TRI_VERTICES, TWO_TRI_PVI);
+    let mut dec = FbxDecoder::new();
+    let scene = dec.decode(&bytes).expect("ByPolygon normals decode");
+    let prim = &scene.meshes[0].primitives[0];
+
+    let got = prim.normals.as_ref().expect("ByPolygon normals surfaced");
+    assert_eq!(got.len(), 6, "one normal per triangle corner");
+    // Corners 0,1,2 belong to polygon 0 (+Z); 3,4,5 to polygon 1 (+X).
+    assert_eq!(got[0], [0.0, 0.0, 1.0]);
+    assert_eq!(got[1], [0.0, 0.0, 1.0]);
+    assert_eq!(got[2], [0.0, 0.0, 1.0]);
+    assert_eq!(got[3], [1.0, 0.0, 0.0]);
+    assert_eq!(got[4], [1.0, 0.0, 0.0]);
+    assert_eq!(got[5], [1.0, 0.0, 0.0]);
+}
+
+#[test]
+fn all_same_normals_broadcast_to_every_corner() {
+    // AllSame: a single normal applies to the whole mesh.
+    let normals = &[0.0, 1.0, 0.0]; // +Y for all corners
+    let layer0 = normal_layer(0, b"AllSame", normals);
+    let bytes = build_fbx_custom_geometry(layer0, TWO_TRI_VERTICES, TWO_TRI_PVI);
+    let mut dec = FbxDecoder::new();
+    let scene = dec.decode(&bytes).expect("AllSame normals decode");
+    let prim = &scene.meshes[0].primitives[0];
+
+    let got = prim.normals.as_ref().expect("AllSame normals surfaced");
+    assert_eq!(got.len(), 6);
+    for n in got {
+        assert_eq!(*n, [0.0, 1.0, 0.0]);
+    }
+}
+
+#[test]
+fn by_polygon_normals_index_to_direct() {
+    // ByPolygon + IndexToDirect: NormalsIndex keys per polygon into the
+    // Normals data pool.
+    let normals = &[
+        0.0, 0.0, 1.0, // pool[0] = +Z
+        1.0, 0.0, 0.0, // pool[1] = +X
+    ];
+    let layer0 = Rec::new("LayerElementNormal")
+        .with_prop_i64(0)
+        .with_child(Rec::new("MappingInformationType").with_prop_string(b"ByPolygon"))
+        .with_child(Rec::new("ReferenceInformationType").with_prop_string(b"IndexToDirect"))
+        .with_child(Rec::new("Normals").with_prop_f64_array(normals))
+        // polygon 0 -> pool[1] (+X); polygon 1 -> pool[0] (+Z).
+        .with_child(Rec::new("NormalsIndex").with_prop_i32_array(&[1, 0]));
+    let bytes = build_fbx_custom_geometry(layer0, TWO_TRI_VERTICES, TWO_TRI_PVI);
+    let mut dec = FbxDecoder::new();
+    let scene = dec.decode(&bytes).expect("ByPolygon/IndexToDirect decode");
+    let prim = &scene.meshes[0].primitives[0];
+
+    let got = prim.normals.as_ref().expect("normals surfaced");
+    assert_eq!(got.len(), 6);
+    assert_eq!(got[0], [1.0, 0.0, 0.0], "poly0 -> index 1 (+X)");
+    assert_eq!(got[3], [0.0, 0.0, 1.0], "poly1 -> index 0 (+Z)");
+}

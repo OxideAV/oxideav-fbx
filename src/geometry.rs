@@ -618,6 +618,73 @@ fn pull_layer_vec3(
     )
 }
 
+/// Resolve one element index per triangle corner from a `LayerElement`'s
+/// `MappingInformationType` + `ReferenceInformationType`, without regard
+/// to the element's arity (scalar / vec2 / vec3 / vec4). Returns `None`
+/// when the mapping mode is one this crate does not flatten (so callers
+/// surface no per-corner data rather than mis-attribute payload).
+///
+/// Mapping modes (per `docs/3d/fbx/fbx-binary-properties70.md` §6.4):
+/// - `ByPolygonVertex` — one element per PolygonVertexIndex slot
+///   (`corner_pvi_index`).
+/// - `ByVertex` / `ByVertice` — one element per shared vertex
+///   (`corner_indices`).
+/// - `ByPolygon` — one element per source polygon
+///   (`tri_polygon_index[corner/3]`), i.e. flat/face attributes.
+/// - `AllSame` — a single element applies to the whole mesh (index 0).
+///
+/// Reference modes:
+/// - `Direct` (or absent) — the mapping index keys the data array
+///   directly.
+/// - `IndexToDirect` — the mapping index keys `index_arr`, whose value
+///   keys the data array.
+fn resolve_layer_indices(
+    mapping: Option<&str>,
+    reference: Option<&str>,
+    index_arr: Option<&[i32]>,
+    triangles: &Triangulation,
+    what: &str,
+) -> Result<Option<Vec<usize>>> {
+    let direct_only = matches!(reference, None | Some("Direct"));
+    let by_polygon_vertex = matches!(mapping, Some("ByPolygonVertex"));
+    let by_vertex = matches!(mapping, Some("ByVertex") | Some("ByVertice"));
+    let by_polygon = matches!(mapping, Some("ByPolygon"));
+    let all_same = matches!(mapping, Some("AllSame"));
+    if !by_polygon_vertex && !by_vertex && !by_polygon && !all_same {
+        return Ok(None);
+    }
+    let n_corners = triangles.corner_indices.len();
+    let mut out = Vec::with_capacity(n_corners);
+    for corner_ix in 0..n_corners {
+        let lookup = if all_same {
+            0
+        } else if by_vertex {
+            triangles.corner_indices[corner_ix] as usize
+        } else if by_polygon {
+            triangles.tri_polygon_index[corner_ix / 3] as usize
+        } else {
+            triangles.corner_pvi_index[corner_ix] as usize
+        };
+        let elem_ix = if direct_only {
+            lookup
+        } else if let Some(ix_arr) = index_arr {
+            let i = ix_arr.get(lookup).copied().unwrap_or(-1);
+            if i < 0 {
+                return Err(Error::invalid(format!(
+                    "FBX LayerElement: {what} IndexToDirect index {i} (negative)"
+                )));
+            }
+            i as usize
+        } else {
+            return Err(Error::invalid(format!(
+                "FBX LayerElement: {what} ReferenceInformationType==IndexToDirect but no Index sub-record"
+            )));
+        };
+        out.push(elem_ix);
+    }
+    Ok(Some(out))
+}
+
 fn flatten_layer_vec3(
     triples: Vec<[f32; 3]>,
     index_arr: Option<&[i32]>,
@@ -626,37 +693,12 @@ fn flatten_layer_vec3(
     expected_corners: usize,
     triangles: &Triangulation,
 ) -> Result<Option<Vec<[f32; 3]>>> {
-    let direct_only = matches!(reference, None | Some("Direct"));
-    let by_polygon_vertex = matches!(mapping, Some("ByPolygonVertex"));
-    let by_vertex = matches!(mapping, Some("ByVertex") | Some("ByVertice"));
-    if !by_polygon_vertex && !by_vertex {
-        // Other mapping modes (`ByPolygon`, `AllSame`) deferred —
-        // surface no per-vertex data for round 1 rather than
-        // mis-attribute.
-        return Ok(None);
-    }
+    let indices = match resolve_layer_indices(mapping, reference, index_arr, triangles, "vec3")? {
+        Some(v) => v,
+        None => return Ok(None),
+    };
     let mut out = Vec::with_capacity(expected_corners);
-    for (corner_ix, &shared_ix) in triangles.corner_indices.iter().enumerate() {
-        let lookup = if by_vertex {
-            shared_ix as usize
-        } else {
-            triangles.corner_pvi_index[corner_ix] as usize
-        };
-        let triple_ix = if direct_only {
-            lookup
-        } else if let Some(ix_arr) = index_arr {
-            let i = ix_arr.get(lookup).copied().unwrap_or(-1);
-            if i < 0 {
-                return Err(Error::invalid(format!(
-                    "FBX LayerElement: IndexToDirect index {i} (negative)"
-                )));
-            }
-            i as usize
-        } else {
-            return Err(Error::invalid(
-                "FBX LayerElement: ReferenceInformationType==IndexToDirect but no Index sub-record",
-            ));
-        };
+    for triple_ix in indices {
         let triple = triples.get(triple_ix).copied().ok_or_else(|| {
             Error::invalid(format!(
                 "FBX LayerElement: triple index {triple_ix} out of range for {}-element array",
@@ -711,34 +753,18 @@ fn pull_layer_scalar(
             _ => None,
         })
     });
-    let direct_only = matches!(reference.as_deref(), None | Some("Direct"));
-    let by_polygon_vertex = matches!(mapping.as_deref(), Some("ByPolygonVertex"));
-    let by_vertex = matches!(mapping.as_deref(), Some("ByVertex") | Some("ByVertice"));
-    if !by_polygon_vertex && !by_vertex {
-        return Ok(None);
-    }
+    let indices = match resolve_layer_indices(
+        mapping.as_deref(),
+        reference.as_deref(),
+        index_arr.as_deref(),
+        triangles,
+        data_name,
+    )? {
+        Some(v) => v,
+        None => return Ok(None),
+    };
     let mut out = Vec::with_capacity(expected_corners);
-    for (corner_ix, &shared_ix) in triangles.corner_indices.iter().enumerate() {
-        let lookup = if by_vertex {
-            shared_ix as usize
-        } else {
-            triangles.corner_pvi_index[corner_ix] as usize
-        };
-        let scalar_ix = if direct_only {
-            lookup
-        } else if let Some(ix_arr) = index_arr.as_deref() {
-            let i = ix_arr.get(lookup).copied().unwrap_or(-1);
-            if i < 0 {
-                return Err(Error::invalid(format!(
-                    "FBX LayerElement: {index_name} index {i} (negative)"
-                )));
-            }
-            i as usize
-        } else {
-            return Err(Error::invalid(format!(
-                "FBX LayerElement: {data_name} ReferenceInformationType==IndexToDirect but no {index_name} sub-record",
-            )));
-        };
+    for scalar_ix in indices {
         let scalar = scalars.get(scalar_ix).copied().ok_or_else(|| {
             Error::invalid(format!(
                 "FBX LayerElement: {data_name} index {scalar_ix} out of range for {}-element array",
@@ -814,34 +840,18 @@ fn pull_layer_vec2(
             _ => None,
         })
     });
-    let direct_only = matches!(reference.as_deref(), None | Some("Direct"));
-    let by_polygon_vertex = matches!(mapping.as_deref(), Some("ByPolygonVertex"));
-    let by_vertex = matches!(mapping.as_deref(), Some("ByVertex") | Some("ByVertice"));
-    if !by_polygon_vertex && !by_vertex {
-        return Ok(None);
-    }
+    let indices = match resolve_layer_indices(
+        mapping.as_deref(),
+        reference.as_deref(),
+        index_arr.as_deref(),
+        triangles,
+        "UV",
+    )? {
+        Some(v) => v,
+        None => return Ok(None),
+    };
     let mut out = Vec::with_capacity(expected_corners);
-    for (corner_ix, &shared_ix) in triangles.corner_indices.iter().enumerate() {
-        let lookup = if by_vertex {
-            shared_ix as usize
-        } else {
-            triangles.corner_pvi_index[corner_ix] as usize
-        };
-        let pair_ix = if direct_only {
-            lookup
-        } else if let Some(ix_arr) = index_arr.as_deref() {
-            let i = ix_arr.get(lookup).copied().unwrap_or(-1);
-            if i < 0 {
-                return Err(Error::invalid(format!(
-                    "FBX LayerElement: UVIndex {i} (negative)"
-                )));
-            }
-            i as usize
-        } else {
-            return Err(Error::invalid(
-                "FBX LayerElement: UV ReferenceInformationType==IndexToDirect but no UVIndex sub-record",
-            ));
-        };
+    for pair_ix in indices {
         let pair = pairs.get(pair_ix).copied().ok_or_else(|| {
             Error::invalid(format!(
                 "FBX LayerElement: UV pair index {pair_ix} out of range for {}-pair array",
@@ -904,37 +914,18 @@ fn pull_layer_vec4(
             _ => None,
         })
     });
-    let direct_only = matches!(reference.as_deref(), None | Some("Direct"));
-    let by_polygon_vertex = matches!(mapping.as_deref(), Some("ByPolygonVertex"));
-    let by_vertex = matches!(mapping.as_deref(), Some("ByVertex") | Some("ByVertice"));
-    if !by_polygon_vertex && !by_vertex {
-        // `AllSame` / `ByPolygon` / `NoMappingInformation` are valid
-        // but uncommon for vertex colours; skip rather than fabricate
-        // a per-corner buffer that misattributes the payload.
-        return Ok(None);
-    }
+    let indices = match resolve_layer_indices(
+        mapping.as_deref(),
+        reference.as_deref(),
+        index_arr.as_deref(),
+        triangles,
+        data_name,
+    )? {
+        Some(v) => v,
+        None => return Ok(None),
+    };
     let mut out = Vec::with_capacity(expected_corners);
-    for (corner_ix, &shared_ix) in triangles.corner_indices.iter().enumerate() {
-        let lookup = if by_vertex {
-            shared_ix as usize
-        } else {
-            triangles.corner_pvi_index[corner_ix] as usize
-        };
-        let quad_ix = if direct_only {
-            lookup
-        } else if let Some(ix_arr) = index_arr.as_deref() {
-            let i = ix_arr.get(lookup).copied().unwrap_or(-1);
-            if i < 0 {
-                return Err(Error::invalid(format!(
-                    "FBX LayerElement: {index_name} {i} (negative)"
-                )));
-            }
-            i as usize
-        } else {
-            return Err(Error::invalid(format!(
-                "FBX LayerElement: {data_name} ReferenceInformationType==IndexToDirect but no {index_name} sub-record",
-            )));
-        };
+    for quad_ix in indices {
         let quad = quads.get(quad_ix).copied().ok_or_else(|| {
             Error::invalid(format!(
                 "FBX LayerElement: quad index {quad_ix} out of range for {}-quad array",
@@ -1282,15 +1273,22 @@ mod tests {
     }
 
     #[test]
-    fn layer_color_unknown_mapping_returns_none() {
-        // AllSame / ByPolygon on vertex colours are uncommon and not
-        // currently flattened — they pass through as "no surfacing"
-        // instead of fabricating a per-corner buffer that misattributes
-        // the payload.
+    fn layer_color_all_same_broadcasts_and_unknown_returns_none() {
+        // `AllSame` on vertex colours broadcasts the single RGBA quad to
+        // every corner (one polygon -> one triangle -> three corners).
         let pvi = vec![0, 1, -3];
         let tris = triangulate(&pvi).unwrap();
         let layer = make_layer_color_node(vec![0.25, 0.5, 0.75, 1.0], "AllSame", "Direct", None);
-        assert!(pull_layer_vec4(&layer, "Colors", "ColorIndex", 3, &tris)
+        let flattened = pull_layer_vec4(&layer, "Colors", "ColorIndex", 3, &tris)
+            .unwrap()
+            .expect("AllSame flattens");
+        assert_eq!(flattened, vec![[0.25, 0.5, 0.75, 1.0]; 3]);
+
+        // A mapping mode this crate does not flatten (`ByEdge` needs an
+        // edge table the mesh does not carry) still surfaces nothing
+        // rather than mis-attribute the payload.
+        let by_edge = make_layer_color_node(vec![0.25, 0.5, 0.75, 1.0], "ByEdge", "Direct", None);
+        assert!(pull_layer_vec4(&by_edge, "Colors", "ColorIndex", 3, &tris)
             .unwrap()
             .is_none());
     }
