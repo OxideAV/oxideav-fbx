@@ -24,6 +24,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Round 398 — **32-bit vs 64-bit offset-width parity tests.** Two new
+  `encoder_roundtrip` tests encode the same normals+UV quad at version
+  `7400` (32-bit `EndOffset`/`NumProperties`/`PropertyListLen` Node
+  Record layout) and `7700` (those three widen to u64) and assert the
+  decoded positions / normals / UVs are identical across both layouts —
+  once uncompressed and once with array deflate (`Encoding == 1`)
+  enabled, exercising the compressed-array path under both widths.
+
 - Round 398 — **`ByPolygon` + `AllSame` LayerElement mapping modes.**
   The `LayerElementNormal` / `LayerElementUV` / `LayerElementColor` /
   `LayerElementTangent` / `LayerElementBinormal` pullers previously

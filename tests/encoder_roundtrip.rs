@@ -88,6 +88,67 @@ fn quad_normals_uvs_survive_round_trip() {
 }
 
 #[test]
+fn offset_width_parity_32bit_vs_64bit() {
+    // The same authored scene must survive identically whether the
+    // encoder writes the pre-7500 32-bit Node Record offset layout
+    // (`EndOffset` / `NumProperties` / `PropertyListLen` as u32) or the
+    // >= 7500 64-bit layout (those three widen to u64). This proves the
+    // 32-bit and 64-bit reader/writer offset variants are equivalent
+    // (per docs/3d/fbx/blender-fbx-binary-format.html
+    // §"Version-dependent quirks").
+    let mut scene = Scene3D::new();
+    let mid = scene.add_mesh(quad_with_normals_and_uvs("Quad"));
+    let nid = scene.add_node(Node::new().with_name("QuadNode").with_mesh(mid));
+    scene.roots.push(nid);
+
+    let bytes32 = FbxEncoder::new().version(7400).encode(&scene).unwrap();
+    let bytes64 = FbxEncoder::new().version(7700).encode(&scene).unwrap();
+
+    // Header versions differ, so the byte streams must not be identical.
+    assert_ne!(bytes32, bytes64, "32-bit and 64-bit layouts differ on disk");
+
+    let s32 = decode(&bytes32);
+    let s64 = decode(&bytes64);
+
+    let p32 = &s32.meshes[0].primitives[0];
+    let p64 = &s64.meshes[0].primitives[0];
+
+    // Geometry, normals, and UVs decode identically from both layouts.
+    assert_eq!(p32.positions, p64.positions, "positions parity");
+    assert_eq!(p32.normals, p64.normals, "normals parity");
+    assert_eq!(p32.uvs, p64.uvs, "uv parity");
+    assert_eq!(p64.positions.len(), 6);
+    assert_eq!(p64.normals.as_ref().unwrap().len(), 6);
+}
+
+#[test]
+fn offset_width_parity_survives_with_deflate() {
+    // Same parity check, but with array deflate (`Encoding == 1`) turned
+    // on, so the compressed-array path is exercised under both the
+    // 32-bit and 64-bit Node Record layouts.
+    let mut scene = Scene3D::new();
+    let mid = scene.add_mesh(quad_with_normals_and_uvs("Quad"));
+    let nid = scene.add_node(Node::new().with_name("QuadNode").with_mesh(mid));
+    scene.roots.push(nid);
+
+    let enc = |ver: u32| {
+        FbxEncoder::new()
+            .version(ver)
+            .compress_arrays_at(1)
+            .encode(&scene)
+            .unwrap()
+    };
+    let s32 = decode(&enc(7400));
+    let s64 = decode(&enc(7700));
+
+    let p32 = &s32.meshes[0].primitives[0];
+    let p64 = &s64.meshes[0].primitives[0];
+    assert_eq!(p32.positions, p64.positions);
+    assert_eq!(p32.normals, p64.normals);
+    assert_eq!(p32.uvs, p64.uvs);
+}
+
+#[test]
 fn parent_child_hierarchy_round_trips() {
     // Root → child node tree. The child's mesh-binding + the
     // parent/child edge must survive the Connections walk.
