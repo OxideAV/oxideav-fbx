@@ -23,7 +23,10 @@ clean-room from third-party documentation:
 - Binary container reader: 27-byte header, recursive Node Record
   walker (32-bit pre-7500, 64-bit ≥ 7500), full property type-code
   dispatch (`Y` `C` `I` `F` `D` `L` scalars, `f` `d` `l` `i` `b`
-  arrays incl. zlib-deflated, `S` / `R` strings & blobs).
+  arrays incl. zlib-deflated via `compcol` — the inflate path is
+  bounded at the array's known post-inflate size so a hostile
+  `CompressedLength` cannot expand into a decompression bomb — `S` /
+  `R` strings & blobs).
 - Object-graph walker: indexes `Geometry` and `Model` from `Objects`,
   walks `Connections` `OO` records to wire Geometry → Model and
   Model → root.
@@ -44,10 +47,17 @@ clean-room from third-party documentation:
 - Mesh extraction: `Vertices` + `PolygonVertexIndex` →
   per-corner `Primitive(Topology::Triangles)` (ngons fan-triangulated;
   end-of-polygon negatives bit-NOT decoded). `LayerElementNormal` /
-  `LayerElementUV` flattened when the mapping mode is `ByPolygonVertex`
-  or `ByVertex` (with optional `IndexToDirect` indirection), each
-  layer's `MappingInformationType` / `ReferenceInformationType`
-  resolved independently. A `Geometry` carrying **more than one**
+  `LayerElementUV` / `LayerElementColor` / `LayerElementTangent` /
+  `LayerElementBinormal` flattened for every `MappingInformationType`
+  this crate resolves — `ByPolygonVertex`, `ByVertex` (`ByVertice`),
+  `ByPolygon` (per-source-polygon flat attributes), and `AllSame`
+  (one value broadcast to the whole mesh) — under both `Direct` and
+  `IndexToDirect` `ReferenceInformationType` (a single shared
+  `resolve_layer_indices` helper backs the scalar/vec2/vec3/vec4
+  pullers). `ByEdge` (needs an edge table the mesh does not carry)
+  surfaces no per-corner buffer rather than mis-attribute. Each layer's
+  `MappingInformationType` / `ReferenceInformationType` resolved
+  independently. A `Geometry` carrying **more than one**
   `LayerElementNormal` (distinguished by its `Layer` / `TypedIndex`
   integer per `docs/3d/fbx/fbx-binary-properties70.md` §6.4) surfaces
   the first as the canonical `Primitive::normals` and the rest on
