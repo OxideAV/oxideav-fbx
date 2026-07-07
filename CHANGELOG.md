@@ -41,7 +41,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   un-flattenable modes (`ByEdge` — needs an edge table the mesh does
   not carry) still surface no per-corner buffer rather than
   mis-attribute the payload. New `synthetic_multi_normal` tests cover
-  `ByPolygon`/`Direct`, `ByPolygon`/`IndexToDirect`, and `AllSame`.
+  `ByPolygon`/`Direct`, `ByPolygon`/`IndexToDirect`, and `AllSame`, plus
+  a `decode → encode → decode` round-trip proving the flattened
+  per-corner `ByPolygon` normals survive re-encoding (the encoder emits
+  the equivalent `ByPolygonVertex` per-corner form).
 
 - Round 384 — **encoder round-trip parity drive.** Seven encoder
   surfaces the round-377 `Scene3D` → FBX encoder deferred now survive

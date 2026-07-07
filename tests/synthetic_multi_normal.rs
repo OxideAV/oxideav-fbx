@@ -32,8 +32,8 @@
 //! `Normals` / `NormalsIndex` shape follows
 //! `docs/3d/fbx/fbx-binary-properties70.md` §6.4.
 
-use oxideav_fbx::{FbxDecoder, FBX_MAGIC};
-use oxideav_mesh3d::Mesh3DDecoder;
+use oxideav_fbx::{FbxDecoder, FbxEncoder, FBX_MAGIC};
+use oxideav_mesh3d::{Mesh3DDecoder, Mesh3DEncoder};
 
 const NULL_RECORD_BYTES_32: usize = 13;
 
@@ -451,4 +451,37 @@ fn by_polygon_normals_index_to_direct() {
     assert_eq!(got.len(), 6);
     assert_eq!(got[0], [1.0, 0.0, 0.0], "poly0 -> index 1 (+X)");
     assert_eq!(got[3], [0.0, 0.0, 1.0], "poly1 -> index 0 (+Z)");
+}
+
+#[test]
+fn by_polygon_normals_survive_encode_decode_round_trip() {
+    // Decode a ByPolygon-normal fixture, then re-encode via the public
+    // FbxEncoder and decode again. The encoder emits per-corner
+    // (ByPolygonVertex) normals, so the flattened per-corner values must
+    // survive the full decode -> encode -> decode cycle unchanged.
+    let normals = &[
+        0.0, 0.0, 1.0, // polygon 0 (+Z)
+        1.0, 0.0, 0.0, // polygon 1 (+X)
+    ];
+    let layer0 = normal_layer(0, b"ByPolygon", normals);
+    let bytes = build_fbx_custom_geometry(layer0, TWO_TRI_VERTICES, TWO_TRI_PVI);
+
+    let scene1 = FbxDecoder::new().decode(&bytes).expect("first decode");
+    let want: Vec<[f32; 3]> = scene1.meshes[0].primitives[0]
+        .normals
+        .clone()
+        .expect("normals after first decode");
+
+    let reencoded = FbxEncoder::new().encode(&scene1).expect("re-encode");
+    let scene2 = FbxDecoder::new().decode(&reencoded).expect("second decode");
+    let got = scene2.meshes[0].primitives[0]
+        .normals
+        .as_ref()
+        .expect("normals after round-trip");
+
+    assert_eq!(got.len(), 6);
+    assert_eq!(*got, want, "ByPolygon normals survive the round-trip");
+    // Concrete per-corner expectation: poly0 corners +Z, poly1 corners +X.
+    assert_eq!(got[0], [0.0, 0.0, 1.0]);
+    assert_eq!(got[3], [1.0, 0.0, 0.0]);
 }
