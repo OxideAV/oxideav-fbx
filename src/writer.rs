@@ -38,8 +38,8 @@
 //! enumerates exactly two values for `Encoding` (0 raw / 1 zlib) and
 //! the post-deflate buffer length is stored verbatim in
 //! `CompressedLength`. Output remains deterministic for a given
-//! `miniz_oxide` version + compression level, but is no longer
-//! guaranteed to match across `miniz_oxide` upgrades — the
+//! `compcol` version + compression level, but is no longer
+//! guaranteed to match across `compcol` upgrades — the
 //! round-trip closure through [`crate::binary::parse`] is what
 //! callers should rely on, not byte-exact equality across crate
 //! versions.
@@ -80,11 +80,11 @@ pub struct WriterOptions {
     /// [`write_document`] entry point.
     pub compress_arrays: Option<usize>,
 
-    /// zlib compression level forwarded to `miniz_oxide`. `0`
-    /// (`compress_to_vec_zlib` returns a stored block — no deflate)
-    /// through `10` (max compression). Default `6` matches zlib's
-    /// own `Z_DEFAULT_COMPRESSION` constant and is what most FBX
-    /// exporters appear to use in the wild.
+    /// zlib compression level forwarded to `compcol`, clamped into its
+    /// supported `1..=9` range (level `1` fastest / least ratio,
+    /// `9` maximum compression). Default `6` matches zlib's own
+    /// `Z_DEFAULT_COMPRESSION` constant and is what most FBX exporters
+    /// appear to use in the wild.
     ///
     /// Ignored when `compress_arrays` is `None`.
     pub compression_level: u8,
@@ -339,12 +339,13 @@ fn write_property(prop: &FbxProperty, out: &mut Vec<u8>, opts: &WriterOptions) -
 fn write_array_body(out: &mut Vec<u8>, count: usize, raw: &[u8], opts: &WriterOptions) {
     let compressed = match opts.compress_arrays {
         Some(threshold) if raw.len() >= threshold => {
-            let level = opts.compression_level.min(10);
-            let buf = miniz_oxide::deflate::compress_to_vec_zlib(raw, level);
-            if buf.len() < raw.len() {
-                Some(buf)
-            } else {
-                None
+            // compcol's zlib level is 1..=9; clamp the caller's request
+            // into that range.
+            let level = opts.compression_level.clamp(1, 9);
+            let cfg = compcol::zlib::EncoderConfig { level };
+            match compcol::vec::compress_to_vec_with::<compcol::zlib::Zlib>(raw, cfg) {
+                Ok(buf) if buf.len() < raw.len() => Some(buf),
+                _ => None,
             }
         }
         _ => None,

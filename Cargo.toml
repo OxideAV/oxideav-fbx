@@ -33,10 +33,11 @@ oxideav-core = { version = "0.1", optional = true }
 # feature is on, so the standalone build path stays oxideav-core-free
 # end-to-end.
 oxideav-mesh3d = { version = "0.0", default-features = false }
-# Pure-Rust zlib decoder for FBX array properties whose Encoding == 1
-# (deflate-compressed). This is the same pure-Rust dep oxideav-png and
-# oxideav-pdf use.
-miniz_oxide = "0.9"
+# `compcol` (Karpelès Lab's compression collection, the workspace-wide
+# codec dep) supplies the pure-Rust zlib inflate/deflate used for FBX
+# array properties whose Encoding == 1 (deflate-compressed). Same dep +
+# feature pin as oxideav-png / oxideav-pdf / oxideav-mov.
+compcol = { version = "0.6", default-features = false, features = ["zlib"] }
 # Used directly to populate `Primitive::extras` / `Mesh::extras` (which
 # are typed as `HashMap<String, serde_json::Value>` by oxideav-mesh3d).
 serde_json = "1"

@@ -40,7 +40,7 @@
 //! | `R`  | raw binary blob |
 //!
 //! Array contents may be zlib-deflated (Encoding == 1); the reader
-//! transparently decompresses via the pure-Rust `miniz_oxide`.
+//! transparently decompresses via the pure-Rust `compcol` zlib codec.
 
 use oxideav_mesh3d::{Error, Result};
 
@@ -448,12 +448,14 @@ fn read_array_payload(bytes: &[u8], off: usize, elem_bytes: usize) -> Result<(Ve
                 return Err(Error::invalid("binary FBX: compressed array runs past EOF"));
             }
             let comp = &bytes[payload_off..payload_off + comp_length];
-            let inflated = miniz_oxide::inflate::decompress_to_vec_zlib(comp).map_err(|e| {
-                Error::invalid(format!(
-                    "binary FBX: zlib inflate failed (status {:?})",
-                    e.status
-                ))
-            })?;
+            // The post-inflate length is known up-front (`raw_size`), so
+            // cap the decoder at exactly that — a corrupt/malicious
+            // CompressedLength cannot expand into a decompression bomb.
+            let inflated = compcol::vec::decompress_to_vec_capped::<compcol::zlib::Zlib>(
+                comp,
+                raw_size as u64,
+            )
+            .map_err(|e| Error::invalid(format!("binary FBX: zlib inflate failed ({e:?})")))?;
             if inflated.len() != raw_size {
                 return Err(Error::invalid(format!(
                     "binary FBX: inflated array length mismatch — header said {} elements ({} bytes), got {} bytes",

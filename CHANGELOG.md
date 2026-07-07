@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Round 398 — **deflate backend migrated `miniz_oxide` → `compcol`.**
+  The FBX array-property `Encoding == 1` zlib path (both inflate on the
+  read side and deflate on the write side) now runs through `compcol`
+  (Karpelès Lab's workspace-standard compression collection, `zlib`
+  feature), matching oxideav-png / oxideav-pdf / oxideav-mov. The
+  decoder uses the bounded `decompress_to_vec_capped` variant capped at
+  the array's known post-inflate size, so a corrupt/hostile
+  `CompressedLength` can no longer expand into a decompression bomb.
+  `WriterOptions::compression_level` is now clamped into compcol's
+  `1..=9` range (was `0..=10`). Round-trips through
+  `binary::parse` are unchanged; on-disk compressed bytes are not
+  byte-identical to the previous backend (never a documented guarantee).
+
 ### Added
 
 - Round 398 — **`ByPolygon` + `AllSame` LayerElement mapping modes.**
