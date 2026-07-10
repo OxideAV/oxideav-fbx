@@ -54,8 +54,10 @@ clean-room from third-party documentation:
   (one value broadcast to the whole mesh) — under both `Direct` and
   `IndexToDirect` `ReferenceInformationType` (a single shared
   `resolve_layer_indices` helper backs the scalar/vec2/vec3/vec4
-  pullers). `ByEdge` (needs an edge table the mesh does not carry)
-  surfaces no per-corner buffer rather than mis-attribute. Each layer's
+  pullers). `ByEdge` on the generic attribute pullers surfaces no
+  per-corner buffer rather than mis-attribute (the smoothing layer,
+  which owns that mode, is handled separately — see the Edges /
+  smoothing bullet below). Each layer's
   `MappingInformationType` / `ReferenceInformationType` resolved
   independently. A `Geometry` carrying **more than one**
   `LayerElementNormal` (distinguished by its `Layer` / `TypedIndex`
@@ -140,6 +142,28 @@ clean-room from third-party documentation:
   `fbx:material_mapping`), preserving the full per-face material
   payload alongside the legacy single-binding `Primitive::material`
   (slot 0).
+- **Edges + smoothing (`LayerElementSmoothing`)** — per
+  `docs/3d/fbx/fbx-edges-smoothing-layer.md` (ask #220). The
+  `Geometry`-level `Edges` array (each value a `PolygonVertexIndex`
+  slot naming a unique edge's start corner; the second endpoint is
+  the next corner within the same polygon, wrapping at the negative
+  closing corner) decodes to undirected shared-vertex pairs on
+  `Primitive::extras["fbx:edges"]`. `LayerElementSmoothing` branches
+  on its mapping mode: `ByEdge` (one hard/soft flag per unique edge,
+  `0` = hard) surfaces raw flags on `fbx:edge_smoothing` and a
+  per-corner resolution on `fbx:smoothing` (each corner carries the
+  flag of the polygon edge starting at its slot, matched by
+  undirected pair); `ByPolygon` (one smoothing-group bitmask per
+  polygon, adjacent faces smooth iff `mask_a & mask_b != 0`)
+  broadcasts per corner. `fbx:smoothing_mapping` records the source
+  form (the same values mean different things in the two modes). A
+  `ByEdge` layer without an `Edges` array binds nothing (no edge
+  domain); length mismatches error. The writer re-emits both
+  (identity `Edges` enumeration over its per-corner layout +
+  `ByEdge`/`Direct` or per-triangle `ByPolygon` smoothing), so
+  per-corner smoothing survives decode→encode→decode in binary and
+  ASCII forms; the decode is pinned to the doc's §2 hand-worked cube
+  table on the staged `cubes-ascii-v7500.fbx` fixture.
 - **GlobalSettings** — the top-level `GlobalSettings`
   node's `Properties70` block is decoded via the
   `PropertyMap`; every well-known `P`-record from the
