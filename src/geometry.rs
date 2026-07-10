@@ -720,7 +720,11 @@ fn pull_layer_vec3(
 /// - `Direct` (or absent) — the mapping index keys the data array
 ///   directly.
 /// - `IndexToDirect` — the mapping index keys `index_arr`, whose value
-///   keys the data array.
+///   keys the data array. Per
+///   `docs/3d/fbx/fbx-edges-smoothing-layer.md` §3b the legacy
+///   `Index` string (FBX v5.0 files) is an alias replaced by
+///   `IndexToDirect` in v6.0+, so any non-`Direct` reference resolves
+///   through the index array.
 fn resolve_layer_indices(
     mapping: Option<&str>,
     reference: Option<&str>,
@@ -1549,6 +1553,31 @@ mod tests {
                 [1.0, 1.0, 1.0, 1.0],
             ]
         );
+    }
+
+    #[test]
+    fn layer_color_legacy_index_reference_behaves_as_index_to_direct() {
+        // `docs/3d/fbx/fbx-edges-smoothing-layer.md` §3b: the `Index`
+        // reference mode is "kept for backward compatibility with FBX
+        // v5.0 files" and is replaced by `IndexToDirect` in v6.0+ — a
+        // legacy alias. A layer declaring `Index` must resolve through
+        // the companion index array exactly like `IndexToDirect`.
+        let pvi = vec![0, 1, 2, -4];
+        let tris = triangulate(&pvi).unwrap();
+        let palette = vec![
+            0.0, 0.0, 0.0, 1.0, // index 0 = opaque black
+            1.0, 1.0, 1.0, 1.0, // index 1 = opaque white
+        ];
+        let index = Some(vec![0i32, 1, 0, 1]);
+        let legacy = make_layer_color_node(palette.clone(), "ByVertex", "Index", index.clone());
+        let modern = make_layer_color_node(palette, "ByVertex", "IndexToDirect", index);
+        let out_legacy = pull_layer_vec4(&legacy, "Colors", "ColorIndex", 6, &tris)
+            .unwrap()
+            .expect("legacy Index reference resolves");
+        let out_modern = pull_layer_vec4(&modern, "Colors", "ColorIndex", 6, &tris)
+            .unwrap()
+            .expect("IndexToDirect resolves");
+        assert_eq!(out_legacy, out_modern, "Index ≡ IndexToDirect");
     }
 
     #[test]
