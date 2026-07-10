@@ -50,6 +50,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   384-edge smooth-preview cube must decode to 384 distinct
   undirected edges.
 
+- Round 407 — **`Edges` + `LayerElementSmoothing` re-emission.** The
+  scene writer round-trips the smoothing extras: a
+  `fbx:smoothing_mapping == "ByEdge"` per-corner buffer emits an
+  `Edges` identity enumeration (`0..corner_count` — the writer's
+  disconnected-triangle layout makes every corner start a unique
+  edge) plus a `ByEdge`/`Direct` `LayerElementSmoothing` whose
+  per-edge array is the per-corner flags verbatim; `"ByPolygon"`
+  emits one smoothing-group bitmask per emitted triangle-polygon
+  (corner `3t` speaks for the triangle, the
+  `fbx:face_material_slots` convention). A `fbx:edges` key without a
+  usable smoothing layer still emits the `Edges` enumeration. New
+  round-trip tests cover ByEdge (binary + ASCII forms), ByPolygon,
+  and a full fixture decode→encode→decode pass asserting every
+  primitive's per-corner smoothing buffer and mapping tag survive
+  re-encoding (the source edge *count* legitimately changes — the
+  per-corner layout un-shares polygon-shared edges — but per-corner
+  hardness is the invariant).
+
 - Round 398 — **32-bit vs 64-bit offset-width parity tests.** Two new
   `encoder_roundtrip` tests encode the same normals+UV quad at version
   `7400` (32-bit `EndOffset`/`NumProperties`/`PropertyListLen` Node

@@ -983,6 +983,7 @@ fn build_geometry(mesh: &Mesh, id: i64, opts: &SceneEncodeOptions) -> FbxNode {
         let prim = &mesh.primitives[0];
         let n_corners = corner as usize;
         emit_extra_layers(prim, n_corners, &mut children);
+        emit_edges_and_smoothing(prim, n_corners, &mut children);
     }
 
     FbxNode {
@@ -1094,6 +1095,97 @@ fn emit_extra_layers(prim: &Primitive, n_corners: usize, children: &mut Vec<FbxN
                 },
             ],
         });
+    }
+}
+
+/// Re-emit the `Edges` array + `LayerElementSmoothing` layer the
+/// decode side surfaced on `Primitive::extras` (per
+/// `docs/3d/fbx/fbx-edges-smoothing-layer.md`).
+///
+/// The emitted geometry is a disconnected triangle list — every
+/// corner owns its own `Vertices` entry — so the mesh's unique-edge
+/// set (§1: what `Edges` enumerates, one entry per undirected edge,
+/// each value the edge's start corner in `PolygonVertexIndex`) is
+/// exactly one edge per corner slot: edge `i` starts at corner `i`
+/// and runs to the next corner in its triangle, wrapping at the
+/// closing corner. `Edges` is therefore the identity enumeration
+/// `0..corner_count`, and a `ByEdge` `Smoothing` array is the
+/// per-corner buffer verbatim — which is what makes the
+/// decode→encode→decode round trip preserve `fbx:smoothing` exactly
+/// (the source file's edge *count* is not preserved, because the
+/// per-corner layout un-shares the edges two source polygons shared).
+///
+/// - `fbx:smoothing` + `fbx:smoothing_mapping == "ByEdge"` →
+///   `Edges: 0..N` + a `ByEdge`/`Direct` `LayerElementSmoothing`
+///   whose per-edge array is the per-corner flags verbatim.
+/// - `fbx:smoothing_mapping == "ByPolygon"` → one smoothing-group
+///   bitmask per emitted triangle-polygon (corner `3t` speaks for
+///   the whole triangle, the `fbx:face_material_slots` convention —
+///   the decode side broadcast the polygon value to every corner).
+/// - `fbx:edges` present without a usable smoothing layer → the
+///   `Edges` enumeration alone (the decoded pairs index the source
+///   file's shared-vertex table, which the per-corner layout does
+///   not preserve; the emitted mesh's own edge set is the full
+///   corner enumeration).
+///
+/// The `Edges` node is inserted right after `Vertices` /
+/// `PolygonVertexIndex`, matching observed exporter layout (cosmetic
+/// — the reader looks Geometry children up by name).
+fn emit_edges_and_smoothing(prim: &Primitive, n_corners: usize, children: &mut Vec<FbxNode>) {
+    let smoothing: Option<Vec<i64>> = prim
+        .extras
+        .get("fbx:smoothing")
+        .and_then(|v| v.as_array())
+        .map(|a| a.iter().filter_map(|x| x.as_i64()).collect());
+    let mapping = prim
+        .extras
+        .get("fbx:smoothing_mapping")
+        .and_then(|v| v.as_str());
+    let usable = smoothing.as_ref().is_some_and(|s| s.len() == n_corners);
+    let by_edge = usable && mapping == Some("ByEdge");
+    if by_edge || prim.extras.contains_key("fbx:edges") {
+        let edges = FbxNode {
+            name: "Edges".to_string(),
+            properties: vec![FbxProperty::I32Array((0..n_corners as i32).collect())],
+            children: Vec::new(),
+        };
+        children.insert(2.min(children.len()), edges);
+    }
+    if !usable {
+        return;
+    }
+    let s = smoothing.unwrap_or_default();
+    match mapping {
+        Some("ByEdge") => children.push(layer_element_smoothing("ByEdge", &s)),
+        Some("ByPolygon") => {
+            let per_tri: Vec<i64> = (0..n_corners / 3).map(|t| s[t * 3]).collect();
+            children.push(layer_element_smoothing("ByPolygon", &per_tri));
+        }
+        _ => {}
+    }
+}
+
+/// `LayerElementSmoothing` — `Smoothing` `i`-array under the given
+/// mapping mode, `Direct`-referenced (§4a of
+/// `docs/3d/fbx/fbx-edges-smoothing-layer.md`). `Version: 102` is the
+/// value observed on the staged fixture's smoothing layers.
+fn layer_element_smoothing(mapping: &str, values: &[i64]) -> FbxNode {
+    FbxNode {
+        name: "LayerElementSmoothing".to_string(),
+        properties: vec![FbxProperty::I32(0)],
+        children: vec![
+            leaf_i32("Version", 102),
+            leaf_string("Name", ""),
+            leaf_string("MappingInformationType", mapping),
+            leaf_string("ReferenceInformationType", "Direct"),
+            FbxNode {
+                name: "Smoothing".to_string(),
+                properties: vec![FbxProperty::I32Array(
+                    values.iter().map(|&v| v as i32).collect(),
+                )],
+                children: Vec::new(),
+            },
+        ],
     }
 }
 

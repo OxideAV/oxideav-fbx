@@ -1252,3 +1252,157 @@ fn binormals_and_extra_normal_layer_survive_round_trip() {
         Some(&serde_json::json!([1]))
     );
 }
+
+// ---- Edges + LayerElementSmoothing round trips ----------------------
+// (docs/3d/fbx/fbx-edges-smoothing-layer.md, round 407)
+
+#[test]
+fn by_edge_smoothing_survives_round_trip() {
+    // Per-corner hard/soft flags authored under the ByEdge form. The
+    // writer emits the geometry as disconnected triangles, so its
+    // unique-edge set is one edge per corner (`Edges: 0..N`) and the
+    // ByEdge `Smoothing` array is the per-corner buffer verbatim —
+    // decode must hand the exact flags back.
+    let mut scene = Scene3D::new();
+    let mut mesh = quad_with_normals_and_uvs("SmoothQuad");
+    let per_corner = serde_json::json!([1, 0, 0, 1, 0, 0]);
+    mesh.primitives[0]
+        .extras
+        .insert("fbx:smoothing".to_string(), per_corner.clone());
+    mesh.primitives[0].extras.insert(
+        "fbx:smoothing_mapping".to_string(),
+        serde_json::json!("ByEdge"),
+    );
+    let mid = scene.add_mesh(mesh);
+    let nid = scene.add_node(Node::new().with_name("N").with_mesh(mid));
+    scene.roots.push(nid);
+
+    let scene2 = decode(&encode_binary(&scene));
+    let prim = &scene2.meshes[0].primitives[0];
+    assert_eq!(
+        prim.extras.get("fbx:smoothing_mapping"),
+        Some(&serde_json::json!("ByEdge"))
+    );
+    assert_eq!(prim.extras.get("fbx:smoothing"), Some(&per_corner));
+    // Per-edge flags align with the identity edge enumeration, so
+    // they equal the per-corner buffer too.
+    assert_eq!(prim.extras.get("fbx:edge_smoothing"), Some(&per_corner));
+    // 6 disconnected corners → 6 unique edges → 12 endpoint indices.
+    let edges = prim
+        .extras
+        .get("fbx:edges")
+        .and_then(|v| v.as_array())
+        .expect("fbx:edges surfaced");
+    assert_eq!(edges.len(), 12);
+    // Each triangle contributes edges (3t,3t+1), (3t+1,3t+2), (3t+2,3t).
+    let flat: Vec<i64> = edges.iter().map(|v| v.as_i64().unwrap()).collect();
+    assert_eq!(flat, vec![0, 1, 1, 2, 2, 0, 3, 4, 4, 5, 5, 3]);
+}
+
+#[test]
+fn by_polygon_smoothing_groups_survive_round_trip() {
+    // Smoothing-group bitmasks under the ByPolygon form: the decode
+    // side broadcast one mask per polygon to its corners; the writer
+    // re-emits one mask per triangle-polygon (corner 3t speaks for
+    // the triangle) and decode broadcasts it back — the per-corner
+    // buffer is the round-trip invariant.
+    let mut scene = Scene3D::new();
+    let mut mesh = quad_with_normals_and_uvs("GroupQuad");
+    let per_corner = serde_json::json!([3, 3, 3, 5, 5, 5]);
+    mesh.primitives[0]
+        .extras
+        .insert("fbx:smoothing".to_string(), per_corner.clone());
+    mesh.primitives[0].extras.insert(
+        "fbx:smoothing_mapping".to_string(),
+        serde_json::json!("ByPolygon"),
+    );
+    let mid = scene.add_mesh(mesh);
+    let nid = scene.add_node(Node::new().with_name("N").with_mesh(mid));
+    scene.roots.push(nid);
+
+    let scene2 = decode(&encode_binary(&scene));
+    let prim = &scene2.meshes[0].primitives[0];
+    assert_eq!(
+        prim.extras.get("fbx:smoothing_mapping"),
+        Some(&serde_json::json!("ByPolygon"))
+    );
+    assert_eq!(prim.extras.get("fbx:smoothing"), Some(&per_corner));
+    // ByPolygon has no per-edge form, and no Edges array was authored.
+    assert!(!prim.extras.contains_key("fbx:edge_smoothing"));
+    assert!(!prim.extras.contains_key("fbx:edges"));
+}
+
+#[test]
+fn by_edge_smoothing_survives_ascii_round_trip() {
+    // Same ByEdge payload through the ASCII output form — the array
+    // grammar (`Edges: *N { a: … }` / `Smoothing: *N { a: … }`) must
+    // carry the layer identically to the binary path.
+    let mut scene = Scene3D::new();
+    let mut mesh = quad_with_normals_and_uvs("AsciiSmoothQuad");
+    let per_corner = serde_json::json!([0, 1, 0, 0, 1, 0]);
+    mesh.primitives[0]
+        .extras
+        .insert("fbx:smoothing".to_string(), per_corner.clone());
+    mesh.primitives[0].extras.insert(
+        "fbx:smoothing_mapping".to_string(),
+        serde_json::json!("ByEdge"),
+    );
+    let mid = scene.add_mesh(mesh);
+    let nid = scene.add_node(Node::new().with_name("N").with_mesh(mid));
+    scene.roots.push(nid);
+
+    let bytes = FbxEncoder::new()
+        .form(FbxOutputForm::Ascii)
+        .encode(&scene)
+        .expect("ascii encode");
+    let scene2 = decode(&bytes);
+    let prim = &scene2.meshes[0].primitives[0];
+    assert_eq!(prim.extras.get("fbx:smoothing"), Some(&per_corner));
+    assert_eq!(
+        prim.extras.get("fbx:smoothing_mapping"),
+        Some(&serde_json::json!("ByEdge"))
+    );
+}
+
+#[test]
+fn fixture_cube_smoothing_survives_re_encode() {
+    // End-to-end: the staged exporter-produced fixture decodes with a
+    // ByEdge all-hard smoothing layer on each cube; re-encoding that
+    // scene and decoding again must preserve every primitive's
+    // per-corner smoothing buffer and mapping tag (the edge *count*
+    // legitimately changes — the writer's per-corner layout un-shares
+    // edges — but the per-corner hardness is the invariant).
+    const FIXTURE: &[u8] = include_bytes!("fixtures/cubes-ascii-v7500.fbx");
+    let scene = decode(FIXTURE);
+    let scene2 = decode(&encode_binary(&scene));
+
+    let smoothed = |s: &Scene3D| -> Vec<(String, serde_json::Value)> {
+        let mut v: Vec<(String, serde_json::Value)> = s
+            .meshes
+            .iter()
+            .flat_map(|m| m.primitives.iter())
+            .filter_map(|p| {
+                Some((
+                    format!(
+                        "{}:{}",
+                        p.positions.len(),
+                        p.extras.get("fbx:smoothing_mapping")?.as_str()?
+                    ),
+                    p.extras.get("fbx:smoothing")?.clone(),
+                ))
+            })
+            .collect();
+        v.sort_by(|a, b| {
+            a.0.cmp(&b.0)
+                .then_with(|| a.1.to_string().cmp(&b.1.to_string()))
+        });
+        v
+    };
+    let before = smoothed(&scene);
+    let after = smoothed(&scene2);
+    assert!(
+        !before.is_empty(),
+        "fixture surfaces at least one smoothing layer"
+    );
+    assert_eq!(before, after, "per-corner smoothing survives re-encode");
+}
