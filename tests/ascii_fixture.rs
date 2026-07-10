@@ -428,3 +428,142 @@ fn ascii_fixture_definitions_decode_with_material_template() {
         Some("lambert")
     );
 }
+
+#[test]
+fn ascii_fixture_cube_edges_decode_to_the_documented_pairs() {
+    // Round 407 — `docs/3d/fbx/fbx-edges-smoothing-layer.md` §2 works
+    // the fixture's first Geometry by hand: `Edges: *12` (values
+    // 0,1,2,3,5,6,7,9,10,11,13,15) against `PolygonVertexIndex: *24`
+    // decodes to exactly the 12 undirected edges of the cube. The
+    // decoder must surface those pairs (indices into the shared
+    // vertex table) on `Primitive::extras["fbx:edges"]`.
+    let mut dec = FbxDecoder::new();
+    let scene = dec.decode(FIXTURE).expect("ASCII fixture decodes");
+
+    // The three plain-cube Geometries carry 12-edge tables; find one
+    // (robust to scene ordering).
+    let prim = scene
+        .meshes
+        .iter()
+        .flat_map(|m| m.primitives.iter())
+        .find(|p| {
+            p.extras
+                .get("fbx:edges")
+                .and_then(|v| v.as_array())
+                .is_some_and(|a| a.len() == 24)
+        })
+        .expect("a cube primitive surfaces 12 decoded edges");
+
+    let flat: Vec<i64> = prim.extras["fbx:edges"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_i64().unwrap())
+        .collect();
+    // The §2 worked-decode table, in Edges-array order.
+    assert_eq!(
+        flat,
+        vec![0, 1, 1, 3, 3, 2, 2, 0, 3, 5, 5, 4, 4, 2, 5, 7, 7, 6, 6, 4, 7, 1, 0, 6]
+    );
+}
+
+#[test]
+fn ascii_fixture_cube_smoothing_is_by_edge_all_hard() {
+    // Round 407 — the fixture's cube Geometry carries a
+    // `LayerElementSmoothing` mapped `ByEdge` / `Direct` with
+    // `Smoothing: *12` all zeros (§4a of the staged doc: 0 = hard
+    // edge → a fully faceted cube, consistent with its
+    // `ByPolygonVertex` per-face normals).
+    let mut dec = FbxDecoder::new();
+    let scene = dec.decode(FIXTURE).expect("ASCII fixture decodes");
+
+    let prim = scene
+        .meshes
+        .iter()
+        .flat_map(|m| m.primitives.iter())
+        .find(|p| {
+            p.extras
+                .get("fbx:edges")
+                .and_then(|v| v.as_array())
+                .is_some_and(|a| a.len() == 24)
+        })
+        .expect("a cube primitive surfaces 12 decoded edges");
+
+    assert_eq!(
+        prim.extras["fbx:smoothing_mapping"].as_str(),
+        Some("ByEdge")
+    );
+    // Per-edge flags: 12 zeros, aligned with fbx:edges.
+    let per_edge: Vec<i64> = prim.extras["fbx:edge_smoothing"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_i64().unwrap())
+        .collect();
+    assert_eq!(per_edge, vec![0i64; 12]);
+    // Per-corner resolution: every corner's starting edge is hard.
+    let per_corner: Vec<i64> = prim.extras["fbx:smoothing"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_i64().unwrap())
+        .collect();
+    assert_eq!(per_corner, vec![0i64; prim.positions.len()]);
+    assert_eq!(prim.positions.len(), 36, "6 quads → 12 tris → 36 corners");
+}
+
+#[test]
+fn ascii_fixture_subdivided_cube_edges_all_decode_distinct() {
+    // Round 407 — the fixture's fourth Geometry (the smooth-mesh
+    // preview cube) carries `Edges: *384` over a 768-entry
+    // `PolygonVertexIndex` (192 quads). Every entry must decode
+    // in-range, and — per §1 ("Edges is the deduplicated edge set") —
+    // the 384 undirected pairs must all be distinct, with no
+    // degenerate self-edges.
+    let mut dec = FbxDecoder::new();
+    let scene = dec.decode(FIXTURE).expect("ASCII fixture decodes");
+
+    let prim = scene
+        .meshes
+        .iter()
+        .flat_map(|m| m.primitives.iter())
+        .find(|p| {
+            p.extras
+                .get("fbx:edges")
+                .and_then(|v| v.as_array())
+                .is_some_and(|a| a.len() == 384 * 2)
+        })
+        .expect("the subdivided cube surfaces 384 decoded edges");
+
+    let flat: Vec<i64> = prim.extras["fbx:edges"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_i64().unwrap())
+        .collect();
+    let mut set: Vec<(i64, i64)> = flat
+        .chunks_exact(2)
+        .map(|p| (p[0].min(p[1]), p[0].max(p[1])))
+        .collect();
+    for &(a, b) in &set {
+        assert_ne!(a, b, "degenerate self-edge ({a},{b})");
+    }
+    set.sort_unstable();
+    set.dedup();
+    assert_eq!(set.len(), 384, "all 384 undirected edges distinct");
+
+    // Its smoothing layer is ByEdge/Direct over the same 384-edge
+    // domain.
+    assert_eq!(
+        prim.extras["fbx:smoothing_mapping"].as_str(),
+        Some("ByEdge")
+    );
+    assert_eq!(
+        prim.extras["fbx:edge_smoothing"].as_array().unwrap().len(),
+        384
+    );
+    assert_eq!(
+        prim.extras["fbx:smoothing"].as_array().unwrap().len(),
+        prim.positions.len()
+    );
+}

@@ -43,10 +43,19 @@
 //!   handling matches Normals (`ByPolygonVertex` / `ByVertex` with
 //!   optional `IndexToDirect` indirection).
 //!
+//! - `fbx:edges` / `fbx:smoothing` / `fbx:smoothing_mapping` /
+//!   `fbx:edge_smoothing` extras — the `Edges` unique-edge array and
+//!   the `LayerElementSmoothing` layer (per-edge hard/soft flags
+//!   under `ByEdge`, per-polygon smoothing-group bitmasks under
+//!   `ByPolygon`), decoded per
+//!   `docs/3d/fbx/fbx-edges-smoothing-layer.md`.
+//!
 //! The original shared-vertex buffer is preserved on
 //! `Mesh::extras["fbx:shared_positions"]` (length `3 * V`) so an
 //! authoring-tool consumer can reconstruct the original FBX vertex
 //! layout if needed.
+
+use std::collections::HashMap;
 
 use serde_json::Value;
 
@@ -388,6 +397,80 @@ pub fn extract_geometry_mesh_with_corners(
             }) {
                 prim.extras
                     .insert("fbx:material_mapping".to_string(), Value::String(mapping));
+            }
+        }
+    }
+
+    // `Edges` array + `LayerElementSmoothing` — per
+    // `docs/3d/fbx/fbx-edges-smoothing-layer.md`. The optional
+    // `Edges` array (§1) enumerates the mesh's unique edges: each
+    // entry is an index into `PolygonVertexIndex` naming the edge's
+    // *start corner*; the second endpoint is the next corner within
+    // the same polygon (wrapping at the polygon's closing corner).
+    // The decoded undirected shared-vertex pairs land on
+    // `Primitive::extras["fbx:edges"]` (flat `[a0,b0,a1,b1,…]`,
+    // indices into the `fbx:shared_positions` vertex table).
+    //
+    // `LayerElementSmoothing` (§4) is branched on its
+    // `MappingInformationType`, because the same `Smoothing` values
+    // mean completely different things in the two valid modes:
+    //
+    // - `ByEdge` — one hard/soft flag per unique edge (`0` = hard,
+    //   non-zero = soft). The raw per-edge flags ride on
+    //   `fbx:edge_smoothing` (aligned with `fbx:edges`), and are
+    //   also resolved to a per-corner buffer on `fbx:smoothing`:
+    //   each corner carries the flag of the polygon edge that starts
+    //   at its `PolygonVertexIndex` slot.
+    // - `ByPolygon` — one smoothing-group bitmask per polygon (§4b;
+    //   adjacent polygons smooth across their shared edge iff
+    //   `mask_a & mask_b != 0`), broadcast per corner onto
+    //   `fbx:smoothing`.
+    //
+    // `fbx:smoothing_mapping` records which of the two source forms
+    // produced the buffer (per-edge boolean vs per-polygon bitmask).
+    let edge_pairs = match read_edges(geom)? {
+        Some(raw) => Some(decode_edges(&raw, &polygon_indices)?),
+        None => None,
+    };
+    if let Some(pairs) = &edge_pairs {
+        prim.extras.insert(
+            "fbx:edges".to_string(),
+            Value::Array(
+                pairs
+                    .iter()
+                    .flat_map(|p| p.iter())
+                    .map(|&v| Value::Number(serde_json::Number::from(v)))
+                    .collect(),
+            ),
+        );
+    }
+    if let Some(layer) = geom.children_named("LayerElementSmoothing").next() {
+        if let Some(sm) =
+            pull_layer_smoothing(layer, edge_pairs.as_deref(), &polygon_indices, &triangles)?
+        {
+            prim.extras.insert(
+                "fbx:smoothing".to_string(),
+                Value::Array(
+                    sm.per_corner
+                        .iter()
+                        .map(|&v| Value::Number(serde_json::Number::from(v)))
+                        .collect(),
+                ),
+            );
+            prim.extras.insert(
+                "fbx:smoothing_mapping".to_string(),
+                Value::String(sm.mapping.to_string()),
+            );
+            if let Some(per_edge) = &sm.per_edge {
+                prim.extras.insert(
+                    "fbx:edge_smoothing".to_string(),
+                    Value::Array(
+                        per_edge
+                            .iter()
+                            .map(|&v| Value::Number(serde_json::Number::from(v)))
+                            .collect(),
+                    ),
+                );
             }
         }
     }
@@ -1014,6 +1097,217 @@ fn pull_layer_material_slots(
     Ok(None)
 }
 
+/// Read the optional `Geometry`-level `Edges` array (an `i` int32
+/// array per `docs/3d/fbx/fbx-edges-smoothing-layer.md` §1). Each
+/// value is an index into `PolygonVertexIndex` naming a unique edge's
+/// start corner. Returns `Ok(None)` when the node is absent; errors
+/// when present with a non-integer payload.
+fn read_edges(geom: &FbxNode) -> Result<Option<Vec<i64>>> {
+    let Some(node) = geom.child("Edges") else {
+        return Ok(None);
+    };
+    match node.properties.first() {
+        Some(FbxProperty::I32Array(a)) => Ok(Some(a.iter().map(|&v| v as i64).collect())),
+        // The ASCII front-end widens integer arrays whose values
+        // overflow i32; tolerate the widened form (each value is
+        // re-validated against the PolygonVertexIndex length in
+        // `decode_edges`).
+        Some(FbxProperty::I64Array(a)) => Ok(Some(a.clone())),
+        _ => Err(Error::invalid(
+            "FBX Geometry: Edges property is not an integer array",
+        )),
+    }
+}
+
+/// For each `PolygonVertexIndex` slot, the slot of the *next* corner
+/// within the same polygon: `k + 1`, except a polygon's last corner
+/// (the negative end-of-polygon marker) wraps back to that polygon's
+/// first corner, closing the face loop
+/// (`docs/3d/fbx/fbx-edges-smoothing-layer.md` §1).
+fn pvi_next_corner_table(pvi: &[i32]) -> Vec<u32> {
+    let mut next = vec![0u32; pvi.len()];
+    let mut polygon_start = 0usize;
+    for (k, &raw) in pvi.iter().enumerate() {
+        if raw < 0 {
+            next[k] = polygon_start as u32;
+            polygon_start = k + 1;
+        } else {
+            next[k] = (k + 1) as u32;
+        }
+    }
+    next
+}
+
+/// Decode the `Edges` array into undirected shared-vertex index pairs
+/// per `docs/3d/fbx/fbx-edges-smoothing-layer.md` §1:
+///
+/// ```text
+/// A = vertexOf( PolygonVertexIndex[ Edges[i] ] )
+/// B = vertexOf( PolygonVertexIndex[ nextCornerInSamePolygon(Edges[i]) ] )
+/// ```
+///
+/// where `vertexOf` undoes the negative last-corner encoding
+/// (`decode_pvi`) and the next corner wraps at the polygon boundary
+/// (`pvi_next_corner_table`). Errors on an `Edges` value outside the
+/// `PolygonVertexIndex` range or on a start corner with no in-range
+/// next corner (an unterminated final polygon).
+fn decode_edges(edges: &[i64], pvi: &[i32]) -> Result<Vec<[u32; 2]>> {
+    let next = pvi_next_corner_table(pvi);
+    let mut pairs = Vec::with_capacity(edges.len());
+    for &e in edges {
+        if e < 0 || e as usize >= pvi.len() {
+            return Err(Error::invalid(format!(
+                "FBX Geometry: Edges value {e} out of range for {}-entry PolygonVertexIndex",
+                pvi.len()
+            )));
+        }
+        let k = e as usize;
+        let a = decode_pvi(pvi[k]);
+        let b = pvi
+            .get(next[k] as usize)
+            .copied()
+            .map(decode_pvi)
+            .ok_or_else(|| {
+                Error::invalid(format!(
+                    "FBX Geometry: Edges start corner {k} has no next corner (PolygonVertexIndex not closed by a negative end-of-polygon marker)"
+                ))
+            })?;
+        pairs.push([a, b]);
+    }
+    Ok(pairs)
+}
+
+/// A decoded `LayerElementSmoothing` layer
+/// (`docs/3d/fbx/fbx-edges-smoothing-layer.md` §4).
+struct SmoothingLayer {
+    /// `MappingInformationType` — `"ByEdge"` (per-edge hard/soft
+    /// flags) or `"ByPolygon"` (per-polygon smoothing-group
+    /// bitmasks). The same `Smoothing` values mean different things
+    /// in the two modes, so consumers must branch on this.
+    mapping: &'static str,
+    /// One value per triangulated corner (`ByEdge`: the flag of the
+    /// polygon edge starting at the corner's `PolygonVertexIndex`
+    /// slot; `ByPolygon`: the owning polygon's bitmask).
+    per_corner: Vec<i64>,
+    /// `ByEdge` only — the raw per-edge flags, aligned with the
+    /// decoded edge list.
+    per_edge: Option<Vec<i64>>,
+}
+
+/// Pull a `LayerElementSmoothing` record per
+/// `docs/3d/fbx/fbx-edges-smoothing-layer.md` §4/§4c:
+///
+/// - `ByEdge` — one flag per unique edge (`len == len(Edges)`,
+///   mismatch errors). A `ByEdge` layer with **no** `Edges` array
+///   present cannot be bound (there is no edge domain to index) and
+///   yields no smoothing buffer rather than being mis-attributed.
+/// - `ByPolygon` — one smoothing-group bitmask per polygon
+///   (`len == polygon_count`, mismatch errors).
+/// - Any other mapping mode carries no usable smoothing → `None`.
+///
+/// The layer is `Direct`-referenced in practice (§4a) and no
+/// companion index-array name is documented for it, so a non-`Direct`
+/// reference mode also yields `None` rather than guessing.
+fn pull_layer_smoothing(
+    layer: &FbxNode,
+    edge_pairs: Option<&[[u32; 2]]>,
+    pvi: &[i32],
+    triangles: &Triangulation,
+) -> Result<Option<SmoothingLayer>> {
+    let mapping = layer.child("MappingInformationType").and_then(|n| {
+        n.properties
+            .first()
+            .and_then(FbxProperty::as_str)
+            .map(str::to_owned)
+    });
+    let reference = layer.child("ReferenceInformationType").and_then(|n| {
+        n.properties
+            .first()
+            .and_then(FbxProperty::as_str)
+            .map(str::to_owned)
+    });
+    if !matches!(reference.as_deref(), None | Some("Direct")) {
+        return Ok(None);
+    }
+    let Some(data_node) = layer.child("Smoothing") else {
+        return Ok(None);
+    };
+    let data: Vec<i64> = match data_node.properties.first() {
+        Some(FbxProperty::I32Array(a)) => a.iter().map(|&v| v as i64).collect(),
+        Some(FbxProperty::I64Array(a)) => a.clone(),
+        _ => return Ok(None),
+    };
+    match mapping.as_deref() {
+        Some("ByEdge") => {
+            let Some(pairs) = edge_pairs else {
+                return Ok(None);
+            };
+            if data.len() != pairs.len() {
+                return Err(Error::invalid(format!(
+                    "FBX LayerElementSmoothing: ByEdge Smoothing carries {} values for {} edges",
+                    data.len(),
+                    pairs.len()
+                )));
+            }
+            let per_corner = smoothing_per_corner_by_edge(pairs, &data, pvi, triangles);
+            Ok(Some(SmoothingLayer {
+                mapping: "ByEdge",
+                per_corner,
+                per_edge: Some(data),
+            }))
+        }
+        Some("ByPolygon") => {
+            if data.len() != triangles.polygon_count as usize {
+                return Err(Error::invalid(format!(
+                    "FBX LayerElementSmoothing: ByPolygon Smoothing carries {} values for {} polygons",
+                    data.len(),
+                    triangles.polygon_count
+                )));
+            }
+            let per_corner = (0..triangles.corner_indices.len())
+                .map(|ci| data[triangles.tri_polygon_index[ci / 3] as usize])
+                .collect();
+            Ok(Some(SmoothingLayer {
+                mapping: "ByPolygon",
+                per_corner,
+                per_edge: None,
+            }))
+        }
+        _ => Ok(None),
+    }
+}
+
+/// Resolve per-edge hard/soft flags to one value per triangulated
+/// corner. Each `PolygonVertexIndex` slot starts exactly one polygon
+/// edge (running to the next corner in the same polygon, wrapping at
+/// the closing corner), and `Edges` lists each undirected edge once
+/// even when two polygons share it — so the lookup is by undirected
+/// shared-vertex pair. A polygon edge absent from `Edges`
+/// (out-of-spec — §1 says `Edges` is the complete deduplicated edge
+/// set) defaults to `0`, the hard/no-smoothing value.
+fn smoothing_per_corner_by_edge(
+    pairs: &[[u32; 2]],
+    flags: &[i64],
+    pvi: &[i32],
+    triangles: &Triangulation,
+) -> Vec<i64> {
+    let mut by_pair: HashMap<(u32, u32), i64> = HashMap::with_capacity(pairs.len());
+    for (p, &flag) in pairs.iter().zip(flags) {
+        by_pair.insert((p[0].min(p[1]), p[0].max(p[1])), flag);
+    }
+    let next = pvi_next_corner_table(pvi);
+    triangles
+        .corner_pvi_index
+        .iter()
+        .map(|&k| {
+            let k = k as usize;
+            let a = decode_pvi(pvi[k]);
+            let b = decode_pvi(pvi[next[k] as usize]);
+            by_pair.get(&(a.min(b), a.max(b))).copied().unwrap_or(0)
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1339,5 +1633,284 @@ mod tests {
         assert_eq!(prim.colors[0][0], [1.0, 0.0, 0.0, 1.0]);
         assert_eq!(prim.colors[1][0], [0.0, 0.0, 0.0, 1.0]);
         assert_eq!(prim.colors[1][2], [1.0, 1.0, 1.0, 1.0]);
+    }
+
+    // ---- Edges + LayerElementSmoothing ------------------------------
+    // (docs/3d/fbx/fbx-edges-smoothing-layer.md)
+
+    /// The 8-vertex / 12-edge / 6-quad cube from the worked decode in
+    /// `fbx-edges-smoothing-layer.md` §2 (the staged
+    /// `cubes-ascii-v7500.fbx` fixture's first Geometry).
+    fn cube_pvi() -> Vec<i32> {
+        vec![
+            0, 1, 3, -3, // f0
+            2, 3, 5, -5, // f1
+            4, 5, 7, -7, // f2
+            6, 7, 1, -1, // f3
+            1, 7, 5, -4, // f4
+            6, 0, 2, -5, // f5
+        ]
+    }
+
+    fn cube_edges() -> Vec<i64> {
+        vec![0, 1, 2, 3, 5, 6, 7, 9, 10, 11, 13, 15]
+    }
+
+    fn make_layer_smoothing_node(smoothing: Vec<i32>, mapping: &str, reference: &str) -> FbxNode {
+        FbxNode {
+            name: "LayerElementSmoothing".to_string(),
+            properties: vec![FbxProperty::I32(0)],
+            children: vec![
+                FbxNode {
+                    name: "MappingInformationType".to_string(),
+                    properties: vec![FbxProperty::String(mapping.as_bytes().to_vec())],
+                    children: Vec::new(),
+                },
+                FbxNode {
+                    name: "ReferenceInformationType".to_string(),
+                    properties: vec![FbxProperty::String(reference.as_bytes().to_vec())],
+                    children: Vec::new(),
+                },
+                FbxNode {
+                    name: "Smoothing".to_string(),
+                    properties: vec![FbxProperty::I32Array(smoothing)],
+                    children: Vec::new(),
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn decode_edges_matches_worked_cube_example() {
+        // §2 of the staged doc decodes the fixture's `Edges: *12`
+        // against its `PolygonVertexIndex: *24` by hand — this is
+        // that table verbatim, including the four wrap-at-closing-
+        // corner rows (Edges values 3, 7, 11, 15).
+        let pvi = cube_pvi();
+        let pairs = decode_edges(&cube_edges(), &pvi).unwrap();
+        assert_eq!(
+            pairs,
+            vec![
+                [0, 1],
+                [1, 3],
+                [3, 2],
+                [2, 0], // wrap: c3 → c0
+                [3, 5],
+                [5, 4],
+                [4, 2], // wrap: c7 → c4
+                [5, 7],
+                [7, 6],
+                [6, 4], // wrap: c11 → c8
+                [7, 1],
+                [0, 6], // wrap: c15 → c12
+            ]
+        );
+        // Euler check from the doc: 12 distinct undirected edges of a
+        // cube (V − E + F = 8 − 12 + 6 = 2).
+        let mut set: Vec<(u32, u32)> = pairs
+            .iter()
+            .map(|p| (p[0].min(p[1]), p[0].max(p[1])))
+            .collect();
+        set.sort_unstable();
+        set.dedup();
+        assert_eq!(set.len(), 12, "all 12 cube edges distinct");
+    }
+
+    #[test]
+    fn decode_edges_rejects_out_of_range_values() {
+        let pvi = cube_pvi();
+        assert!(decode_edges(&[24], &pvi).is_err(), "index == len");
+        assert!(decode_edges(&[-1], &pvi).is_err(), "negative index");
+    }
+
+    fn cube_geometry(children_extra: Vec<FbxNode>) -> FbxNode {
+        let mut children = vec![
+            FbxNode {
+                name: "Vertices".to_string(),
+                // 8 distinct control points (coordinates immaterial
+                // to the topology under test).
+                properties: vec![FbxProperty::F64Array(
+                    (0..24).map(|i| i as f64).collect::<Vec<f64>>(),
+                )],
+                children: Vec::new(),
+            },
+            FbxNode {
+                name: "PolygonVertexIndex".to_string(),
+                properties: vec![FbxProperty::I32Array(cube_pvi())],
+                children: Vec::new(),
+            },
+        ];
+        children.extend(children_extra);
+        FbxNode {
+            name: "Geometry".to_string(),
+            properties: vec![
+                FbxProperty::I64(1),
+                FbxProperty::String(b"Geometry::cube\x00\x01Mesh".to_vec()),
+                FbxProperty::String(b"Mesh".to_vec()),
+            ],
+            children,
+        }
+    }
+
+    fn edges_node() -> FbxNode {
+        FbxNode {
+            name: "Edges".to_string(),
+            properties: vec![FbxProperty::I32Array(
+                cube_edges().iter().map(|&v| v as i32).collect(),
+            )],
+            children: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn edges_surface_on_extras_without_smoothing_layer() {
+        let geom = cube_geometry(vec![edges_node()]);
+        let (mesh, _) = extract_geometry_mesh_with_corners(&geom, None).unwrap();
+        let prim = &mesh.primitives[0];
+        let edges = prim.extras["fbx:edges"].as_array().unwrap();
+        assert_eq!(edges.len(), 24, "12 undirected pairs, flattened");
+        assert_eq!(edges[0].as_i64(), Some(0));
+        assert_eq!(edges[1].as_i64(), Some(1));
+        // Last pair is (0, 6) — the c15 wrap row.
+        assert_eq!(edges[22].as_i64(), Some(0));
+        assert_eq!(edges[23].as_i64(), Some(6));
+        assert!(!prim.extras.contains_key("fbx:smoothing"));
+        assert!(!prim.extras.contains_key("fbx:edge_smoothing"));
+    }
+
+    #[test]
+    fn smoothing_by_edge_resolves_per_corner() {
+        // Soft flag on edge 0 only — the undirected pair (0, 1). Two
+        // polygon edges carry that pair: the one starting at pvi c0
+        // (f0: v0→v1) and the one starting at pvi c14 (f3: v1→v0) —
+        // the undirected lookup must match both directions. Fan
+        // triangulation maps pvi c0 → triangulated corners 0 and 3,
+        // and pvi c14 → corners 20 and 22.
+        let mut flags = vec![0; 12];
+        flags[0] = 1;
+        let geom = cube_geometry(vec![
+            edges_node(),
+            make_layer_smoothing_node(flags, "ByEdge", "Direct"),
+        ]);
+        let (mesh, _) = extract_geometry_mesh_with_corners(&geom, None).unwrap();
+        let prim = &mesh.primitives[0];
+        assert_eq!(
+            prim.extras["fbx:smoothing_mapping"].as_str(),
+            Some("ByEdge")
+        );
+        let per_corner: Vec<i64> = prim.extras["fbx:smoothing"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_i64().unwrap())
+            .collect();
+        assert_eq!(per_corner.len(), 36, "6 quads → 12 tris → 36 corners");
+        let mut expected = vec![0i64; 36];
+        for ix in [0, 3, 20, 22] {
+            expected[ix] = 1;
+        }
+        assert_eq!(per_corner, expected);
+        // Raw per-edge flags ride alongside, aligned with fbx:edges.
+        let per_edge: Vec<i64> = prim.extras["fbx:edge_smoothing"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_i64().unwrap())
+            .collect();
+        assert_eq!(per_edge[0], 1);
+        assert_eq!(per_edge[1..], vec![0i64; 11]);
+    }
+
+    #[test]
+    fn smoothing_by_polygon_broadcasts_bitmask_per_corner() {
+        // §4b: per-polygon smoothing-group bitmasks, one per polygon,
+        // broadcast to every corner fanned from that polygon.
+        let masks = vec![1, 2, 4, 8, 3, 0];
+        let geom = cube_geometry(vec![make_layer_smoothing_node(
+            masks.clone(),
+            "ByPolygon",
+            "Direct",
+        )]);
+        let (mesh, _) = extract_geometry_mesh_with_corners(&geom, None).unwrap();
+        let prim = &mesh.primitives[0];
+        assert_eq!(
+            prim.extras["fbx:smoothing_mapping"].as_str(),
+            Some("ByPolygon")
+        );
+        let per_corner: Vec<i64> = prim.extras["fbx:smoothing"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_i64().unwrap())
+            .collect();
+        // Each quad fans into 2 triangles = 6 corners.
+        let expected: Vec<i64> = masks
+            .iter()
+            .flat_map(|&m| std::iter::repeat(m as i64).take(6))
+            .collect();
+        assert_eq!(per_corner, expected);
+        // ByPolygon has no per-edge form.
+        assert!(!prim.extras.contains_key("fbx:edge_smoothing"));
+    }
+
+    #[test]
+    fn smoothing_by_edge_without_edges_array_yields_none() {
+        // §4c: a ByEdge layer with no Edges array cannot be bound —
+        // no smoothing buffer, no mis-attribution.
+        let geom = cube_geometry(vec![make_layer_smoothing_node(
+            vec![0; 12],
+            "ByEdge",
+            "Direct",
+        )]);
+        let (mesh, _) = extract_geometry_mesh_with_corners(&geom, None).unwrap();
+        let prim = &mesh.primitives[0];
+        assert!(!prim.extras.contains_key("fbx:smoothing"));
+        assert!(!prim.extras.contains_key("fbx:smoothing_mapping"));
+    }
+
+    #[test]
+    fn smoothing_by_edge_length_mismatch_errors() {
+        let geom = cube_geometry(vec![
+            edges_node(),
+            make_layer_smoothing_node(vec![0; 11], "ByEdge", "Direct"),
+        ]);
+        let err = extract_geometry_mesh_with_corners(&geom, None).unwrap_err();
+        assert!(format!("{err}").contains("ByEdge"));
+    }
+
+    #[test]
+    fn smoothing_by_polygon_length_mismatch_errors() {
+        let geom = cube_geometry(vec![make_layer_smoothing_node(
+            vec![0; 5],
+            "ByPolygon",
+            "Direct",
+        )]);
+        let err = extract_geometry_mesh_with_corners(&geom, None).unwrap_err();
+        assert!(format!("{err}").contains("ByPolygon"));
+    }
+
+    #[test]
+    fn smoothing_other_mapping_modes_yield_none() {
+        // §4c else-branch: only ByEdge and ByPolygon are valid for
+        // this layer — a ByPolygonVertex (or AllSame) array must not
+        // be mis-attributed as smoothing data.
+        for mapping in ["ByPolygonVertex", "AllSame", "ByVertex"] {
+            let geom = cube_geometry(vec![
+                edges_node(),
+                make_layer_smoothing_node(vec![1; 12], mapping, "Direct"),
+            ]);
+            let (mesh, _) = extract_geometry_mesh_with_corners(&geom, None).unwrap();
+            assert!(
+                !mesh.primitives[0].extras.contains_key("fbx:smoothing"),
+                "{mapping} must not bind as smoothing"
+            );
+        }
+        // Undocumented reference mode: same disposition.
+        let geom = cube_geometry(vec![
+            edges_node(),
+            make_layer_smoothing_node(vec![1; 12], "ByEdge", "IndexToDirect"),
+        ]);
+        let (mesh, _) = extract_geometry_mesh_with_corners(&geom, None).unwrap();
+        assert!(!mesh.primitives[0].extras.contains_key("fbx:smoothing"));
     }
 }

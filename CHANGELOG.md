@@ -24,6 +24,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Round 407 — **`Edges` array + `LayerElementSmoothing` decode.** Per
+  the freshly staged `docs/3d/fbx/fbx-edges-smoothing-layer.md`
+  (ask #220), the `Geometry`-level `Edges` array is now decoded: each
+  value indexes `PolygonVertexIndex` naming a unique edge's start
+  corner, the second endpoint being the next corner within the same
+  polygon (wrapping at the polygon's negative closing corner). The
+  decoded undirected shared-vertex pairs surface on
+  `Primitive::extras["fbx:edges"]` (flat `[a0,b0,…]`, indices into
+  `fbx:shared_positions`). `LayerElementSmoothing` is branched on its
+  `MappingInformationType`: `ByEdge` (one hard/soft flag per unique
+  edge, `0` = hard) surfaces the raw flags on `fbx:edge_smoothing`
+  and resolves them to a per-corner buffer on `fbx:smoothing` (each
+  corner carries the flag of the polygon edge starting at its
+  `PolygonVertexIndex` slot, matched by undirected vertex pair so an
+  edge shared by two polygons binds both traversal directions);
+  `ByPolygon` (one smoothing-group bitmask per polygon) broadcasts
+  per corner onto `fbx:smoothing`. `fbx:smoothing_mapping` records
+  which form the source used. Per the doc's §4c recipe, a `ByEdge`
+  layer with no `Edges` array yields no smoothing buffer, ByEdge /
+  ByPolygon length mismatches error, and any other mapping or
+  reference mode is never mis-attributed as smoothing. The decode of
+  the staged `cubes-ascii-v7500.fbx` fixture is pinned test-side to
+  the doc's §2 hand-worked 12-edge cube table, and the fixture's
+  384-edge smooth-preview cube must decode to 384 distinct
+  undirected edges.
+
 - Round 398 — **32-bit vs 64-bit offset-width parity tests.** Two new
   `encoder_roundtrip` tests encode the same normals+UV quad at version
   `7400` (32-bit `EndOffset`/`NumProperties`/`PropertyListLen` Node
