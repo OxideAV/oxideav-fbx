@@ -567,3 +567,94 @@ fn ascii_fixture_subdivided_cube_edges_all_decode_distinct() {
         prim.positions.len()
     );
 }
+
+#[test]
+fn ascii_fixture_edges_arrays_are_the_complete_deduplicated_edge_sets() {
+    // Round 407 — §1 of fbx-edges-smoothing-layer.md states `Edges`
+    // enumerates the mesh's unique edges, duplicates shared by two
+    // polygons listed once. Double-entry check: for every Geometry in
+    // the fixture, independently derive the unique undirected edge
+    // set from the raw `PolygonVertexIndex` (each corner starts one
+    // polygon edge, running to the next corner in the same polygon
+    // with wrap at the negative closing corner) and assert the
+    // decoder-surfaced `fbx:edges` pairs are exactly that set — same
+    // members, no duplicates, nothing missing.
+    let mut dec = FbxDecoder::new();
+    let scene = dec.decode(FIXTURE).expect("ASCII fixture decodes");
+    let doc = dec.last_document.as_ref().unwrap();
+
+    let geometries: Vec<&oxideav_fbx::FbxNode> = doc
+        .root
+        .child("Objects")
+        .expect("Objects section")
+        .children_named("Geometry")
+        .collect();
+    assert_eq!(geometries.len(), 4, "fixture carries four Geometry nodes");
+
+    // Independent derivation from each raw PolygonVertexIndex.
+    let derived_sets: Vec<Vec<(i64, i64)>> = geometries
+        .iter()
+        .map(|g| {
+            let pvi = match &g.child("PolygonVertexIndex").unwrap().properties[0] {
+                oxideav_fbx::FbxProperty::I32Array(a) => a.clone(),
+                other => panic!("PolygonVertexIndex not i32: {other:?}"),
+            };
+            let decode = |raw: i32| -> i64 {
+                if raw < 0 {
+                    (!raw) as i64
+                } else {
+                    raw as i64
+                }
+            };
+            let mut set = Vec::new();
+            let mut start = 0usize;
+            for (k, &raw) in pvi.iter().enumerate() {
+                let next = if raw < 0 { start } else { k + 1 };
+                if raw < 0 {
+                    start = k + 1;
+                }
+                let a = decode(raw);
+                let b = decode(pvi[next]);
+                set.push((a.min(b), a.max(b)));
+            }
+            set.sort_unstable();
+            set.dedup();
+            set
+        })
+        .collect();
+
+    // Decoder-surfaced fbx:edges, one per mesh, matched by edge count
+    // (three 12-edge cubes + one 384-edge subdivided cube).
+    let mut surfaced: Vec<Vec<(i64, i64)>> = scene
+        .meshes
+        .iter()
+        .flat_map(|m| m.primitives.iter())
+        .filter_map(|p| p.extras.get("fbx:edges"))
+        .map(|v| {
+            let flat: Vec<i64> = v
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|x| x.as_i64().unwrap())
+                .collect();
+            let mut set: Vec<(i64, i64)> = flat
+                .chunks_exact(2)
+                .map(|p| (p[0].min(p[1]), p[0].max(p[1])))
+                .collect();
+            let n = set.len();
+            set.sort_unstable();
+            set.dedup();
+            assert_eq!(set.len(), n, "fbx:edges lists each edge once");
+            set
+        })
+        .collect();
+    assert_eq!(surfaced.len(), 4, "every Geometry surfaced an edge set");
+
+    let mut derived = derived_sets;
+    derived.sort();
+    surfaced.sort();
+    assert_eq!(
+        derived, surfaced,
+        "each Edges array is exactly the mesh's deduplicated edge set"
+    );
+}
