@@ -7,6 +7,73 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.3](https://github.com/OxideAV/oxideav-fbx/compare/v0.0.2...v0.0.3) - 2026-07-14
+
+### Other
+
+- README + CHANGELOG: round 413 — Documents/References, Definitions census + templates, hostile-input hardening
+- deterministic bounded fuzz sweeps over both front-ends
+- cap body nesting at the shared MAX_NODE_DEPTH limit
+- harden the record reader against three hostile-input aborts
+- pin end-to-end template-default resolution through the encoder
+- synthesise the $7b PropertyTemplate default sets
+- derive the Definitions census from the emitted Objects tree
+- emit the Documents + References sections in $7 order
+- decode the Documents section catalogue onto Scene3D extras
+- pin the legacy Index reference mode as an IndexToDirect alias
+- prove fixture Edges arrays are the complete deduplicated edge sets
+- document Edges array + LayerElementSmoothing support
+- re-emit Edges + LayerElementSmoothing for round trips
+- decode Edges array + LayerElementSmoothing (ByEdge/ByPolygon)
+- document ByPolygon/AllSame mapping + compcol deflate backend
+- 32-bit vs 64-bit Node Record offset-width parity
+- ByPolygon normals survive decode->encode->decode round-trip
+- migrate deflate backend miniz_oxide -> compcol
+- flatten ByPolygon + AllSame LayerElement mapping modes
+- add CI / crates.io / docs.rs / MIT-license badges
+- README + CHANGELOG for the round-384 encoder round-trip parity drive
+- encoder extra-layer + binormal re-emission from extras (round 384)
+- encoder GlobalSettings parity + LimbNode/Null kind-marker re-emission (round 384)
+- encoder Takes + FBXHeaderExtension authoring-metadata emission (round 384)
+- encoder Light / Camera NodeAttribute emission (round 384)
+- encoder skin + blend-shape deformer emission with DeformPercent animation (round 384)
+- encoder multi-material slot-table emission (round 384)
+- encoder multi-UV-set + vertex-colour + tangent layer emission (round 384)
+- neutralize reference-SDK naming in scene_writer doc comment
+- README + CHANGELOG + lib docs for the round-377 Scene3D encoder
+- encoder animation-curve emission — Stack/Layer/CurveNode/Curve graph (round 377)
+- encoder GlobalSettings emission — UnitScaleFactor + axis ints (round 377)
+- encoder texture/Video emission + OP material-slot wiring (round 377)
+- encoder round-trip integration tests — normals/UVs/hierarchy/materials/ASCII/deflate (round 377)
+- Scene3D → FbxDocument encoder + Mesh3DEncoder impl (round 377)
+- Round 367: binary-front-end synthetic for node transforms + README/CHANGELOG
+- Round 367: static Model node local-transform decode (Lcl T/R/S → Transform::Trs)
+- neutralize residual third-party-parser symbol names missed by the r363 provenance scrub
+- clean-room provenance scrub — purge ufbx symbol/path citations (round 363)
+- decode FBXHeaderExtension authoring metadata onto Scene3D::extras (grammar §7a)
+- decode the Takes section onto Scene3D::extras (grammar §7e)
+- refresh to current status, drop per-round changelog cruft
+- Round 301: LayerElementTangent / LayerElementBinormal decode
+- decode multiple LayerElementNormal layers
+- Round 280: Definitions / PropertyTemplate decoding + template-default resolution
+- surface non-Mesh Geometry §6 subtype discriminator (round 271)
+- Round 263: Properties70 flag-discriminating iterators
+- Round 249: Properties70 "Compound" typeName-discriminating accessor
+- drop release-plz.toml — use release-plz defaults across the workspace
+- Round 246: Properties70 typeName-discriminating scalar accessors
+- Round 243: Properties70 typeName-discriminating accessors
+- Round 240: PropertyMap::as_i64 lossless KTime/ULongLong accessor
+- Round 235: NodeAttribute "LimbNode" / "Null" discriminator surfacing
+- scrub decorative "matches ufbx" wording in README + CHANGELOG
+- round 226 — derive bind-pose bone_to_parent
+- lib.rs doc — surface round 219 GlobalSettings in crate-level comment
+- Round 219: GlobalSettings P-record decode + Scene3D::unit / extras
+- Round 213: ASCII FBX writer (closes round-200 NYI tail)
+- Round 207: Light / Camera NodeAttribute surfacing
+- stage cubes-ascii-v7500.fbx in tests/fixtures/ for per-crate CI
+- Round 200: ASCII FBX reader (decoder accepts `; FBX` banner)
+- scrub residual decorative-attribution prose ahead of Hat-2
+
 ### Changed
 
 - Round 398 — **deflate backend migrated `miniz_oxide` → `compcol`.**
