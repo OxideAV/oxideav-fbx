@@ -204,6 +204,12 @@ pub mod deformer;
 /// `BlendShape` / `BlendShapeChannel` / `Geometry{Shape}` object
 /// trees, the inverse of [`deformer::extract_deformers`] (round 384).
 pub(crate) mod deformer_writer;
+/// `Documents` section decoder — document catalogue (name / subtype /
+/// `ActiveAnimStackName`) surfaced onto
+/// [`oxideav_mesh3d::Scene3D::extras`] per the §7 top-level section
+/// list in `docs/3d/fbx/fbx-ascii-grammar.md` + the staged
+/// cubes-ascii-v7500.fbx fixture body (round 413).
+pub mod documents;
 /// [`encoder::FbxEncoder`] — `Scene3D`-in, FBX bytes-out
 /// ([`oxideav_mesh3d::Mesh3DEncoder`]). The symmetric counterpart to
 /// [`decoder::FbxDecoder`] (round 377).

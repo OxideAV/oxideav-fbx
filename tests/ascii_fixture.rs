@@ -658,3 +658,39 @@ fn ascii_fixture_edges_arrays_are_the_complete_deduplicated_edge_sets() {
         "each Edges array is exactly the mesh's deduplicated edge set"
     );
 }
+
+#[test]
+fn ascii_fixture_documents_surface_to_scene_extras() {
+    // Round 413 — the fixture's `Documents` section (per the §7
+    // top-level section list) carries `Count: 1` + one
+    // `Document: <uid>, "", "Scene"` whose Properties70 holds
+    // `P: "ActiveAnimStackName", "KString", "", "", "Take 001"`.
+    // The catalogue surfaces on `Scene3D::extras`, and the active
+    // stack name joins to the `Takes` `Current` leaf / the
+    // `AnimStack::Take 001` display name.
+    let mut dec = FbxDecoder::new();
+    let scene = dec.decode(FIXTURE).expect("ASCII fixture decodes");
+
+    assert_eq!(
+        oxideav_fbx::documents::active_anim_stack_from_extras(&scene),
+        Some("Take 001")
+    );
+
+    let docs =
+        oxideav_fbx::documents::documents_from_extras(&scene).expect("fbx:documents surfaced");
+    assert_eq!(docs.len(), 1);
+    let d = &docs[0];
+    assert_eq!(d["name"].as_str(), Some(""));
+    assert_eq!(d["subtype"].as_str(), Some("Scene"));
+    assert_eq!(d["active_anim_stack"].as_str(), Some("Take 001"));
+
+    // Join keys agree: Documents' ActiveAnimStackName == Takes'
+    // Current take name.
+    assert_eq!(
+        scene
+            .extras
+            .get("fbx:current_take")
+            .and_then(|v| v.as_str()),
+        Some("Take 001")
+    );
+}

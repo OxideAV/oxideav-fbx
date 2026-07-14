@@ -27,6 +27,7 @@ use oxideav_mesh3d::{Error, Node, Result, Scene3D};
 use crate::animation::extract_animations;
 use crate::binary::{FbxDocument, FbxNode, FbxProperty};
 use crate::deformer::extract_deformers;
+use crate::documents::extract_documents;
 use crate::geometry::extract_geometry_mesh_with_corners;
 use crate::geometry_kind::extract_geometry_kinds;
 use crate::globals::extract_global_settings;
@@ -269,6 +270,17 @@ pub fn build_scene(doc: &FbxDocument) -> Result<Scene3D> {
     // `["fbx:current_take"]`, joinable back to each `Animation` by the
     // take name == `AnimationStack` display name. See `crate::takes`.
     extract_takes(doc, &mut scene);
+
+    // `Documents` section (round 413) — per the §7 top-level section
+    // list in `docs/3d/fbx/fbx-ascii-grammar.md` + the staged
+    // cubes-ascii-v7500.fbx fixture body: the document catalogue
+    // (per-Document name / subtype) plus the `ActiveAnimStackName`
+    // KString naming the animation stack that is active when the file
+    // opens (join key: it equals the `AnimationStack` display name /
+    // the `Takes` `Current` name). Surfaced on
+    // `Scene3D::extras["fbx:documents"]` / `["fbx:active_anim_stack"]`.
+    // See `crate::documents`.
+    extract_documents(doc, &mut scene);
 
     // Material / Texture / Video extraction. The per-Model -> Mesh
     // lookup is the inverse of the Geometry -> Model OO walk we did
