@@ -1406,3 +1406,68 @@ fn fixture_cube_smoothing_survives_re_encode() {
     );
     assert_eq!(before, after, "per-corner smoothing survives re-encode");
 }
+
+#[test]
+fn fixture_document_catalogue_survives_re_encode() {
+    // Round 413 — the fixture's Documents section (one "Scene"
+    // document whose ActiveAnimStackName is "Take 001") surfaces on
+    // decode and must survive a decode → encode → decode cycle in
+    // both output forms.
+    const FIXTURE: &[u8] = include_bytes!("fixtures/cubes-ascii-v7500.fbx");
+    let scene = decode(FIXTURE);
+    assert_eq!(
+        oxideav_fbx::documents::active_anim_stack_from_extras(&scene),
+        Some("Take 001")
+    );
+
+    for form in [FbxOutputForm::Binary, FbxOutputForm::Ascii] {
+        let bytes = FbxEncoder::new().form(form).encode(&scene).expect("encode");
+        let scene2 = decode(&bytes);
+        assert_eq!(
+            oxideav_fbx::documents::active_anim_stack_from_extras(&scene2),
+            Some("Take 001"),
+            "active stack survives {form:?} re-encode"
+        );
+        let docs =
+            oxideav_fbx::documents::documents_from_extras(&scene2).expect("fbx:documents survives");
+        assert_eq!(docs.len(), 1);
+        assert_eq!(docs[0]["subtype"].as_str(), Some("Scene"));
+        assert_eq!(docs[0]["active_anim_stack"].as_str(), Some("Take 001"));
+    }
+}
+
+#[test]
+fn encoded_scene_carries_documents_and_references_sections() {
+    // A freshly-authored scene (no round-tripped extras) still gets
+    // the §7 Documents + References sections: re-decoding surfaces the
+    // synthesised default "Scene" document, and the animated scene's
+    // stack-name fallback lands on the first animation's name.
+    let mut scene = Scene3D::new();
+    let mid = scene.add_mesh(quad_with_normals_and_uvs("Quad"));
+    let nid = scene.add_node(Node::new().with_name("QuadNode").with_mesh(mid));
+    scene.roots.push(nid);
+    let mut anim = Animation::new(Some("Take 001".to_string()));
+    anim.channels.push(AnimationChannel {
+        target: AnimationTarget {
+            node: nid,
+            property: AnimationProperty::Translation,
+        },
+        sampler: AnimationSampler {
+            keyframes: vec![0.0, 1.0],
+            values: AnimationValues::Vec3(vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]),
+            interpolation: Interpolation::Linear,
+        },
+    });
+    scene.add_animation(anim);
+
+    let scene2 = decode(&encode_binary(&scene));
+    let docs =
+        oxideav_fbx::documents::documents_from_extras(&scene2).expect("default document present");
+    assert_eq!(docs.len(), 1);
+    assert_eq!(docs[0]["subtype"].as_str(), Some("Scene"));
+    assert_eq!(
+        oxideav_fbx::documents::active_anim_stack_from_extras(&scene2),
+        Some("Take 001"),
+        "stack-name fallback = first animation's name"
+    );
+}

@@ -18,6 +18,8 @@
 //! ```text
 //! FBXHeaderExtension { FBXVersion: <version> }
 //! GlobalSettings { Properties70 { ... } }        (when scene carries axis/unit extras)
+//! Documents { Count; Document { Properties70; RootNode: 0 } }
+//! References { }                                 (observed empty; §7 section set)
 //! Definitions { ObjectType: "Geometry"/"Model"/"Material" { Count } }
 //! Objects {
 //!   Geometry : <id>, "<name>\x00\x01Geometry", "Mesh" {
@@ -371,6 +373,20 @@ pub fn encode_scene_with_options(scene: &Scene3D, opts: &SceneEncodeOptions) -> 
     root.children
         .push(build_header_extension(scene, opts.version));
     root.children.push(build_global_settings(scene));
+    // `Documents` + `References` — the §7 sections sitting between
+    // `GlobalSettings` and `Definitions` (round 413; fixture order).
+    // The document catalogue re-renders from the round-tripped
+    // `fbx:documents` / `fbx:active_anim_stack` extras when present;
+    // otherwise a single default `"Scene"` document is synthesised
+    // (the SDK-written sample always carries one). `References` was
+    // observed empty — the empty section is still emitted so the §7
+    // section set survives a round trip.
+    root.children.push(build_documents(scene, &mut alloc));
+    root.children.push(FbxNode {
+        name: "References".to_string(),
+        properties: Vec::new(),
+        children: Vec::new(),
+    });
     root.children.push(build_definitions(scene));
     root.children.push(objects);
     root.children.push(connections);
@@ -717,6 +733,97 @@ fn build_global_settings(scene: &Scene3D) -> FbxNode {
                 children: ps,
             },
         ],
+    }
+}
+
+/// `Documents { Count; Document: <uid>, "<name>", "<subtype>" {
+/// Properties70 { SourceObject; ActiveAnimStackName }; RootNode: 0 } }`
+/// — the document catalogue per the §7 top-level section list + the
+/// staged cubes-ascii-v7500.fbx fixture body (see [`crate::documents`]
+/// for the decode side).
+///
+/// Re-rendered from the round-tripped `fbx:documents` extras when
+/// present (each entry keeps only its own recorded
+/// `active_anim_stack`); a scene without the catalogue gets the single
+/// default `"Scene"` document the SDK-written sample always carries,
+/// whose `ActiveAnimStackName` resolves from `fbx:active_anim_stack`,
+/// then `fbx:current_take`, then the first animation's name — so a
+/// freshly-authored animated scene opens on its animation. `RootNode`
+/// is always the `0` implicit-root sentinel (the same convention the
+/// `C:` root attachments use); source-file UIDs are not round-tripped
+/// (the decode side deliberately doesn't surface them).
+fn build_documents(scene: &Scene3D, alloc: &mut IdAllocator) -> FbxNode {
+    // One (name, subtype, stack) entry per document.
+    let mut entries: Vec<(String, String, Option<String>)> = Vec::new();
+    if let Some(docs) = scene.extras.get("fbx:documents").and_then(|v| v.as_array()) {
+        for d in docs {
+            entries.push((
+                d.get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_owned(),
+                d.get("subtype")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("Scene")
+                    .to_owned(),
+                d.get("active_anim_stack")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_owned),
+            ));
+        }
+    }
+    if entries.is_empty() {
+        // Default document: the stack-name fallback chain.
+        let stack = scene
+            .extras
+            .get("fbx:active_anim_stack")
+            .and_then(|v| v.as_str())
+            .map(str::to_owned)
+            .or_else(|| {
+                scene
+                    .extras
+                    .get("fbx:current_take")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_owned)
+            })
+            .or_else(|| scene.animations.first().and_then(|a| a.name.clone()));
+        entries.push((String::new(), "Scene".to_owned(), stack));
+    }
+
+    let mut children = vec![leaf_i32("Count", entries.len() as i32)];
+    for (name, subtype, stack) in entries {
+        let mut ps = vec![p_object_ref("SourceObject")];
+        if let Some(stack) = stack {
+            ps.push(p_kstring("ActiveAnimStackName", &stack));
+        }
+        children.push(FbxNode {
+            name: "Document".to_string(),
+            properties: vec![
+                FbxProperty::I64(alloc.next()),
+                // The fixture's Document line carries a plain name
+                // string (`""` — no ClassTag join, unlike the §7c
+                // Objects records).
+                FbxProperty::String(name.into_bytes()),
+                FbxProperty::String(subtype.into_bytes()),
+            ],
+            children: vec![
+                FbxNode {
+                    name: "Properties70".to_string(),
+                    properties: Vec::new(),
+                    children: ps,
+                },
+                FbxNode {
+                    name: "RootNode".to_string(),
+                    properties: vec![FbxProperty::I64(0)],
+                    children: Vec::new(),
+                },
+            ],
+        });
+    }
+    FbxNode {
+        name: "Documents".to_string(),
+        properties: Vec::new(),
+        children,
     }
 }
 
@@ -1966,6 +2073,23 @@ fn p_kstring(name: &str, v: &str) -> FbxNode {
     }
 }
 
+/// `P: "<name>", "object", "", ""` — the empty object-reference shape
+/// (§8 `"object"` typeName with no trailing value; the fixture
+/// Document's `SourceObject` record). The decode side's
+/// `as_object_ref` surfaces the empty-body case as `""`.
+fn p_object_ref(name: &str) -> FbxNode {
+    FbxNode {
+        name: "P".to_string(),
+        properties: vec![
+            FbxProperty::String(name.as_bytes().to_vec()),
+            FbxProperty::String(b"object".to_vec()),
+            FbxProperty::String(Vec::new()),
+            FbxProperty::String(Vec::new()),
+        ],
+        children: Vec::new(),
+    }
+}
+
 /// `P: "<name>", "bool", "", "", v` — the `bool`-typed scalar shape
 /// (`CastShadows`).
 fn p_bool(name: &str, v: bool) -> FbxNode {
@@ -2062,6 +2186,124 @@ mod tests {
         assert_eq!(prim.positions[1], [1.0, 0.0, 0.0]);
         assert_eq!(prim.positions[2], [1.0, 1.0, 0.0]);
         assert_eq!(scene2.meshes[0].name.as_deref(), Some("Tri"));
+    }
+
+    #[test]
+    fn emits_documents_and_references_in_section_order() {
+        // Round 413 — the §7 top-level section order places Documents
+        // and References between GlobalSettings and Definitions.
+        let mut scene = Scene3D::new();
+        let mid = scene.add_mesh(triangle_mesh("Tri"));
+        let nid = scene.add_node(Node::new().with_mesh(mid));
+        scene.roots.push(nid);
+
+        let doc = encode_scene(&scene);
+        let names: Vec<&str> = doc.root.children.iter().map(|c| c.name.as_str()).collect();
+        let pos = |n: &str| {
+            names
+                .iter()
+                .position(|s| *s == n)
+                .unwrap_or_else(|| panic!("missing section {n}"))
+        };
+        assert!(pos("GlobalSettings") < pos("Documents"));
+        assert!(pos("Documents") < pos("References"));
+        assert!(pos("References") < pos("Definitions"));
+        assert!(pos("Definitions") < pos("Objects"));
+
+        // Default document shape: Count: 1 + one "Scene" Document with
+        // the SourceObject record and the RootNode 0 sentinel.
+        let documents = doc.root.child("Documents").unwrap();
+        assert_eq!(
+            documents.child("Count").unwrap().properties[0].as_i64(),
+            Some(1)
+        );
+        let d = documents.children_named("Document").next().unwrap();
+        assert_eq!(d.properties.get(2).and_then(|p| p.as_str()), Some("Scene"));
+        assert_eq!(d.child("RootNode").unwrap().properties[0].as_i64(), Some(0));
+        let p70 = d.child("Properties70").unwrap();
+        assert!(p70
+            .children_named("P")
+            .any(|p| p.properties.first().and_then(|v| v.as_str()) == Some("SourceObject")));
+        // No animations, no take extras — no ActiveAnimStackName.
+        assert!(!p70
+            .children_named("P")
+            .any(|p| p.properties.first().and_then(|v| v.as_str()) == Some("ActiveAnimStackName")));
+
+        // References is the observed-empty section.
+        let refs = doc.root.child("References").unwrap();
+        assert!(refs.children.is_empty() && refs.properties.is_empty());
+    }
+
+    #[test]
+    fn default_document_stack_name_falls_back_to_first_animation() {
+        use oxideav_mesh3d::{
+            Animation, AnimationChannel, AnimationProperty, AnimationSampler, AnimationTarget,
+            AnimationValues, Interpolation,
+        };
+        let mut scene = Scene3D::new();
+        let mid = scene.add_mesh(triangle_mesh("Tri"));
+        let nid = scene.add_node(Node::new().with_mesh(mid));
+        scene.roots.push(nid);
+        let mut anim = Animation::new(Some("Walk".to_string()));
+        anim.channels.push(AnimationChannel {
+            target: AnimationTarget {
+                node: nid,
+                property: AnimationProperty::Translation,
+            },
+            sampler: AnimationSampler {
+                keyframes: vec![0.0, 1.0],
+                values: AnimationValues::Vec3(vec![[0.0; 3], [1.0, 0.0, 0.0]]),
+                interpolation: Interpolation::Linear,
+            },
+        });
+        scene.add_animation(anim);
+
+        let doc = encode_scene(&scene);
+        let documents = doc.root.child("Documents").unwrap();
+        let d = documents.children_named("Document").next().unwrap();
+        let p70 = d.child("Properties70").unwrap();
+        let stack = p70
+            .children_named("P")
+            .find(|p| p.properties.first().and_then(|v| v.as_str()) == Some("ActiveAnimStackName"))
+            .expect("ActiveAnimStackName emitted for an animated scene");
+        assert_eq!(
+            stack.properties.get(4).and_then(|p| p.as_str()),
+            Some("Walk")
+        );
+    }
+
+    #[test]
+    fn documents_extras_catalogue_round_trips() {
+        // A decoded catalogue (fbx:documents + fbx:active_anim_stack)
+        // re-renders per entry and survives a decode → encode → decode
+        // cycle.
+        let mut scene = Scene3D::new();
+        let mid = scene.add_mesh(triangle_mesh("Tri"));
+        let nid = scene.add_node(Node::new().with_mesh(mid));
+        scene.roots.push(nid);
+        scene.extras.insert(
+            "fbx:documents".to_owned(),
+            serde_json::json!([
+                { "name": "", "subtype": "Scene", "active_anim_stack": "Take 001" }
+            ]),
+        );
+        scene.extras.insert(
+            "fbx:active_anim_stack".to_owned(),
+            serde_json::Value::String("Take 001".to_owned()),
+        );
+
+        let doc = encode_scene(&scene);
+        let bytes = write_document(&doc).unwrap();
+        let scene2 = build_scene(&binary::parse(&bytes).unwrap()).unwrap();
+
+        assert_eq!(
+            crate::documents::active_anim_stack_from_extras(&scene2),
+            Some("Take 001")
+        );
+        let docs = crate::documents::documents_from_extras(&scene2).unwrap();
+        assert_eq!(docs.len(), 1);
+        assert_eq!(docs[0]["subtype"].as_str(), Some("Scene"));
+        assert_eq!(docs[0]["active_anim_stack"].as_str(), Some("Take 001"));
     }
 
     #[test]
