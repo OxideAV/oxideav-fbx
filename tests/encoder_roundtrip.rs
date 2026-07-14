@@ -1471,3 +1471,41 @@ fn encoded_scene_carries_documents_and_references_sections() {
         "stack-name fallback = first animation's name"
     );
 }
+
+#[test]
+fn emitted_material_template_defaults_resolve_on_decode() {
+    // Round 413 — the encoder now writes the fixture-staged
+    // FbxSurfaceLambert PropertyTemplate; the decode side's
+    // with_template_defaults overlay must resolve the template's
+    // ShadingModel "Lambert" onto a material whose own records don't
+    // carry one (the encoder writes colour/factor records only), while
+    // explicitly-written records still win over template defaults.
+    let mut scene = Scene3D::new();
+    let mut mesh = quad_with_normals_and_uvs("Quad");
+    let mat = scene.add_material(
+        Material::new()
+            .with_name("Painted")
+            .with_base_color([0.25, 0.5, 0.75, 1.0]),
+    );
+    mesh.primitives[0].material = Some(mat);
+    let mid = scene.add_mesh(mesh);
+    let nid = scene.add_node(Node::new().with_mesh(mid));
+    scene.roots.push(nid);
+
+    let scene2 = decode(&encode_binary(&scene));
+    assert_eq!(scene2.materials.len(), 1);
+    let m = &scene2.materials[0];
+
+    // Template default resolved through the §7b overlay.
+    assert_eq!(
+        m.extras.get("fbx:shading_model").and_then(|v| v.as_str()),
+        Some("Lambert"),
+        "class-template ShadingModel default resolves"
+    );
+    // Explicit record wins over the template's 0.8 grey default.
+    assert!(
+        (m.base_color[0] - 0.25).abs() < 1e-6 && (m.base_color[2] - 0.75).abs() < 1e-6,
+        "own DiffuseColor record overrides the template default: {:?}",
+        m.base_color
+    );
+}
