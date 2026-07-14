@@ -134,6 +134,14 @@ struct Parser<'a> {
     pos: usize,
     line: usize,
     col: usize,
+    /// Current `{ }` body nesting level. [`Parser::parse_node`] and
+    /// [`Parser::parse_body`] are mutually recursive, so an unbounded
+    /// depth lets a crafted input of repeated `A: {` lines (~5 bytes
+    /// per level) overflow the parser's stack — an uncatchable abort,
+    /// not an `Err`. Capped at [`crate::binary::MAX_NODE_DEPTH`], the
+    /// same limit the binary reader enforces (both front-ends produce
+    /// the identical tree, so the accepted shape stays identical too).
+    depth: usize,
 }
 
 impl<'a> Parser<'a> {
@@ -143,6 +151,7 @@ impl<'a> Parser<'a> {
             pos: 0,
             line: 1,
             col: 1,
+            depth: 0,
         }
     }
 
@@ -270,6 +279,19 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_body(&mut self) -> Result<Vec<FbxNode>> {
+        if self.depth >= crate::binary::MAX_NODE_DEPTH {
+            return self.err(format!(
+                "node nesting exceeds the {}-level limit",
+                crate::binary::MAX_NODE_DEPTH
+            ));
+        }
+        self.depth += 1;
+        let result = self.parse_body_inner();
+        self.depth -= 1;
+        result
+    }
+
+    fn parse_body_inner(&mut self) -> Result<Vec<FbxNode>> {
         let mut out = Vec::new();
         loop {
             self.skip_trivia();
@@ -881,6 +903,49 @@ mod tests {
             FbxProperty::I32Array(v) => assert_eq!(v, &[1, 2, 3, 4]),
             other => panic!("expected I32Array, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn nesting_depth_bomb_errors_instead_of_overflowing_the_stack() {
+        // Round 413 hardening — repeated `A: {` lines (~5 bytes per
+        // level) previously drove the mutually-recursive parse_node /
+        // parse_body thousands of frames deep (uncatchable stack
+        // overflow). The reader now enforces the same
+        // MAX_NODE_DEPTH limit as the binary front-end.
+        let mut src = b"; FBX 7.5.0\n".to_vec();
+        const N: usize = 10_000;
+        for _ in 0..N {
+            src.extend_from_slice(b"A: {\n");
+        }
+        for _ in 0..N {
+            src.extend_from_slice(b"}\n");
+        }
+        let err = parse(&src).expect_err("depth bomb rejected");
+        assert!(
+            err.to_string().contains("nesting"),
+            "expected the depth limit to fire, got: {err}"
+        );
+    }
+
+    #[test]
+    fn nesting_below_the_limit_still_parses() {
+        // Sanity companion to the depth-bomb test: a tree nested to
+        // half the limit parses fine and yields the full chain.
+        let mut src = b"; FBX 7.5.0\n".to_vec();
+        let n = crate::binary::MAX_NODE_DEPTH / 2;
+        for _ in 0..n {
+            src.extend_from_slice(b"A: {\n");
+        }
+        src.extend_from_slice(b"Leaf: 1\n");
+        for _ in 0..n {
+            src.extend_from_slice(b"}\n");
+        }
+        let doc = parse(&src).expect("half-limit nesting parses");
+        let mut node = doc.root.child("A").expect("outermost A");
+        for _ in 1..n {
+            node = node.child("A").expect("nested A");
+        }
+        assert!(node.child("Leaf").is_some());
     }
 
     #[test]
