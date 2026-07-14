@@ -868,14 +868,23 @@ fn build_definitions(objects: &FbxNode) -> FbxNode {
     }
 
     let mut push_class = |class: &str, count: usize| {
+        let mut ot_children = vec![FbxNode {
+            name: "Count".to_string(),
+            properties: vec![FbxProperty::I32(count as i32)],
+            children: Vec::new(),
+        }];
+        // §7b: "each ObjectType: block names a class, its instance
+        // Count, and a PropertyTemplate holding the default
+        // Properties70 for that class". The fixture stages full
+        // template bodies for five classes; the rest stay count-only
+        // (a template-less block is also observed — GlobalSettings).
+        if let Some(template) = class_property_template(class) {
+            ot_children.push(template);
+        }
         children.push(FbxNode {
             name: "ObjectType".to_string(),
             properties: vec![FbxProperty::String(class.as_bytes().to_vec())],
-            children: vec![FbxNode {
-                name: "Count".to_string(),
-                properties: vec![FbxProperty::I32(count as i32)],
-                children: Vec::new(),
-            }],
+            children: ot_children,
         });
     };
     push_class("GlobalSettings", 1);
@@ -889,6 +898,364 @@ fn build_definitions(objects: &FbxNode) -> FbxNode {
         children,
     }
 }
+
+/// Default-value wire shape for one template `P` record. The wire
+/// variant per typeName follows the `docs/3d/fbx/fbx-ascii-grammar.md`
+/// §8 value-count rules + the `fbx-binary-properties70.md` §4 wire
+/// notes (ints for `int` / `enum` / `bool`, one number for `double` /
+/// `Number` / `Visibility*`, an `L` for `KTime` / `ULongLong`, three
+/// numbers for the triple types, a string for `KString`, and no value
+/// at all for `object`).
+#[derive(Clone, Copy)]
+enum TDef {
+    /// `int` / `enum` / `bool` — one integer.
+    I(i32),
+    /// `KTime` / `ULongLong` — one 64-bit integer.
+    L(i64),
+    /// `double` / `Number` / `Visibility` — one number.
+    D(f64),
+    /// Triple types (`ColorRGB` / `Color` / `Vector3D` / `Lcl *`).
+    V(f64, f64, f64),
+    /// `KString` — one string.
+    S(&'static str),
+    /// `object` — value-less.
+    None,
+}
+
+/// One template record: `(name, typeName, label, flags, default)`.
+type TRecord = (&'static str, &'static str, &'static str, &'static str, TDef);
+
+/// `PropertyTemplate: "<template>" { Properties70 { ... } }` — the
+/// §7b class-default property set for the classes whose template
+/// bodies the staged `docs/3d/fbx/fixtures/cubes-ascii-v7500.fbx`
+/// fixture carries verbatim (`FbxAnimStack` / `FbxAnimLayer` /
+/// `FbxMesh` / `FbxSurfaceLambert` / `FbxNode`). Classes without a
+/// staged template body (Texture / Video / NodeAttribute / Deformer /
+/// AnimationCurveNode / AnimationCurve) stay count-only rather than
+/// inventing a default set the docs don't provide.
+fn class_property_template(class: &str) -> Option<FbxNode> {
+    let (template_name, records) = match class {
+        "AnimationStack" => ("FbxAnimStack", FBX_ANIM_STACK_TEMPLATE),
+        "AnimationLayer" => ("FbxAnimLayer", FBX_ANIM_LAYER_TEMPLATE),
+        "Geometry" => ("FbxMesh", FBX_MESH_TEMPLATE),
+        "Material" => ("FbxSurfaceLambert", FBX_SURFACE_LAMBERT_TEMPLATE),
+        "Model" => ("FbxNode", FBX_NODE_TEMPLATE),
+        _ => return None,
+    };
+    let ps: Vec<FbxNode> = records
+        .iter()
+        .map(|&(name, type_name, label, flags, def)| {
+            let mut properties = vec![
+                FbxProperty::String(name.as_bytes().to_vec()),
+                FbxProperty::String(type_name.as_bytes().to_vec()),
+                FbxProperty::String(label.as_bytes().to_vec()),
+                FbxProperty::String(flags.as_bytes().to_vec()),
+            ];
+            match def {
+                TDef::I(v) => properties.push(FbxProperty::I32(v)),
+                TDef::L(v) => properties.push(FbxProperty::I64(v)),
+                TDef::D(v) => properties.push(FbxProperty::F64(v)),
+                TDef::V(x, y, z) => properties.extend([
+                    FbxProperty::F64(x),
+                    FbxProperty::F64(y),
+                    FbxProperty::F64(z),
+                ]),
+                TDef::S(v) => properties.push(FbxProperty::String(v.as_bytes().to_vec())),
+                TDef::None => {}
+            }
+            FbxNode {
+                name: "P".to_string(),
+                properties,
+                children: Vec::new(),
+            }
+        })
+        .collect();
+    Some(FbxNode {
+        name: "PropertyTemplate".to_string(),
+        properties: vec![FbxProperty::String(template_name.as_bytes().to_vec())],
+        children: vec![FbxNode {
+            name: "Properties70".to_string(),
+            properties: Vec::new(),
+            children: ps,
+        }],
+    })
+}
+
+/// `ObjectType: "AnimationStack" { PropertyTemplate: "FbxAnimStack" }`
+/// default set, transcribed from the staged fixture's Definitions.
+const FBX_ANIM_STACK_TEMPLATE: &[TRecord] = &[
+    ("Description", "KString", "", "", TDef::S("")),
+    ("LocalStart", "KTime", "Time", "", TDef::L(0)),
+    ("LocalStop", "KTime", "Time", "", TDef::L(0)),
+    ("ReferenceStart", "KTime", "Time", "", TDef::L(0)),
+    ("ReferenceStop", "KTime", "Time", "", TDef::L(0)),
+];
+
+/// `ObjectType: "AnimationLayer" { PropertyTemplate: "FbxAnimLayer" }`
+/// default set, transcribed from the staged fixture's Definitions.
+const FBX_ANIM_LAYER_TEMPLATE: &[TRecord] = &[
+    ("Weight", "Number", "", "A", TDef::D(100.0)),
+    ("Mute", "bool", "", "", TDef::I(0)),
+    ("Solo", "bool", "", "", TDef::I(0)),
+    ("Lock", "bool", "", "", TDef::I(0)),
+    ("Color", "ColorRGB", "Color", "", TDef::V(0.8, 0.8, 0.8)),
+    ("BlendMode", "enum", "", "", TDef::I(0)),
+    ("RotationAccumulationMode", "enum", "", "", TDef::I(0)),
+    ("ScaleAccumulationMode", "enum", "", "", TDef::I(0)),
+    ("BlendModeBypass", "ULongLong", "", "", TDef::L(0)),
+];
+
+/// `ObjectType: "Geometry" { PropertyTemplate: "FbxMesh" }` default
+/// set, transcribed from the staged fixture's Definitions.
+const FBX_MESH_TEMPLATE: &[TRecord] = &[
+    ("Color", "ColorRGB", "Color", "", TDef::V(0.8, 0.8, 0.8)),
+    ("BBoxMin", "Vector3D", "Vector", "", TDef::V(0.0, 0.0, 0.0)),
+    ("BBoxMax", "Vector3D", "Vector", "", TDef::V(0.0, 0.0, 0.0)),
+    ("Primary Visibility", "bool", "", "", TDef::I(1)),
+    ("Casts Shadows", "bool", "", "", TDef::I(1)),
+    ("Receive Shadows", "bool", "", "", TDef::I(1)),
+];
+
+/// `ObjectType: "Material" { PropertyTemplate: "FbxSurfaceLambert" }`
+/// default set, transcribed from the staged fixture's Definitions.
+/// Note the fixture's mixed `"Color"` vs `"ColorRGB"` typeNames —
+/// both accepted by the decode side's `as_color_rgb`.
+const FBX_SURFACE_LAMBERT_TEMPLATE: &[TRecord] = &[
+    ("ShadingModel", "KString", "", "", TDef::S("Lambert")),
+    ("MultiLayer", "bool", "", "", TDef::I(0)),
+    ("EmissiveColor", "Color", "", "A", TDef::V(0.0, 0.0, 0.0)),
+    ("EmissiveFactor", "Number", "", "A", TDef::D(1.0)),
+    ("AmbientColor", "Color", "", "A", TDef::V(0.2, 0.2, 0.2)),
+    ("AmbientFactor", "Number", "", "A", TDef::D(1.0)),
+    ("DiffuseColor", "Color", "", "A", TDef::V(0.8, 0.8, 0.8)),
+    ("DiffuseFactor", "Number", "", "A", TDef::D(1.0)),
+    ("Bump", "Vector3D", "Vector", "", TDef::V(0.0, 0.0, 0.0)),
+    (
+        "NormalMap",
+        "Vector3D",
+        "Vector",
+        "",
+        TDef::V(0.0, 0.0, 0.0),
+    ),
+    ("BumpFactor", "double", "Number", "", TDef::D(1.0)),
+    ("TransparentColor", "Color", "", "A", TDef::V(0.0, 0.0, 0.0)),
+    ("TransparencyFactor", "Number", "", "A", TDef::D(0.0)),
+    (
+        "DisplacementColor",
+        "ColorRGB",
+        "Color",
+        "",
+        TDef::V(0.0, 0.0, 0.0),
+    ),
+    ("DisplacementFactor", "double", "Number", "", TDef::D(1.0)),
+    (
+        "VectorDisplacementColor",
+        "ColorRGB",
+        "Color",
+        "",
+        TDef::V(0.0, 0.0, 0.0),
+    ),
+    (
+        "VectorDisplacementFactor",
+        "double",
+        "Number",
+        "",
+        TDef::D(1.0),
+    ),
+];
+
+/// `ObjectType: "Model" { PropertyTemplate: "FbxNode" }` default set,
+/// transcribed from the staged fixture's Definitions. All pivot /
+/// offset / pre-post-rotation defaults are zero and `RotationOrder`
+/// is `0` (XYZ), so a decode of these defaults stays on the reduced
+/// `T * R(XYZ) * S` path [`crate::node_transform`] resolves.
+const FBX_NODE_TEMPLATE: &[TRecord] = &[
+    ("QuaternionInterpolate", "enum", "", "", TDef::I(0)),
+    (
+        "RotationOffset",
+        "Vector3D",
+        "Vector",
+        "",
+        TDef::V(0.0, 0.0, 0.0),
+    ),
+    (
+        "RotationPivot",
+        "Vector3D",
+        "Vector",
+        "",
+        TDef::V(0.0, 0.0, 0.0),
+    ),
+    (
+        "ScalingOffset",
+        "Vector3D",
+        "Vector",
+        "",
+        TDef::V(0.0, 0.0, 0.0),
+    ),
+    (
+        "ScalingPivot",
+        "Vector3D",
+        "Vector",
+        "",
+        TDef::V(0.0, 0.0, 0.0),
+    ),
+    ("TranslationActive", "bool", "", "", TDef::I(0)),
+    (
+        "TranslationMin",
+        "Vector3D",
+        "Vector",
+        "",
+        TDef::V(0.0, 0.0, 0.0),
+    ),
+    (
+        "TranslationMax",
+        "Vector3D",
+        "Vector",
+        "",
+        TDef::V(0.0, 0.0, 0.0),
+    ),
+    ("TranslationMinX", "bool", "", "", TDef::I(0)),
+    ("TranslationMinY", "bool", "", "", TDef::I(0)),
+    ("TranslationMinZ", "bool", "", "", TDef::I(0)),
+    ("TranslationMaxX", "bool", "", "", TDef::I(0)),
+    ("TranslationMaxY", "bool", "", "", TDef::I(0)),
+    ("TranslationMaxZ", "bool", "", "", TDef::I(0)),
+    ("RotationOrder", "enum", "", "", TDef::I(0)),
+    ("RotationSpaceForLimitOnly", "bool", "", "", TDef::I(0)),
+    ("RotationStiffnessX", "double", "Number", "", TDef::D(0.0)),
+    ("RotationStiffnessY", "double", "Number", "", TDef::D(0.0)),
+    ("RotationStiffnessZ", "double", "Number", "", TDef::D(0.0)),
+    ("AxisLen", "double", "Number", "", TDef::D(10.0)),
+    (
+        "PreRotation",
+        "Vector3D",
+        "Vector",
+        "",
+        TDef::V(0.0, 0.0, 0.0),
+    ),
+    (
+        "PostRotation",
+        "Vector3D",
+        "Vector",
+        "",
+        TDef::V(0.0, 0.0, 0.0),
+    ),
+    ("RotationActive", "bool", "", "", TDef::I(0)),
+    (
+        "RotationMin",
+        "Vector3D",
+        "Vector",
+        "",
+        TDef::V(0.0, 0.0, 0.0),
+    ),
+    (
+        "RotationMax",
+        "Vector3D",
+        "Vector",
+        "",
+        TDef::V(0.0, 0.0, 0.0),
+    ),
+    ("RotationMinX", "bool", "", "", TDef::I(0)),
+    ("RotationMinY", "bool", "", "", TDef::I(0)),
+    ("RotationMinZ", "bool", "", "", TDef::I(0)),
+    ("RotationMaxX", "bool", "", "", TDef::I(0)),
+    ("RotationMaxY", "bool", "", "", TDef::I(0)),
+    ("RotationMaxZ", "bool", "", "", TDef::I(0)),
+    ("InheritType", "enum", "", "", TDef::I(0)),
+    ("ScalingActive", "bool", "", "", TDef::I(0)),
+    (
+        "ScalingMin",
+        "Vector3D",
+        "Vector",
+        "",
+        TDef::V(0.0, 0.0, 0.0),
+    ),
+    (
+        "ScalingMax",
+        "Vector3D",
+        "Vector",
+        "",
+        TDef::V(1.0, 1.0, 1.0),
+    ),
+    ("ScalingMinX", "bool", "", "", TDef::I(0)),
+    ("ScalingMinY", "bool", "", "", TDef::I(0)),
+    ("ScalingMinZ", "bool", "", "", TDef::I(0)),
+    ("ScalingMaxX", "bool", "", "", TDef::I(0)),
+    ("ScalingMaxY", "bool", "", "", TDef::I(0)),
+    ("ScalingMaxZ", "bool", "", "", TDef::I(0)),
+    (
+        "GeometricTranslation",
+        "Vector3D",
+        "Vector",
+        "",
+        TDef::V(0.0, 0.0, 0.0),
+    ),
+    (
+        "GeometricRotation",
+        "Vector3D",
+        "Vector",
+        "",
+        TDef::V(0.0, 0.0, 0.0),
+    ),
+    (
+        "GeometricScaling",
+        "Vector3D",
+        "Vector",
+        "",
+        TDef::V(1.0, 1.0, 1.0),
+    ),
+    ("MinDampRangeX", "double", "Number", "", TDef::D(0.0)),
+    ("MinDampRangeY", "double", "Number", "", TDef::D(0.0)),
+    ("MinDampRangeZ", "double", "Number", "", TDef::D(0.0)),
+    ("MaxDampRangeX", "double", "Number", "", TDef::D(0.0)),
+    ("MaxDampRangeY", "double", "Number", "", TDef::D(0.0)),
+    ("MaxDampRangeZ", "double", "Number", "", TDef::D(0.0)),
+    ("MinDampStrengthX", "double", "Number", "", TDef::D(0.0)),
+    ("MinDampStrengthY", "double", "Number", "", TDef::D(0.0)),
+    ("MinDampStrengthZ", "double", "Number", "", TDef::D(0.0)),
+    ("MaxDampStrengthX", "double", "Number", "", TDef::D(0.0)),
+    ("MaxDampStrengthY", "double", "Number", "", TDef::D(0.0)),
+    ("MaxDampStrengthZ", "double", "Number", "", TDef::D(0.0)),
+    ("PreferedAngleX", "double", "Number", "", TDef::D(0.0)),
+    ("PreferedAngleY", "double", "Number", "", TDef::D(0.0)),
+    ("PreferedAngleZ", "double", "Number", "", TDef::D(0.0)),
+    ("LookAtProperty", "object", "", "", TDef::None),
+    ("UpVectorProperty", "object", "", "", TDef::None),
+    ("Show", "bool", "", "", TDef::I(1)),
+    ("NegativePercentShapeSupport", "bool", "", "", TDef::I(1)),
+    ("DefaultAttributeIndex", "int", "Integer", "", TDef::I(-1)),
+    ("Freeze", "bool", "", "", TDef::I(0)),
+    ("LODBox", "bool", "", "", TDef::I(0)),
+    (
+        "Lcl Translation",
+        "Lcl Translation",
+        "",
+        "A",
+        TDef::V(0.0, 0.0, 0.0),
+    ),
+    (
+        "Lcl Rotation",
+        "Lcl Rotation",
+        "",
+        "A",
+        TDef::V(0.0, 0.0, 0.0),
+    ),
+    (
+        "Lcl Scaling",
+        "Lcl Scaling",
+        "",
+        "A",
+        TDef::V(1.0, 1.0, 1.0),
+    ),
+    ("Visibility", "Visibility", "", "A", TDef::D(1.0)),
+    (
+        "Visibility Inheritance",
+        "Visibility Inheritance",
+        "",
+        "",
+        TDef::D(1.0),
+    ),
+];
 
 /// FBX joins `Name` + `ClassTag` with `\x00\x01` in the binary
 /// encoding (the decode path's `element_name` splits on the `\x00`).
@@ -2394,6 +2761,133 @@ mod tests {
         // Per-class sum equals the total census.
         let sum: i64 = emitted.iter().map(|(_, c)| c).sum();
         assert_eq!(sum, 1 + objects.children.len() as i64);
+    }
+
+    #[test]
+    fn definitions_carry_fixture_staged_property_templates() {
+        // Round 413 — §7b: each ObjectType block carries "a
+        // PropertyTemplate holding the default Properties70 for that
+        // class". The five fixture-staged template bodies are
+        // re-emitted; unstaged classes stay count-only.
+        let mut scene = Scene3D::new();
+        let mid = scene.add_mesh(triangle_mesh("Tri"));
+        let mat = scene.add_material(Material::new());
+        scene.meshes[0].primitives[0].material = Some(mat);
+        let light = scene.add_light(oxideav_mesh3d::Light::Point {
+            color: [1.0, 1.0, 1.0],
+            intensity: 1.0,
+            range: None,
+        });
+        let mut node = Node::new().with_mesh(mid);
+        node.light = Some(light);
+        let nid = scene.add_node(node);
+        scene.roots.push(nid);
+
+        let doc = encode_scene(&scene);
+        let defs = crate::definitions::Definitions::from_document(&doc);
+
+        // Material → FbxSurfaceLambert with the fixture defaults.
+        let mat_def = defs.get("Material").expect("Material ObjectType");
+        assert_eq!(mat_def.template_name.as_deref(), Some("FbxSurfaceLambert"));
+        let tpl = defs.template_for("Material").expect("template body");
+        assert_eq!(tpl.as_kstring("ShadingModel"), Some("Lambert"));
+        assert_eq!(tpl.as_number("DiffuseFactor"), Some(1.0));
+        assert_eq!(tpl.as_color_rgb("DiffuseColor"), Some([0.8, 0.8, 0.8]));
+
+        // Model → FbxNode with zero pivots / identity Lcl defaults.
+        let tpl = defs.template_for("Model").expect("Model template");
+        assert_eq!(tpl.as_lcl_scaling("Lcl Scaling"), Some([1.0, 1.0, 1.0]));
+        assert_eq!(tpl.as_vector3d("RotationPivot"), Some([0.0, 0.0, 0.0]));
+        assert_eq!(tpl.as_enum("RotationOrder"), Some(0));
+        assert_eq!(tpl.as_int_typed("DefaultAttributeIndex"), Some(-1));
+
+        // Geometry → FbxMesh.
+        let tpl = defs.template_for("Geometry").expect("Geometry template");
+        assert_eq!(tpl.as_bool_typed("Primary Visibility"), Some(true));
+
+        // NodeAttribute has no staged template body — count-only.
+        let na = defs.get("NodeAttribute").expect("NodeAttribute counted");
+        assert_eq!(na.template_name, None);
+        assert!(defs.template_for("NodeAttribute").is_none());
+    }
+
+    #[test]
+    fn anim_class_templates_emitted_for_animated_scenes() {
+        use oxideav_mesh3d::{
+            Animation, AnimationChannel, AnimationProperty, AnimationSampler, AnimationTarget,
+            AnimationValues, Interpolation,
+        };
+        let mut scene = Scene3D::new();
+        let mid = scene.add_mesh(triangle_mesh("Tri"));
+        let nid = scene.add_node(Node::new().with_mesh(mid));
+        scene.roots.push(nid);
+        let mut anim = Animation::new(Some("Walk".to_string()));
+        anim.channels.push(AnimationChannel {
+            target: AnimationTarget {
+                node: nid,
+                property: AnimationProperty::Translation,
+            },
+            sampler: AnimationSampler {
+                keyframes: vec![0.0, 1.0],
+                values: AnimationValues::Vec3(vec![[0.0; 3], [1.0, 0.0, 0.0]]),
+                interpolation: Interpolation::Linear,
+            },
+        });
+        scene.add_animation(anim);
+
+        let doc = encode_scene(&scene);
+        let defs = crate::definitions::Definitions::from_document(&doc);
+        assert_eq!(
+            defs.get("AnimationStack").unwrap().template_name.as_deref(),
+            Some("FbxAnimStack")
+        );
+        let tpl = defs.template_for("AnimationStack").unwrap();
+        assert_eq!(tpl.as_ktime("LocalStart"), Some(0));
+        assert_eq!(
+            defs.get("AnimationLayer").unwrap().template_name.as_deref(),
+            Some("FbxAnimLayer")
+        );
+        let tpl = defs.template_for("AnimationLayer").unwrap();
+        assert_eq!(tpl.as_number("Weight"), Some(100.0));
+        assert_eq!(tpl.as_ulonglong("BlendModeBypass"), Some(0));
+    }
+
+    #[test]
+    fn emitted_node_template_keeps_identity_transforms_reducible() {
+        // The FbxNode template's pivot / offset / pre-post-rotation
+        // defaults are all zero and RotationOrder is 0 (XYZ), so the
+        // decode side's node_transform reduction must still resolve a
+        // plain TRS — no fbx:transform_incomplete marker may appear
+        // from template defaults alone.
+        let mut scene = Scene3D::new();
+        let mid = scene.add_mesh(triangle_mesh("Tri"));
+        let node = Node::new().with_mesh(mid).with_transform(Transform::Trs {
+            translation: [1.0, 2.0, 3.0],
+            rotation: [0.0, 0.0, 0.0, 1.0],
+            scale: [2.0, 2.0, 2.0],
+        });
+        let nid = scene.add_node(node);
+        scene.roots.push(nid);
+
+        let doc = encode_scene(&scene);
+        let bytes = write_document(&doc).unwrap();
+        let scene2 = build_scene(&binary::parse(&bytes).unwrap()).unwrap();
+
+        let n = &scene2.nodes[0];
+        assert!(
+            !n.extras.contains_key("fbx:transform_incomplete"),
+            "template defaults must not trip the reduction check: {:?}",
+            n.extras
+        );
+        match n.transform {
+            Transform::Trs {
+                translation, scale, ..
+            } => {
+                assert_eq!(translation, [1.0, 2.0, 3.0]);
+                assert_eq!(scale, [2.0, 2.0, 2.0]);
+            }
+            ref other => panic!("expected TRS, got {other:?}"),
+        }
     }
 
     #[test]
