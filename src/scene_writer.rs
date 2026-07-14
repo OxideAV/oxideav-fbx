@@ -387,7 +387,7 @@ pub fn encode_scene_with_options(scene: &Scene3D, opts: &SceneEncodeOptions) -> 
         properties: Vec::new(),
         children: Vec::new(),
     });
-    root.children.push(build_definitions(scene));
+    root.children.push(build_definitions(&objects));
     root.children.push(objects);
     root.children.push(connections);
     // `Takes` — the last §7 ordered section, re-rendered from the
@@ -828,25 +828,46 @@ fn build_documents(scene: &Scene3D, alloc: &mut IdAllocator) -> FbxNode {
 }
 
 /// `Definitions { Version; Count; ObjectType: "<class>" { Count } }`
-/// per `docs/3d/fbx/fbx-ascii-grammar.md` §7b. We emit a count-only
-/// block per populated class (no `PropertyTemplate`, which is optional
-/// — the decode path resolves against an empty template just fine).
-fn build_definitions(scene: &Scene3D) -> FbxNode {
+/// per `docs/3d/fbx/fbx-ascii-grammar.md` §7b: *"`Count` at the top is
+/// the total object count; each `ObjectType:` block names a class"*
+/// and *"its instance `Count`"*.
+///
+/// The per-class counts are derived from the **actually emitted**
+/// `Objects` children (round 413) — the earlier scene-derived
+/// tally missed every class beyond Geometry / Model / Material
+/// (Texture, Video, NodeAttribute, Deformer, AnimationStack /
+/// AnimationLayer / AnimationCurveNode / AnimationCurve), so the §7b
+/// total drifted from the real object population. The fixture shows
+/// `GlobalSettings` participating in the census too (its
+/// `ObjectType: "GlobalSettings" { Count: 1 }` block is counted in
+/// the top-level `Count: 13`), so the census is `1 + Objects
+/// children`, with the GlobalSettings block emitted first as in the
+/// sample and the remaining classes in first-appearance order.
+fn build_definitions(objects: &FbxNode) -> FbxNode {
     let mut children = vec![FbxNode {
         name: "Version".to_string(),
         properties: vec![FbxProperty::I32(100)],
         children: Vec::new(),
     }];
-    let total = scene.meshes.len() + scene.nodes.len() + scene.materials.len();
+    // Total census: the always-present GlobalSettings section + every
+    // emitted object record.
+    let total = 1 + objects.children.len();
     children.push(FbxNode {
         name: "Count".to_string(),
         properties: vec![FbxProperty::I32(total as i32)],
         children: Vec::new(),
     });
-    let mut push_class = |class: &str, count: usize| {
-        if count == 0 {
-            return;
+
+    // Per-class instance counts in first-appearance order.
+    let mut classes: Vec<(&str, usize)> = Vec::new();
+    for child in &objects.children {
+        match classes.iter_mut().find(|(name, _)| *name == child.name) {
+            Some((_, count)) => *count += 1,
+            None => classes.push((child.name.as_str(), 1)),
         }
+    }
+
+    let mut push_class = |class: &str, count: usize| {
         children.push(FbxNode {
             name: "ObjectType".to_string(),
             properties: vec![FbxProperty::String(class.as_bytes().to_vec())],
@@ -857,9 +878,11 @@ fn build_definitions(scene: &Scene3D) -> FbxNode {
             }],
         });
     };
-    push_class("Geometry", scene.meshes.len());
-    push_class("Model", scene.nodes.len());
-    push_class("Material", scene.materials.len());
+    push_class("GlobalSettings", 1);
+    for (class, count) in classes {
+        push_class(class, count);
+    }
+
     FbxNode {
         name: "Definitions".to_string(),
         properties: Vec::new(),
@@ -2304,6 +2327,73 @@ mod tests {
         assert_eq!(docs.len(), 1);
         assert_eq!(docs[0]["subtype"].as_str(), Some("Scene"));
         assert_eq!(docs[0]["active_anim_stack"].as_str(), Some("Take 001"));
+    }
+
+    #[test]
+    fn definitions_census_matches_emitted_objects() {
+        // Round 413 — §7b: "Count at the top is the total object
+        // count; each ObjectType block names a class [and] its
+        // instance Count". The census must cover EVERY emitted object
+        // class (the fixture shows GlobalSettings participating too:
+        // its ObjectType block's Count: 1 is part of the total 13).
+        let mut scene = Scene3D::new();
+        let mid = scene.add_mesh(triangle_mesh("Tri"));
+        let mat = scene.add_material(Material::new());
+        scene.meshes[0].primitives[0].material = Some(mat);
+        let light = scene.add_light(oxideav_mesh3d::Light::Point {
+            color: [1.0, 1.0, 1.0],
+            intensity: 1.0,
+            range: None,
+        });
+        let mut node = Node::new().with_mesh(mid);
+        node.light = Some(light);
+        let nid = scene.add_node(node);
+        scene.roots.push(nid);
+
+        let doc = encode_scene(&scene);
+        let objects = doc.root.child("Objects").unwrap();
+        let defs = doc.root.child("Definitions").unwrap();
+
+        // Total census = 1 (GlobalSettings) + every Objects child.
+        assert_eq!(
+            defs.child("Count").unwrap().properties[0].as_i64(),
+            Some(1 + objects.children.len() as i64)
+        );
+
+        // Per-class blocks: manual tally of the emitted Objects tree
+        // (Geometry / Material / Model / NodeAttribute here) plus the
+        // GlobalSettings block, each with the right instance count.
+        let mut expected: Vec<(String, i64)> = vec![("GlobalSettings".to_string(), 1)];
+        for child in &objects.children {
+            match expected.iter_mut().find(|(n, _)| *n == child.name) {
+                Some((_, c)) => *c += 1,
+                None => expected.push((child.name.clone(), 1)),
+            }
+        }
+        let mut emitted: Vec<(String, i64)> = defs
+            .children_named("ObjectType")
+            .map(|ot| {
+                (
+                    ot.properties[0].as_str().unwrap().to_string(),
+                    ot.child("Count").unwrap().properties[0].as_i64().unwrap(),
+                )
+            })
+            .collect();
+        let mut expected_sorted = expected.clone();
+        expected_sorted.sort();
+        emitted.sort();
+        assert_eq!(emitted, expected_sorted);
+
+        // The light produced a NodeAttribute record — the class the
+        // pre-413 scene-derived tally missed entirely.
+        assert!(
+            emitted.iter().any(|(n, c)| n == "NodeAttribute" && *c == 1),
+            "NodeAttribute counted: {emitted:?}"
+        );
+
+        // Per-class sum equals the total census.
+        let sum: i64 = emitted.iter().map(|(_, c)| c).sum();
+        assert_eq!(sum, 1 + objects.children.len() as i64);
     }
 
     #[test]
