@@ -24,6 +24,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Round 413 — **`Documents` section decode.** Per the
+  `docs/3d/fbx/fbx-ascii-grammar.md` §7 top-level section list + the
+  staged cubes-ascii-v7500.fbx fixture body, the new
+  `documents` module surfaces the document catalogue onto
+  `Scene3D::extras`: `["fbx:documents"]` (one
+  `{ name, subtype, active_anim_stack? }` JSON object per `Document`
+  record) and `["fbx:active_anim_stack"]` (the first document's
+  `ActiveAnimStackName` — the join key equal to the `AnimationStack`
+  display name / the `Takes` `Current` name). Document / `RootNode`
+  UIDs are not surfaced (they index the source file's private object
+  arena). Convenience readers `documents_from_extras` /
+  `active_anim_stack_from_extras`.
+
+- Round 413 — **`Documents` + `References` emission.** The `Scene3D`
+  encoder now writes the two §7 sections sitting between
+  `GlobalSettings` and `Definitions`: the document catalogue
+  re-renders from the round-tripped extras (else a single default
+  `"Scene"` document with `SourceObject`, an `ActiveAnimStackName`
+  resolved via `fbx:active_anim_stack` → `fbx:current_take` → the
+  first animation's name, and the `RootNode: 0` implicit-root
+  sentinel), plus the observed-empty `References` section, so the
+  full §7 section set survives a decode → encode → decode cycle.
+
+- Round 413 — **`Definitions` census + `PropertyTemplate` synthesis.**
+  The §7b `Count` / per-class `ObjectType` blocks are now derived
+  from the actually-emitted `Objects` tree (previously only
+  Geometry / Model / Material were tallied — Texture, Video,
+  NodeAttribute, Deformer, and the four animation classes were
+  missing from the census), with `GlobalSettings` participating as
+  in the fixture (`Count: 13` = 1 + 12 objects). The five
+  fixture-staged class templates are re-emitted verbatim as default
+  `Properties70` sets (`FbxAnimStack` / `FbxAnimLayer` / `FbxMesh` /
+  `FbxSurfaceLambert` / `FbxNode`); unstaged classes stay
+  count-only. End-to-end, a re-decoded material without its own
+  `ShadingModel` record now resolves the template's `"Lambert"`
+  through the `with_template_defaults` overlay.
+
+### Fixed
+
+- Round 413 — **Hostile-input hardening (both front-ends).** Three
+  crafted-input aborts in the binary Node Record reader are now clean
+  `Err`s: a truncated `Y` (i16) scalar panicked on a direct index
+  (new bounds-checked `read_i16`); a hostile `NumProperties`
+  (u32::MAX) drove `Vec::with_capacity` into a multi-GiB allocation
+  request (capacity now clamped by `PropertyListLen / 2` and the
+  bytes actually remaining); and ~14-bytes-per-level nesting bombs
+  overflowed the recursive reader's stack (new
+  `binary::MAX_NODE_DEPTH = 128`). The ASCII parser's mutually
+  recursive `parse_node` / `parse_body` now enforces the same depth
+  limit (repeated `A: {` lines were a ~5-bytes-per-level stack
+  bomb). Locked in by deterministic fixed-seed fuzz sweeps
+  (truncation / byte-mutation / chunk-splice / random-tail /
+  generative write→parse closure) over four corpus families.
+
 - Round 407 — **`Edges` array + `LayerElementSmoothing` decode.** Per
   the freshly staged `docs/3d/fbx/fbx-edges-smoothing-layer.md`
   (ask #220), the `Geometry`-level `Edges` array is now decoded: each

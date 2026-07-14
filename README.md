@@ -230,6 +230,33 @@ clean-room from third-party documentation:
   `TimeSpanStop`). One walker covers both front-ends (the binary form
   renders the identical node tree). `takes_from_extras` /
   `current_take_from_extras` read the catalogue back off a scene.
+- **`Documents` + `References` sections** — the two §7 top-level
+  sections between `GlobalSettings` and `Definitions`. The
+  `documents` module decodes the document catalogue (fixture body:
+  `Count` + `Document: <uid>, "", "Scene" { Properties70 {
+  SourceObject, ActiveAnimStackName }, RootNode: 0 }`) onto
+  `Scene3D::extras["fbx:documents"]` (one
+  `{ name, subtype, active_anim_stack? }` per record) and
+  `["fbx:active_anim_stack"]` (the first document's stack name — the
+  join key equal to the `AnimationStack` display name / the `Takes`
+  `Current` name); UIDs are not surfaced (private to the source
+  file's object arena). The encoder re-renders the catalogue
+  (default: one `"Scene"` document, stack name resolved via
+  `fbx:active_anim_stack` → `fbx:current_take` → first animation
+  name) plus the observed-empty `References` section, so the full §7
+  section set survives decode → encode → decode.
+- **Hostile-input hardening + deterministic fuzz sweeps** — both
+  front-end readers are total functions (every byte string → `Ok` /
+  `Err`, never a panic or abort): bounds-checked `Y` (i16) scalar
+  reads, `NumProperties` preallocation clamped by `PropertyListLen`
+  and the bytes remaining, and a shared 128-level
+  `binary::MAX_NODE_DEPTH` nesting cap in the binary reader and the
+  ASCII `parse_node`/`parse_body` recursion (crafted ~14- and
+  ~5-byte-per-level depth bombs previously overflowed the stack).
+  Locked in by fixed-seed replayable fuzz sweeps in
+  `tests/fuzz_mutation.rs`: prefix truncation, byte mutation, chunk
+  splice, random-tail-after-valid-magic, and a generative
+  write→parse closure over random typed documents.
 - **`FBXHeaderExtension` authoring metadata** — the first top-level §7
   section (per `docs/3d/fbx/fbx-ascii-grammar.md` §7a) carries the
   file's provenance: `Creator`, a `CreationTimeStamp` sub-node
@@ -476,9 +503,15 @@ clean-room from third-party documentation:
 - **`Scene3D` encoder (`Mesh3DEncoder`)** — `FbxEncoder` /
   `scene_writer::encode_scene` is the inverse of `scene::build_scene`:
   it builds a fresh `FbxDocument` (`FBXHeaderExtension` +
-  `GlobalSettings` + `Definitions` + `Objects` + `Connections` +
-  `Takes`) from an `oxideav_mesh3d::Scene3D` and serialises it to
-  binary or ASCII.
+  `GlobalSettings` + `Documents` + `References` + `Definitions` +
+  `Objects` + `Connections` + `Takes` — the full §7 section set in
+  fixture order) from an `oxideav_mesh3d::Scene3D` and serialises it
+  to binary or ASCII. The `Definitions` census is derived from the
+  actually-emitted `Objects` tree (every class counted,
+  `GlobalSettings` participating as in the fixture) and carries the
+  five fixture-staged `PropertyTemplate` default sets (`FbxAnimStack`
+  / `FbxAnimLayer` / `FbxMesh` / `FbxSurfaceLambert` / `FbxNode`);
+  unstaged classes stay count-only.
   - **Geometry** — one `Geometry` per mesh (per-corner `Vertices` +
     sequential-triangle `PolygonVertexIndex`), with one
     `LayerElementNormal` per normal buffer, one `LayerElementUV` per
@@ -583,8 +616,11 @@ the partial-support edges and the not-yet-implemented surfaces.
   `Mesh::weights` static per-target morph weights have no FBX
   read-back home (the decode side initialises them to `0.0`);
   multi-primitive meshes skip the extras-borne extra-layer
-  re-emission (no unambiguous per-primitive concatenation); emitted
-  `Definitions` are count-only (no `PropertyTemplate` synthesis).
+  re-emission (no unambiguous per-primitive concatenation); classes
+  without a fixture-staged template body (Texture / Video /
+  NodeAttribute / Deformer / AnimationCurveNode / AnimationCurve)
+  emit count-only `Definitions` blocks — synthesising their default
+  sets needs the template bodies staged in `docs/3d/fbx/`.
 - Autodesk binary footer — the Blender doc records its contents as
   "unknown"; `write_document` emits no footer at all. Files round-trip
   through our own parser but may be flagged by SDKs that validate the
