@@ -59,6 +59,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `FbxFooter::id_hex` / `id_from_hex` convert the id to/from the
   32-char hex form used for extras threading.
 
+- Round 433 — **Top-level provenance round-trip (`FileId` /
+  `CreationTime` / `Creator`).** The v7400-layout top-level siblings
+  of `FBXHeaderExtension` observed in the staged binary fixture
+  (`FileId` 16-byte `R` blob per `fbx-binary-properties70.md` §3c,
+  `CreationTime` / `Creator` string leaves) surface on
+  `Scene3D::extras["fbx:file_id"]` (hex) /
+  `["fbx:file_creation_time"]` / `["fbx:file_creator"]`, and the
+  encoder re-emits all three in the fixture-observed top-level order.
+  Keys are distinct from the `FBXHeaderExtension`-body `fbx:creator` /
+  `fbx:creation_time` surfaces.
+
 - Round 433 — **`Shading` / `Culling` Model-leaf round-trip.** The
   §7c trailing Model-body leaves (`fbx-ascii-grammar.md`: *"A `Model`
   body holds ... trailing leaves like `Shading: T` and

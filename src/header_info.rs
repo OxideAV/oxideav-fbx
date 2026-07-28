@@ -103,10 +103,10 @@ pub const HEADER_EXTENSION_NODE: &str = "FBXHeaderExtension";
 /// recognise). Existing `extras` keys are preserved
 /// (`Entry::or_insert`) so a caller may pre-seed values.
 pub fn extract_header_info(doc: &FbxDocument, scene: &mut Scene3D) -> usize {
+    let mut inserted = extract_top_level_provenance(doc, scene);
     let Some(ext) = doc.root.child(HEADER_EXTENSION_NODE) else {
-        return 0;
+        return inserted;
     };
-    let mut inserted = 0usize;
 
     // `FBXHeaderVersion` integer leaf.
     if let Some(v) = ext
@@ -137,6 +137,63 @@ pub fn extract_header_info(doc: &FbxDocument, scene: &mut Scene3D) -> usize {
     if let Some(scene_info) = ext.child("SceneInfo") {
         inserted += extract_metadata(scene_info, scene);
         inserted += extract_application_provenance(scene_info, scene);
+    }
+
+    inserted
+}
+
+/// Surface the top-level provenance *siblings* of `FBXHeaderExtension`
+/// — observed in the staged box-binary-v7400.fbx fixture's top-level
+/// record list (`FBXHeaderExtension, FileId, CreationTime, Creator,
+/// GlobalSettings, ...`):
+///
+/// - `FileId` — a 16-byte `R` blob (`fbx-binary-properties70.md` §3c:
+///   *"`R` observed as `FileId` → a 16-byte raw blob"*). Opaque
+///   per-file bytes, surfaced as lowercase hex on
+///   `extras["fbx:file_id"]` (same treatment as the footer id — its
+///   derivation is undocumented, so round-trippers carry it verbatim).
+/// - `CreationTime` — a string leaf (fixture:
+///   `"2017-09-25 13:03:42:782"`), surfaced verbatim on
+///   `extras["fbx:file_creation_time"]`. Distinct from
+///   `fbx:creation_time`, which is composed from the
+///   `CreationTimeStamp` *integer* sub-node inside
+///   `FBXHeaderExtension`.
+/// - `Creator` — a string leaf, surfaced on
+///   `extras["fbx:file_creator"]`. Distinct from `fbx:creator` (the
+///   `FBXHeaderExtension` body's own `Creator` leaf).
+fn extract_top_level_provenance(doc: &FbxDocument, scene: &mut Scene3D) -> usize {
+    let mut inserted = 0usize;
+    if let Some(bytes) = doc
+        .root
+        .child("FileId")
+        .and_then(|n| n.properties.first())
+        .and_then(|p| match p {
+            crate::binary::FbxProperty::Raw(b) => Some(b),
+            _ => None,
+        })
+    {
+        let mut hex = String::with_capacity(bytes.len() * 2);
+        for b in bytes {
+            use std::fmt::Write;
+            let _ = write!(hex, "{b:02x}");
+        }
+        inserted += insert(scene, "fbx:file_id", Value::String(hex));
+    }
+    if let Some(t) = doc
+        .root
+        .child("CreationTime")
+        .and_then(|n| n.properties.first())
+        .and_then(|p| p.as_str())
+    {
+        inserted += insert(scene, "fbx:file_creation_time", Value::String(t.to_owned()));
+    }
+    if let Some(c) = doc
+        .root
+        .child("Creator")
+        .and_then(|n| n.properties.first())
+        .and_then(|p| p.as_str())
+    {
+        inserted += insert(scene, "fbx:file_creator", Value::String(c.to_owned()));
     }
 
     inserted

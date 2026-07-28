@@ -15,7 +15,7 @@
 use oxideav_fbx::{
     parse_footer, write_document_with_options, FbxDecoder, WriterOptions, FOOTER_TRAILER,
 };
-use oxideav_mesh3d::Mesh3DDecoder;
+use oxideav_mesh3d::{Mesh3DDecoder, Mesh3DEncoder};
 
 const FIXTURE: &[u8] = include_bytes!("fixtures/box-binary-v7400.fbx");
 
@@ -107,4 +107,55 @@ fn fixture_decodes_to_a_single_cube_scene() {
         scene.extras.get("fbx:footer_id").and_then(|v| v.as_str()),
         Some("fabcaf0fd2c0d863b278f48914f32675")
     );
+}
+
+#[test]
+fn top_level_provenance_records_survive_the_scene_round_trip() {
+    // The v7400 fixture's top-level siblings of FBXHeaderExtension:
+    // FileId (16-byte R blob), CreationTime, Creator. Surfaced on
+    // Scene3D extras and re-emitted by the encoder in fixture order.
+    let mut dec = FbxDecoder::new();
+    let scene = dec.decode(FIXTURE).expect("scene decodes");
+    let s = |k: &str| {
+        scene
+            .extras
+            .get(k)
+            .and_then(|v| v.as_str())
+            .map(str::to_owned)
+    };
+    assert_eq!(
+        s("fbx:file_id").as_deref(),
+        Some("2cb52ce5b829c3c9b3ccb724a124f3fd")
+    );
+    assert_eq!(
+        s("fbx:file_creation_time").as_deref(),
+        Some("2017-09-25 13:03:42:782")
+    );
+    assert_eq!(
+        s("fbx:file_creator").as_deref(),
+        Some("FBX SDK/FBX Plugins version 2017.1 build=20161007")
+    );
+
+    // Scene3D round trip: encode → decode preserves all three, and
+    // the emitted document carries the records in the observed
+    // top-level order.
+    let bytes = oxideav_fbx::FbxEncoder::new()
+        .encode(&scene)
+        .expect("re-encode");
+    let doc = oxideav_fbx::binary::parse(&bytes).expect("parses");
+    let names: Vec<&str> = doc.root.children.iter().map(|c| c.name.as_str()).collect();
+    let pos = |n: &str| names.iter().position(|&x| x == n).unwrap_or(usize::MAX);
+    assert!(pos("FBXHeaderExtension") < pos("FileId"));
+    assert!(pos("FileId") < pos("CreationTime"));
+    assert!(pos("CreationTime") < pos("Creator"));
+    assert!(pos("Creator") < pos("GlobalSettings"));
+
+    let scene2 = FbxDecoder::new().decode(&bytes).expect("re-decode");
+    for k in ["fbx:file_id", "fbx:file_creation_time", "fbx:file_creator"] {
+        assert_eq!(
+            scene2.extras.get(k).and_then(|v| v.as_str()),
+            scene.extras.get(k).and_then(|v| v.as_str()),
+            "{k} survives"
+        );
+    }
 }

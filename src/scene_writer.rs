@@ -404,6 +404,38 @@ pub fn encode_scene_with_options(scene: &Scene3D, opts: &SceneEncodeOptions) -> 
     };
     root.children
         .push(build_header_extension(scene, opts.version));
+    // Top-level provenance siblings — re-emitted from the
+    // `fbx:file_id` / `fbx:file_creation_time` / `fbx:file_creator`
+    // extras in the fixture-observed order (`FBXHeaderExtension,
+    // FileId, CreationTime, Creator, GlobalSettings, ...`). Only
+    // present when the source document carried them (see
+    // `crate::header_info::extract_top_level_provenance`).
+    if let Some(bytes) = scene
+        .extras
+        .get("fbx:file_id")
+        .and_then(|v| v.as_str())
+        .and_then(hex_to_bytes)
+    {
+        root.children.push(FbxNode {
+            name: "FileId".to_string(),
+            properties: vec![FbxProperty::Raw(bytes)],
+            children: Vec::new(),
+        });
+    }
+    if let Some(t) = scene
+        .extras
+        .get("fbx:file_creation_time")
+        .and_then(|v| v.as_str())
+    {
+        root.children.push(leaf_string("CreationTime", t));
+    }
+    if let Some(c) = scene
+        .extras
+        .get("fbx:file_creator")
+        .and_then(|v| v.as_str())
+    {
+        root.children.push(leaf_string("Creator", c));
+    }
     root.children.push(build_global_settings(scene));
     // `Documents` + `References` — the §7 sections sitting between
     // `GlobalSettings` and `Definitions` (round 413; fixture order).
@@ -1288,6 +1320,23 @@ const FBX_NODE_TEMPLATE: &[TRecord] = &[
         TDef::D(1.0),
     ),
 ];
+
+/// Decode an even-length lowercase/uppercase hex string into bytes
+/// (the inverse of the `fbx:file_id` extras rendering). `None` on any
+/// length / digit deviation.
+fn hex_to_bytes(s: &str) -> Option<Vec<u8>> {
+    let b = s.as_bytes();
+    if b.len() % 2 != 0 {
+        return None;
+    }
+    let mut out = Vec::with_capacity(b.len() / 2);
+    for chunk in b.chunks_exact(2) {
+        let hi = (chunk[0] as char).to_digit(16)?;
+        let lo = (chunk[1] as char).to_digit(16)?;
+        out.push(((hi << 4) | lo) as u8);
+    }
+    Some(out)
+}
 
 /// FBX joins `Name` + `ClassTag` with `\x00\x01` in the binary
 /// encoding (the decode path's `element_name` splits on the `\x00`).

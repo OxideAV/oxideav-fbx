@@ -279,6 +279,14 @@ clean-room from third-party documentation:
   `tests/fuzz_mutation.rs`: prefix truncation, byte mutation, chunk
   splice, random-tail-after-valid-magic, and a generative
   write→parse closure over random typed documents.
+- **Top-level provenance records** — the v7400-layout top-level
+  siblings of `FBXHeaderExtension` observed in the staged binary
+  fixture (`FileId` 16-byte `R` blob per
+  `docs/3d/fbx/fbx-binary-properties70.md` §3c, `CreationTime` /
+  `Creator` string leaves) surface on
+  `Scene3D::extras["fbx:file_id"]` (hex) / `["fbx:file_creation_time"]`
+  / `["fbx:file_creator"]` and are re-emitted in fixture order, so
+  they survive the Scene3D round trip.
 - **`FBXHeaderExtension` authoring metadata** — the first top-level §7
   section (per `docs/3d/fbx/fbx-ascii-grammar.md` §7a) carries the
   file's provenance: `Creator`, a `CreationTimeStamp` sub-node
