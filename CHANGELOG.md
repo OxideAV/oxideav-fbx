@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Round 433 — **`C` boolean token bytes.** The staged
+  box-binary-v7400.fbx fixture stores its only `C` property
+  (`Shading`, whose ASCII counterpart is the bare `Shading: T` true
+  token) as the ASCII token byte `T` (0x54) — the Gessler LSB rule
+  alone misread it as **false**. The reader now treats the `T` token
+  byte as true (LSB otherwise, so `F` / 0x00 stay false and the plain
+  0x01 form stays true), and the writer canon follows the observed
+  SDK byte: `T` for true, `F` for false (previously 0x01 / 0x00,
+  which the parser still accepts).
+
+- Round 433 — **`IndexToDirect` without an index sub-record.** The
+  fixture's SDK-written `LayerElementColor` declares `ByVertice` /
+  `IndexToDirect` yet carries only the `Colors` d-array (one RGBA per
+  shared vertex — exactly the `Direct` layout). The layer resolver
+  previously errored (`"no Index sub-record"`); the observed semantics
+  are identity indexing, so it now resolves like `Direct`. This
+  unblocks full-scene decode of the staged binary fixture.
+
 ### Changed
 
 - Round 398 — **deflate backend migrated `miniz_oxide` → `compcol`.**
