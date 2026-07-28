@@ -427,9 +427,16 @@ fn write_array_body(out: &mut Vec<u8>, count: usize, raw: &[u8], opts: &WriterOp
         out.extend_from_slice(&(buf.len() as u32).to_le_bytes());
         out.extend_from_slice(&buf);
     } else {
+        // Encoding = 0. Per docs/3d/fbx/fbx-binary-properties70.md
+        // §3b, an `Encoding == 0` array still fills
+        // `CompressedLength` with the raw payload byte length
+        // (`ArrayLength * sizeof(element)` — the fixture's `Vertices`
+        // d-array stores 576 = 72 x 8). The parser derives the raw
+        // size itself, but the byte-faithful re-encode must reproduce
+        // the documented field value.
         out.extend_from_slice(&(count as u32).to_le_bytes());
-        out.extend_from_slice(&0u32.to_le_bytes()); // Encoding = 0
-        out.extend_from_slice(&0u32.to_le_bytes()); // CompressedLength = 0
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&(raw.len() as u32).to_le_bytes());
         out.extend_from_slice(raw);
     }
 }
