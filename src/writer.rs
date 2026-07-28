@@ -306,13 +306,14 @@ fn write_property(prop: &FbxProperty, out: &mut Vec<u8>, opts: &WriterOptions) -
         }
         FbxProperty::Bool(v) => {
             out.push(b'C');
-            // Gessler doesn't pin down which encoding of "bool" Autodesk
-            // writes (the parser reads `value & 1`), but both `0x00`
-            // and `0x01` are observed in the wild. Round-tripping our
-            // parser's output therefore requires writing back the same
-            // canonical byte the parser produced — we emit `0x01` for
-            // `true` and `0x00` for `false`.
-            out.push(if *v { 1 } else { 0 });
+            // The staged box-binary-v7400.fbx fixture stores its only
+            // `C` property (`Shading`, true) as the ASCII token byte
+            // `T` (0x54) — the same bare `T` / `F` boolean tokens the
+            // ASCII grammar (fbx-ascii-grammar.md §5) uses. The writer
+            // canon follows the observed byte: `T` for true, `F` for
+            // false (the parser reads both, plus the plain 0x00/0x01
+            // forms).
+            out.push(if *v { b'T' } else { b'F' });
         }
         FbxProperty::I32(v) => {
             out.push(b'I');

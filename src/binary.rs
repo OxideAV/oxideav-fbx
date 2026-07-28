@@ -26,7 +26,7 @@
 //! | Code | Type |
 //! |------|------|
 //! | `Y`  | i16 |
-//! | `C`  | bool (LSB of one byte) |
+//! | `C`  | bool (one byte: the `T` token byte is true, else the LSB decides) |
 //! | `I`  | i32 |
 //! | `F`  | f32 |
 //! | `D`  | f64 |
@@ -100,7 +100,9 @@ pub const FOOTER_TRAILER: [u8; 16] = [
 pub enum FbxProperty {
     /// `Y` — 2-byte signed integer.
     I16(i16),
-    /// `C` — 1-bit boolean (LSB of one byte).
+    /// `C` — one-byte boolean. SDK-written files store the ASCII
+    /// `T` / `F` token bytes (observed in the staged v7400 fixture);
+    /// plain `0x00` / `0x01` forms decode via the LSB.
     Bool(bool),
     /// `I` — 4-byte signed integer.
     I32(i32),
@@ -508,7 +510,16 @@ fn read_property(bytes: &[u8], off: usize) -> Result<(FbxProperty, usize)> {
         b'C' => {
             let raw = read_u8(bytes, p)?;
             p += 1;
-            FbxProperty::Bool((raw & 1) != 0)
+            // Gessler describes `C` as a 1-bit boolean in the LSB, but
+            // the staged box-binary-v7400.fbx fixture's only `C`
+            // property (`Shading`, whose ASCII counterpart is the bare
+            // `Shading: T` true token of fbx-ascii-grammar.md §5)
+            // stores the ASCII token byte 0x54 (`T`) — which the LSB
+            // rule would misread as false. Observed rule: the `T`
+            // token byte is true; otherwise the LSB decides (covers
+            // the plain 0x00 / 0x01 encodings and reads the `F` token
+            // byte 0x46 as false).
+            FbxProperty::Bool(raw == b'T' || (raw & 1) != 0)
         }
         b'I' => {
             let v = read_i32(bytes, p)?;
@@ -902,6 +913,26 @@ mod tests {
         buf.extend_from_slice(&7i32.to_le_bytes());
         append_footer(&mut buf, version, id);
         buf
+    }
+
+    #[test]
+    fn bool_token_bytes_decode_per_the_fixture_observation() {
+        // The staged v7400 fixture stores `Shading` (true) as the
+        // ASCII token byte `T` (0x54) — the LSB rule alone would have
+        // misread it as false. `F` (0x46) and 0x00 are false; the
+        // plain 0x01 legacy form stays true.
+        for (byte, expect) in [(b'T', true), (b'F', false), (0u8, false), (1u8, true)] {
+            let mut buf = build_empty_doc(7400);
+            push_node_header_32(&mut buf, 27 + 13 + 1 + 2, 1, 2, "B");
+            buf.push(b'C');
+            buf.push(byte);
+            let doc = parse(&buf).expect("C prop parses");
+            assert_eq!(
+                doc.root.children[0].properties[0],
+                FbxProperty::Bool(expect),
+                "byte 0x{byte:02x}"
+            );
+        }
     }
 
     #[test]
