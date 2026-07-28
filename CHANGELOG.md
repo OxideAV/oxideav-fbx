@@ -24,6 +24,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Round 433 — **Binary footer decode (`binary::parse_footer` /
+  `FbxFooter` / `FOOTER_TRAILER`).** The trailing footer block the
+  Gessler writeup leaves as *"unknown contents"* is now observer-derived
+  from the staged `docs/3d/fbx/fixtures/box-binary-v7400.fbx` bytes
+  (the final 176 bytes past the record-tree walk end): top-level NULL
+  record, a 16-byte per-file id (opaque; derivation undocumented),
+  zero padding to the next 16-byte file-offset boundary, 4 zero bytes,
+  a uint32 LE echo of the header version, 120 zero bytes, and a
+  constant 16-byte trailer signature ending exactly at EOF.
+  `parse_footer` is a separate tolerant entry point (returns
+  `Option<FbxFooter>`; malformed / absent tails are `None`, never an
+  error), so the `FbxDocument` record-tree surface is unchanged.
+  `FbxFooter::id_hex` / `id_from_hex` convert the id to/from the
+  32-char hex form used for extras threading.
+
 - Round 413 — **`Documents` section decode.** Per the
   `docs/3d/fbx/fbx-ascii-grammar.md` §7 top-level section list + the
   staged cubes-ascii-v7500.fbx fixture body, the new

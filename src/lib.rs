@@ -255,7 +255,10 @@ pub use ascii::is_ascii_fbx;
 pub use ascii_writer::{
     write_ascii_document, write_ascii_document_with_options, AsciiWriterOptions,
 };
-pub use binary::{FbxDocument, FbxNode, FbxProperty, FBX_MAGIC, FBX_VERSION_64BIT_THRESHOLD};
+pub use binary::{
+    parse_footer, FbxDocument, FbxFooter, FbxNode, FbxProperty, FBX_MAGIC,
+    FBX_VERSION_64BIT_THRESHOLD, FOOTER_TRAILER,
+};
 pub use decoder::{is_binary_fbx, FbxDecoder};
 pub use encoder::{FbxEncoder, FbxOutputForm};
 pub use scene_writer::{encode_scene, encode_scene_with_options, SceneEncodeOptions};
