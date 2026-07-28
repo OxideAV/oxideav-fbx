@@ -724,7 +724,10 @@ fn pull_layer_vec3(
 ///   `docs/3d/fbx/fbx-edges-smoothing-layer.md` §3b the legacy
 ///   `Index` string (FBX v5.0 files) is an alias replaced by
 ///   `IndexToDirect` in v6.0+, so any non-`Direct` reference resolves
-///   through the index array.
+///   through the index array. An `IndexToDirect` layer with **no**
+///   index sub-record resolves as identity indexing (i.e. like
+///   `Direct`) — the shape the staged `box-binary-v7400.fbx` fixture's
+///   `LayerElementColor` demonstrates.
 fn resolve_layer_indices(
     mapping: Option<&str>,
     reference: Option<&str>,
@@ -763,9 +766,15 @@ fn resolve_layer_indices(
             }
             i as usize
         } else {
-            return Err(Error::invalid(format!(
-                "FBX LayerElement: {what} ReferenceInformationType==IndexToDirect but no Index sub-record"
-            )));
+            // `IndexToDirect` with NO index sub-record at all —
+            // observed in the staged `box-binary-v7400.fbx` fixture,
+            // whose SDK-written `LayerElementColor` declares
+            // `ByVertice` / `IndexToDirect` yet carries only the
+            // `Colors` d-array (96 doubles = 24 RGBA = one per shared
+            // vertex, exactly the Direct layout). The observed
+            // semantics are identity indexing, so the layer resolves
+            // exactly like `Direct` rather than erroring out.
+            lookup
         };
         out.push(elem_ix);
     }
