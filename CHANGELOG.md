@@ -59,6 +59,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `FbxFooter::id_hex` / `id_from_hex` convert the id to/from the
   32-char hex form used for extras threading.
 
+- Round 433 — **`Shading` / `Culling` Model-leaf round-trip.** The
+  §7c trailing Model-body leaves (`fbx-ascii-grammar.md`: *"A `Model`
+  body holds ... trailing leaves like `Shading: T` and
+  `Culling: "CullingOff"`"*) now decode onto
+  `Node::extras["fbx:shading"]` (bool) / `["fbx:culling"]` (string)
+  and are re-emitted by the encoder, closing their Scene3D round trip
+  in both binary and ASCII forms. Nodes without the extras emit
+  neither leaf.
+
 - Round 433 — **Bind-pose re-emission (`Pose : "BindPose"`).** The
   encoder now closes the Pose round trip: every scene-graph node
   carrying the decode-side `extras["fbx:bind_pose"]` world matrix

@@ -1952,6 +1952,20 @@ fn build_model(node: &Node, id: i64) -> FbxNode {
     if !props70.children.is_empty() {
         children.push(props70);
     }
+    // Trailing Model-body leaves (`docs/3d/fbx/fbx-ascii-grammar.md`
+    // §7c: `Shading: T` / `Culling: "CullingOff"`) — re-emitted from
+    // the decode-side `fbx:shading` / `fbx:culling` extras so they
+    // survive the Scene3D round trip.
+    if let Some(shading) = node.extras.get("fbx:shading").and_then(|v| v.as_bool()) {
+        children.push(FbxNode {
+            name: "Shading".to_string(),
+            properties: vec![FbxProperty::Bool(shading)],
+            children: Vec::new(),
+        });
+    }
+    if let Some(culling) = node.extras.get("fbx:culling").and_then(|v| v.as_str()) {
+        children.push(leaf_string("Culling", culling));
+    }
     FbxNode {
         name: "Model".to_string(),
         properties: vec![

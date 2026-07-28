@@ -1646,3 +1646,73 @@ fn malformed_or_absent_bind_pose_extras_emit_no_pose_element() {
         .next()
         .is_none());
 }
+
+/// The §7c trailing Model-body leaves (`Shading: T` /
+/// `Culling: "CullingOff"`) surface as node extras on decode and
+/// survive the full Scene3D round trip in both output forms.
+#[test]
+fn model_shading_and_culling_leaves_round_trip() {
+    // 1) Fixture surfacing: every cubes-fixture Model carries both
+    //    leaves (fbx-ascii-grammar.md §7c).
+    let fixture: &[u8] = include_bytes!("fixtures/cubes-ascii-v7500.fbx");
+    let scene_fx = decode(fixture);
+    let cube = scene_fx
+        .nodes
+        .iter()
+        .find(|n| n.name.as_deref() == Some("Model::Cube2"))
+        .expect("fixture Cube2 node");
+    assert_eq!(
+        cube.extras.get("fbx:shading").and_then(|v| v.as_bool()),
+        Some(true)
+    );
+    assert_eq!(
+        cube.extras.get("fbx:culling").and_then(|v| v.as_str()),
+        Some("CullingOff")
+    );
+
+    // 2) Synthetic closure through both forms.
+    let mut scene = Scene3D::new();
+    let nid = scene.add_node(Node::new().with_name("N"));
+    scene.roots.push(nid);
+    scene.nodes[nid.0 as usize]
+        .extras
+        .insert("fbx:shading".to_string(), serde_json::Value::Bool(false));
+    scene.nodes[nid.0 as usize].extras.insert(
+        "fbx:culling".to_string(),
+        serde_json::Value::String("CullingOn".to_string()),
+    );
+    for form in [FbxOutputForm::Binary, FbxOutputForm::Ascii] {
+        let bytes = FbxEncoder::new().form(form).encode(&scene).expect("encode");
+        let scene2 = decode(&bytes);
+        let n2 = scene2
+            .nodes
+            .iter()
+            .find(|n| n.name.as_deref() == Some("N"))
+            .expect("node survives");
+        assert_eq!(
+            n2.extras.get("fbx:shading").and_then(|v| v.as_bool()),
+            Some(false),
+            "{form:?}"
+        );
+        assert_eq!(
+            n2.extras.get("fbx:culling").and_then(|v| v.as_str()),
+            Some("CullingOn"),
+            "{form:?}"
+        );
+    }
+    // A node without the extras emits neither leaf.
+    let mut plain = Scene3D::new();
+    let pid = plain.add_node(Node::new().with_name("P"));
+    plain.roots.push(pid);
+    let bytes = encode_binary(&plain);
+    let doc = oxideav_fbx::binary::parse(&bytes).expect("parses");
+    let model = doc
+        .root
+        .child("Objects")
+        .expect("Objects")
+        .children_named("Model")
+        .next()
+        .expect("Model");
+    assert!(model.child("Shading").is_none());
+    assert!(model.child("Culling").is_none());
+}

@@ -557,6 +557,10 @@ clean-room from third-party documentation:
     `Lcl Scaling` P-records + the parent/child OO edges;
     `fbx:node_attribute_kind` `"LimbNode"` / `"Null"` markers re-emit
     their `NodeAttribute` so bone / locator tags survive re-encode.
+    The §7c trailing Model-body leaves (`Shading: T` /
+    `Culling: "CullingOff"`) decode onto `Node::extras["fbx:shading"]`
+    / `["fbx:culling"]` and are re-emitted, so they survive the
+    Scene3D round trip in both forms.
   - **Materials / Textures** — `DiffuseColor` / `Opacity` /
     `EmissiveColor` / `ReflectionFactor` P-records; `Texture`
     (+ backing `Video.Content` R-blob for embedded bytes) with the

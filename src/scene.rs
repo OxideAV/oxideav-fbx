@@ -114,6 +114,33 @@ pub fn build_scene(doc: &FbxDocument) -> Result<Scene3D> {
                     if !name.is_empty() {
                         node = node.with_name(name);
                     }
+                    // Trailing Model-body leaves per
+                    // `docs/3d/fbx/fbx-ascii-grammar.md` §7c ("*A
+                    // `Model` body holds ... trailing leaves like
+                    // `Shading: T` and `Culling: "CullingOff"`*") —
+                    // surfaced verbatim so they round-trip through
+                    // `Scene3D` (the encoder re-emits both).
+                    if let Some(shading) = child
+                        .child("Shading")
+                        .and_then(|n| n.properties.first())
+                        .and_then(|p| match p {
+                            FbxProperty::Bool(b) => Some(*b),
+                            _ => None,
+                        })
+                    {
+                        node.extras
+                            .insert("fbx:shading".to_string(), serde_json::Value::Bool(shading));
+                    }
+                    if let Some(culling) = child
+                        .child("Culling")
+                        .and_then(|n| n.properties.first())
+                        .and_then(FbxProperty::as_str)
+                    {
+                        node.extras.insert(
+                            "fbx:culling".to_string(),
+                            serde_json::Value::String(culling.to_string()),
+                        );
+                    }
                     let nid = scene.add_node(node);
                     model_nodes.insert(id, nid);
                     model_subtypes.insert(id, st);
