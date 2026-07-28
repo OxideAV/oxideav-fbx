@@ -33,10 +33,12 @@
 //!   `Version` field.
 //! - **Binary container writer** (round 3) — round-trips an
 //!   [`FbxDocument`] back to bytes that our own [`binary::parse`] reads
-//!   into an equivalent document. See [`writer`]. The Autodesk-private
-//!   footer (Gessler: *"unknown contents"*) is **not** emitted; files
-//!   are valid against our parser's grammar but may be flagged by SDKs
-//!   that validate the trailer signature.
+//!   into an equivalent document. See [`writer`]. Since round 433 the
+//!   trailing footer block (observer-derived from the staged v7400
+//!   fixture bytes — see [`binary::FOOTER_TRAILER`]) is emitted by
+//!   default, and a `parse` + [`binary::parse_footer`] +
+//!   `write_document_with_options` cycle reproduces the staged fixture
+//!   **byte-for-byte**.
 //! - Object-graph walker: indexes `Geometry` and `Model` elements
 //!   from `Objects`, walks `Connections` `OO` records to wire
 //!   Geometry → Model and Model → root.
@@ -144,11 +146,11 @@
 //!   [`encoder`] / [`scene_writer`] / [`anim_writer`].
 //!
 //! # What's NOT covered
-//! - Encoder: skin / blend-shape deformer synthesis, multi-UV-set /
-//!   multi-material slot tables, the full node-transform chain
+//! - Encoder: the full node-transform chain
 //!   (pivots / pre-post-rotation / `RotationOrder` — the same
-//!   `docs/3d/fbx/` gap the decode side hits), and the Autodesk binary
-//!   footer are encoder follow-up rounds.
+//!   `docs/3d/fbx/` gap the decode side hits) is not synthesised; the
+//!   footer's 16-byte per-file id derivation is undocumented, so fresh
+//!   encodes carry an all-zero id (captured ids reproduce verbatim).
 //! - Animation: per-layer compositing, cubic / step / TCB
 //!   interpolation, pivot / pre-rotation / post-rotation chains.
 //! - Skin: `SKINNING_METHOD_DUAL_QUATERNION` produces plain LBS

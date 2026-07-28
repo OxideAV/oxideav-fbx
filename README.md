@@ -26,7 +26,27 @@ clean-room from third-party documentation:
   arrays incl. zlib-deflated via `compcol` — the inflate path is
   bounded at the array's known post-inflate size so a hostile
   `CompressedLength` cannot expand into a decompression bomb — `S` /
-  `R` strings & blobs).
+  `R` strings & blobs). The `C` boolean wire byte follows the
+  fixture-observed SDK form: the ASCII `T` token byte (0x54) is true
+  (the LSB-only reading would misdecode it), `F` / plain 0x00/0x01
+  decode via the LSB.
+- **Binary footer** — the trailing block the public binary writeup
+  leaves as *"unknown contents"* is observer-derived from the staged
+  `box-binary-v7400.fbx` fixture's final 176 bytes: top-level NULL
+  record, a 16-byte per-file id (opaque — its derivation is
+  undocumented by every staged source), zero padding to the next
+  16-byte file-offset boundary, 4 zero bytes, a uint32 LE echo of the
+  header version, 120 zero bytes, and a constant 16-byte trailer
+  signature ending exactly at EOF. `binary::parse_footer` decodes it
+  tolerantly (`Option<FbxFooter>`; malformed/absent tails are `None`);
+  the writer emits the full block by default (`WriterOptions::
+  footer_id` / `emit_footer` knobs); the decoder surfaces the id on
+  `Scene3D::extras["fbx:footer_id"]` and the encoder threads it back.
+  The whole 17200-byte staged fixture re-encodes **byte-for-byte**
+  through `parse` + `parse_footer` + `write_document_with_options`
+  (which also pins the `Encoding == 0` `CompressedLength` = raw byte
+  length rule and the explicit empty-nested-list form the fixture's
+  `References` record demonstrates).
 - Object-graph walker: indexes `Geometry` and `Model` from `Objects`,
   walks `Connections` `OO` records to wire Geometry → Model and
   Model → root.
@@ -54,7 +74,9 @@ clean-room from third-party documentation:
   (one value broadcast to the whole mesh) — under both `Direct` and
   `IndexToDirect` `ReferenceInformationType` (a single shared
   `resolve_layer_indices` helper backs the scalar/vec2/vec3/vec4
-  pullers). `ByEdge` on the generic attribute pullers surfaces no
+  pullers; an `IndexToDirect` layer with no index sub-record — the
+  shape the staged binary fixture's SDK-written `LayerElementColor`
+  demonstrates — resolves as identity indexing, i.e. like `Direct`). `ByEdge` on the generic attribute pullers surfaces no
   per-corner buffer rather than mis-attribute (the smoothing layer,
   which owns that mode, is handled separately — see the Edges /
   smoothing bullet below). Each layer's
@@ -293,7 +315,13 @@ clean-room from third-party documentation:
   receive `bone_to_parent == bone_to_world` (implicit-root convention,
   parent world = identity). The parent-relative form is approximated
   from the parent's stored world transform, since FBX `Pose` records
-  hold world-space matrices only.
+  hold world-space matrices only. **Round-trip closed**: the encoder
+  re-emits one `Pose : "BindPose"` element (a
+  `PoseNode { Node, Matrix }` pair per posed node) from the
+  `fbx:bind_pose` extras, so bind poses survive
+  `decode → encode → decode` in both binary and ASCII forms (the
+  derived `fbx:bind_pose_parent_local` entries are recomputed on
+  decode rather than serialised).
 - **`Properties70` typeName-discriminating accessors** —
   the existing [`PropertyMap::as_vec3`] and [`PropertyMap::as_str`]
   surface every triple-typed and string-typed `P`-record indiscriminately,
@@ -474,7 +502,8 @@ clean-room from third-party documentation:
   callers that want smaller output can opt in to zlib-deflate via
   `write_document_with_options(&doc, &WriterOptions::default().compress_arrays_at(256))`
   (`Encoding == 1` per Gessler §"Array types"; a 32×32 quad-grid fixture
-  shrinks from 40 346 bytes to 8 326 bytes, ≈ 20.6 % of the raw size).
+  shrinks from 40 512 bytes to 8 496 bytes, ≈ 21.0 % of the raw size —
+  both figures include the trailing footer block emitted by default).
 - **ASCII writer** — `write_ascii_document(&FbxDocument)`
   emits the document back as ASCII text per the observer grammar at
   `docs/3d/fbx/fbx-ascii-grammar.md`. Output starts with the two-line
@@ -541,7 +570,9 @@ clean-room from third-party documentation:
     decode-side composition reproduces the authored inverse-bind
     matrices exactly); `Deformer{BlendShape}` + `BlendShapeChannel` +
     `Geometry{Shape}` (sparse `Indexes` + `Vertices` + `Normals`
-    deltas) per morph target.
+    deltas) per morph target; one `Pose : "BindPose"` element
+    (`PoseNode { Node, Matrix }` per posed node) from the
+    `fbx:bind_pose` extras.
   - **Lights / Cameras** — one `NodeAttribute` per bound node
     (`LightType` / `Color` / `Intensity`×100 / `DecayType` +
     `DecayStart` / cone angles; `CameraProjectionType` /
@@ -621,10 +652,11 @@ the partial-support edges and the not-yet-implemented surfaces.
   NodeAttribute / Deformer / AnimationCurveNode / AnimationCurve)
   emit count-only `Definitions` blocks — synthesising their default
   sets needs the template bodies staged in `docs/3d/fbx/`.
-- Autodesk binary footer — the Blender doc records its contents as
-  "unknown"; `write_document` emits no footer at all. Files round-trip
-  through our own parser but may be flagged by SDKs that validate the
-  trailer signature.
+- Binary footer id derivation — the footer's structure round-trips
+  byte-faithfully (see the "Binary footer" bullet above), but the
+  16-byte per-file id's *derivation* is undocumented by every staged
+  source, so freshly-encoded scenes carry an all-zero id (a captured
+  id from `parse_footer` / `fbx:footer_id` is reproduced verbatim).
 - Animation: per-layer compositing weights, `KeyAttrFlags` cubic /
   step / TCB interpolation modes, `PreRotation` / `PostRotation` /
   pivot composition. Linear sampling between keyframes only.
