@@ -209,6 +209,54 @@ fn random_tail_after_valid_magic_never_panics() {
 }
 
 #[test]
+fn footer_mutation_sweep_never_panics_and_stays_total() {
+    // Round-433 footer path: `parse_footer` must be a total function
+    // (`Some` / `None`, never a panic) under byte mutation and
+    // truncation of the trailing region, and a decode of the mutated
+    // buffer must stay total too. The corpus is our own encoder
+    // output (footer emitted by default) plus the binary re-encode of
+    // the staged fixture with a non-zero id.
+    let scene = synthetic_scene();
+    let mut enc = FbxEncoder::new();
+    enc.writer_options = enc.writer_options.footer_id([0x5Au8; 16]);
+    let with_id = enc.encode(&scene).expect("footer-id encode");
+    let default_footer = FbxEncoder::new().encode(&scene).expect("default encode");
+    for (ci, corpus) in [with_id, default_footer].into_iter().enumerate() {
+        assert!(
+            oxideav_fbx::parse_footer(&corpus).is_some(),
+            "corpus {ci} carries a well-formed footer"
+        );
+        let tail_start = corpus.len().saturating_sub(200);
+        let mut rng = Rng::new(0x433_4000 + ci as u64);
+        for iter in 0..300 {
+            let mut mutated = corpus.clone();
+            // Concentrate mutations in the trailing region.
+            let n_mut = 1 + rng.below(4);
+            for _ in 0..n_mut {
+                let pos = tail_start + rng.below(mutated.len() - tail_start);
+                mutated[pos] = (rng.next() & 0xFF) as u8;
+            }
+            let owned = mutated.clone();
+            let outcome = catch_unwind(move || {
+                let _ = oxideav_fbx::parse_footer(&owned);
+            });
+            assert!(outcome.is_ok(), "parse_footer panicked at iter {iter}");
+            assert_total(&mutated, &format!("footer mutation iter {iter}"));
+        }
+        // Every truncation point across the trailing region.
+        for cut in tail_start..=corpus.len() {
+            let truncated = &corpus[..cut];
+            let owned = truncated.to_vec();
+            let outcome = catch_unwind(move || {
+                let _ = oxideav_fbx::parse_footer(&owned);
+            });
+            assert!(outcome.is_ok(), "parse_footer panicked at truncation {cut}");
+            assert_total(truncated, &format!("footer truncation at {cut}"));
+        }
+    }
+}
+
+#[test]
 fn structured_document_write_parse_closure_holds() {
     // Generative round-trip: random typed FbxDocument trees written by
     // our binary writer must re-parse to the identical tree. This is a
