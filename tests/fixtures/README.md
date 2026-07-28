@@ -17,8 +17,8 @@ exercise the ASCII / binary parser front-ends end-to-end.
 `test/models/FBX/box.fbx` model-data file (BSD-3-Clause), exported by
 *FBX SDK/FBX Plugins version 2017.1* — the primary sample the
 clean-room observer trace `docs/3d/fbx/fbx-binary-properties70.md`
-was derived from (only the data file was consulted — no assimp
-implementation source was read). One cube Geometry + Model + Material;
+was derived from; the fixture bytes are treated as opaque sample
+data. One cube Geometry + Model + Material;
 every array `Encoding == 0`. It is the byte-faithful round-trip
 reference: the whole 17200-byte file (including the 176-byte tail
 region past the record-tree walk: top-level NULL record + footer)
@@ -26,10 +26,9 @@ re-encodes byte-for-byte through `parse` + `parse_footer` +
 `write_document_with_options`.
 
 `cubes-ascii-v7500.fbx` is the **assimp** project's
-`test/models/FBX/cubes_with_names.fbx` model-data file (BSD-3-Clause),
-distinct from assimp's own C++ FBX *importer* source under
-`code/AssetLib/FBX/` (only the data file was consulted — no assimp
-implementation source was read). It was exported by *FBX SDK/FBX
+`test/models/FBX/cubes_with_names.fbx` model-data file (BSD-3-Clause);
+the fixture bytes are treated as opaque sample data. It was
+exported by *FBX SDK/FBX
 Plugins version 2018.1.1* from Maya (SceneInfo
 `Original|ApplicationName: "Maya"`); four cube meshes, two materials,
 one anim take. Useful because object nodes carry real names
