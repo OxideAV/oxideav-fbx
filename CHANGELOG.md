@@ -59,6 +59,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `FbxFooter::id_hex` / `id_from_hex` convert the id to/from the
   32-char hex form used for extras threading.
 
+- Round 433 — **Model prop2 subtype round-trip.** A non-`"Mesh"`
+  Model subtype discriminator (`fbx-binary-properties70.md` §6 —
+  `"LimbNode"` / `"Null"` / `"Light"` / `"Camera"` / `"Root"`)
+  surfaces on `Node::extras["fbx:model_subtype"]` and is re-emitted
+  as the Model element's prop2, instead of every re-encoded Model
+  collapsing to `"Mesh"`.
+
 - Round 433 — **Top-level provenance round-trip (`FileId` /
   `CreationTime` / `Creator`).** The v7400-layout top-level siblings
   of `FBXHeaderExtension` observed in the staged binary fixture

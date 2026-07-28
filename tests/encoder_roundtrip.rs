@@ -1716,3 +1716,56 @@ fn model_shading_and_culling_leaves_round_trip() {
     assert!(model.child("Shading").is_none());
     assert!(model.child("Culling").is_none());
 }
+
+/// The Model element's own prop2 subtype discriminator (§6 — e.g.
+/// `"LimbNode"` for a bone Model) must survive the Scene3D round trip
+/// instead of collapsing to `"Mesh"`.
+#[test]
+fn model_subtype_discriminator_round_trips() {
+    let mut scene = Scene3D::new();
+    let nid = scene.add_node(Node::new().with_name("Bone"));
+    scene.roots.push(nid);
+    scene.nodes[nid.0 as usize].extras.insert(
+        "fbx:model_subtype".to_string(),
+        serde_json::Value::String("LimbNode".to_string()),
+    );
+
+    let bytes = encode_binary(&scene);
+    let doc = oxideav_fbx::binary::parse(&bytes).expect("parses");
+    let model = doc
+        .root
+        .child("Objects")
+        .expect("Objects")
+        .children_named("Model")
+        .next()
+        .expect("Model");
+    assert_eq!(model.properties[2].as_str(), Some("LimbNode"));
+
+    let scene2 = decode(&bytes);
+    let n2 = scene2
+        .nodes
+        .iter()
+        .find(|n| n.name.as_deref() == Some("Bone"))
+        .expect("node survives");
+    assert_eq!(
+        n2.extras.get("fbx:model_subtype").and_then(|v| v.as_str()),
+        Some("LimbNode")
+    );
+
+    // Default stays "Mesh" and surfaces no extra.
+    let mut plain = Scene3D::new();
+    let pid = plain.add_node(Node::new().with_name("P"));
+    plain.roots.push(pid);
+    let bytes2 = encode_binary(&plain);
+    let doc2 = oxideav_fbx::binary::parse(&bytes2).expect("parses");
+    let model2 = doc2
+        .root
+        .child("Objects")
+        .expect("Objects")
+        .children_named("Model")
+        .next()
+        .expect("Model");
+    assert_eq!(model2.properties[2].as_str(), Some("Mesh"));
+    let scene3 = decode(&bytes2);
+    assert!(!scene3.nodes[0].extras.contains_key("fbx:model_subtype"));
+}

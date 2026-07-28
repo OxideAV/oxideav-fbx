@@ -2015,12 +2015,21 @@ fn build_model(node: &Node, id: i64) -> FbxNode {
     if let Some(culling) = node.extras.get("fbx:culling").and_then(|v| v.as_str()) {
         children.push(leaf_string("Culling", culling));
     }
+    // prop2 subtype discriminator (`fbx-binary-properties70.md` §6) —
+    // `"Mesh"` unless the decode side surfaced a different Model
+    // subtype (`"LimbNode"` / `"Null"` / ... ) on
+    // `extras["fbx:model_subtype"]`.
+    let subtype = node
+        .extras
+        .get("fbx:model_subtype")
+        .and_then(|v| v.as_str())
+        .unwrap_or("Mesh");
     FbxNode {
         name: "Model".to_string(),
         properties: vec![
             FbxProperty::I64(id),
             FbxProperty::String(name_class(&name, "Model")),
-            FbxProperty::String(b"Mesh".to_vec()),
+            FbxProperty::String(subtype.as_bytes().to_vec()),
         ],
         children,
     }

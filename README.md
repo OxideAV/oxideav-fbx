@@ -568,7 +568,9 @@ clean-room from third-party documentation:
     The §7c trailing Model-body leaves (`Shading: T` /
     `Culling: "CullingOff"`) decode onto `Node::extras["fbx:shading"]`
     / `["fbx:culling"]` and are re-emitted, so they survive the
-    Scene3D round trip in both forms.
+    Scene3D round trip in both forms; a non-`"Mesh"` Model prop2
+    subtype (§6 — `"LimbNode"` / `"Null"` / ...) round-trips via
+    `Node::extras["fbx:model_subtype"]`.
   - **Materials / Textures** — `DiffuseColor` / `Opacity` /
     `EmissiveColor` / `ReflectionFactor` P-records; `Texture`
     (+ backing `Video.Content` R-blob for embedded bytes) with the

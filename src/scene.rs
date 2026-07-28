@@ -141,6 +141,21 @@ pub fn build_scene(doc: &FbxDocument) -> Result<Scene3D> {
                             serde_json::Value::String(culling.to_string()),
                         );
                     }
+                    // The Model's own prop2 subtype discriminator
+                    // (`docs/3d/fbx/fbx-binary-properties70.md` §6:
+                    // Models also use `"LimbNode"` / `"Light"` /
+                    // `"Camera"` / `"Null"` / `"Root"` in other
+                    // files; only `"Mesh"` occurs in the staged
+                    // samples). Non-`Mesh` values are surfaced
+                    // verbatim so the encoder can re-emit the same
+                    // discriminator instead of collapsing every
+                    // Model to `"Mesh"`.
+                    if !st.is_empty() && st != "Mesh" {
+                        node.extras.insert(
+                            "fbx:model_subtype".to_string(),
+                            serde_json::Value::String(st.clone()),
+                        );
+                    }
                     let nid = scene.add_node(node);
                     model_nodes.insert(id, nid);
                     model_subtypes.insert(id, st);
