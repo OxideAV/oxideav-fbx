@@ -295,11 +295,12 @@ fn deflate_compressed_grid_round_trips_through_full_decoder() {
     // The Vertices array is 32*32*3 = 3072 doubles = 24 KiB raw; a
     // monotonically-increasing-coordinate grid compresses *very*
     // well. The compressed file must be strictly smaller.
-    // Measured on the in-tree CI: raw = 40 346 bytes vs compressed
-    // = 8 326 bytes (≈ 20.6 % of the raw size). Assert a generous
-    // upper bound so we'd notice if a future `miniz_oxide` upgrade
-    // regressed the ratio dramatically, without locking the test to
-    // a fragile exact byte count.
+    // Measured: raw = 40 512 bytes vs compressed = 8 496 bytes
+    // (≈ 21.0 % of the raw size; both figures include the 160-odd
+    // byte trailing footer block emitted by default since round 433).
+    // Assert a generous upper bound so we'd notice if a future zlib
+    // backend upgrade regressed the ratio dramatically, without
+    // locking the test to a fragile exact byte count.
     assert!(
         compressed_bytes.len() < raw_bytes.len() / 2,
         "compression should shrink the file to <50% of raw: raw={} compressed={}",

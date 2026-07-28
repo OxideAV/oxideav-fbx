@@ -39,6 +39,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `FbxFooter::id_hex` / `id_from_hex` convert the id to/from the
   32-char hex form used for extras threading.
 
+- Round 433 — **Binary footer emission + empty-body canon.**
+  `write_document` now terminates its output with the observer-derived
+  footer block by default (all-zero id; the version echo + alignment
+  padding + trailer signature are computed). `WriterOptions::footer_id`
+  carries a captured per-file id for byte-faithful re-encodes;
+  `WriterOptions::emit_footer(false)` restores the historical
+  footer-less output. Additionally the writer now emits an explicit
+  empty nested list (NULL record only) for nodes with neither
+  properties nor children — the form the staged fixture's `References`
+  record demonstrates with no counterexample — which, together with the
+  footer id, makes whole-file byte-faithful re-encoding possible.
+  Byte-size note: the default-output figures in docs/tests grew by the
+  footer block (e.g. the 32×32 quad-grid measurement is now raw 40 512
+  / deflated 8 496 bytes).
+
 - Round 413 — **`Documents` section decode.** Per the
   `docs/3d/fbx/fbx-ascii-grammar.md` §7 top-level section list + the
   staged cubes-ascii-v7500.fbx fixture body, the new

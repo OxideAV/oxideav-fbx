@@ -8,20 +8,37 @@
 //! back into a buffer that the parser will decode to an equal
 //! [`FbxDocument`].
 //!
-//! # What the Gessler reference does NOT cover
+//! # The trailing footer
 //!
 //! The Blender writeup spells out the 27-byte header, the recursive
 //! Node Record layout (32-bit pre-7500, 64-bit ≥ 7500), the
 //! per-property type-code dispatch, and the array `Encoding == 0` raw
-//! / `Encoding == 1` zlib-deflated form. It states explicitly that
-//! **"after [the top-level records] there is a footer with unknown
-//! contents"**. We therefore write **no footer at all** — the parser
-//! reads up to the final top-level NULL-record and then EOF, which
-//! the Gessler-spec'd grammar already tolerates (per `parse`'s own
-//! "EOF without explicit NULL-record" comment in [`crate::binary`]).
-//! Files this writer produces consequently round-trip through our own
-//! parser losslessly but may be flagged as missing the trailing
-//! Autodesk-private footer signature by SDKs that validate it.
+//! / `Encoding == 1` zlib-deflated form — but stops at **"after [the
+//! top-level records] there is a footer with unknown contents"**. The
+//! footer's actual shape is observer-derived from the staged
+//! `docs/3d/fbx/fixtures/box-binary-v7400.fbx` bytes (see
+//! [`crate::binary::FOOTER_TRAILER`]) and is emitted by default:
+//! 16-byte id ([`WriterOptions::footer_id`]; all-zeros unless the
+//! caller round-trips one captured by
+//! [`crate::binary::parse_footer`]), zero padding to the next 16-byte
+//! file-offset boundary, 4 zero bytes, the uint32 LE version echo,
+//! 120 zero bytes, and the constant trailer signature. Callers that
+//! want the historical footer-less output can opt out via
+//! [`WriterOptions::emit_footer`]; the parser accepts both forms
+//! (per `parse`'s own "EOF without explicit NULL-record" comment in
+//! [`crate::binary`]).
+//!
+//! # Empty-body canon
+//!
+//! A node with **no properties and no children** is written with an
+//! explicit empty nested list (just the NULL-record sentinel). This is
+//! the form observed in the staged fixture — its `References` node is
+//! the only property-less child-less record and carries the explicit
+//! NULL — and the fixture contains no counterexample. Nodes with
+//! properties but no children omit the nested list entirely, as every
+//! fixture leaf does. The parser accepts both encodings; pinning the
+//! writer to the observed canon is what makes whole-file byte-faithful
+//! re-encodes possible.
 //!
 //! # Array encoding policy
 //!
@@ -56,14 +73,14 @@ use oxideav_mesh3d::{Error, Result};
 
 use crate::binary::{
     FbxDocument, FbxNode, FbxProperty, FBX_HEADER_BYTES, FBX_MAGIC, FBX_MAGIC_TAIL,
-    FBX_VERSION_64BIT_THRESHOLD,
+    FBX_VERSION_64BIT_THRESHOLD, FOOTER_TRAILER,
 };
 
 /// Tunable knobs for [`write_document_with_options`].
 ///
 /// All fields are documented to the per-record level of the Gessler
-/// spec they map to; defaults match the legacy [`write_document`]
-/// behaviour (every array uncompressed, no Autodesk footer).
+/// spec they map to; defaults match [`write_document`] (every array
+/// uncompressed, footer emitted with an all-zero id).
 #[derive(Clone, Debug)]
 pub struct WriterOptions {
     /// If `Some(threshold)`, array properties whose **raw** payload
@@ -88,6 +105,20 @@ pub struct WriterOptions {
     ///
     /// Ignored when `compress_arrays` is `None`.
     pub compression_level: u8,
+
+    /// Emit the trailing footer block (default `true`) — the
+    /// observer-derived shape documented on
+    /// [`crate::binary::FOOTER_TRAILER`]. `false` restores the
+    /// historical footer-less output that ends at the top-level
+    /// NULL-record.
+    pub emit_footer: bool,
+
+    /// The 16-byte per-file id block that opens the footer. Defaults
+    /// to all-zeros (the id's derivation is undocumented by every
+    /// staged source, and the staged docs record no constraint on its
+    /// value); byte-faithful re-encoders pass the id captured by
+    /// [`crate::binary::parse_footer`].
+    pub footer_id: [u8; 16],
 }
 
 impl Default for WriterOptions {
@@ -95,6 +126,8 @@ impl Default for WriterOptions {
         Self {
             compress_arrays: None,
             compression_level: 6,
+            emit_footer: true,
+            footer_id: [0u8; 16],
         }
     }
 }
@@ -112,6 +145,20 @@ impl WriterOptions {
         self.compression_level = level;
         self
     }
+
+    /// Builder helper — set the 16-byte footer id (and keep footer
+    /// emission on).
+    pub fn footer_id(mut self, id: [u8; 16]) -> Self {
+        self.footer_id = id;
+        self.emit_footer = true;
+        self
+    }
+
+    /// Builder helper — toggle footer emission.
+    pub fn emit_footer(mut self, emit: bool) -> Self {
+        self.emit_footer = emit;
+        self
+    }
 }
 
 /// Serialise an [`FbxDocument`] to a byte buffer that decodes back
@@ -119,22 +166,22 @@ impl WriterOptions {
 ///
 /// The resulting buffer is the 27-byte header + every child of
 /// [`FbxDocument::root`] written as a top-level Node Record, capped
-/// by the format's all-zero NULL-record sentinel. **No Autodesk
-/// footer is written** — see the module docs for the rationale.
+/// by the format's all-zero NULL-record sentinel and the trailing
+/// footer block (all-zero id) — see the module docs' "The trailing
+/// footer".
 ///
 /// Arrays are written uncompressed (`Encoding == 0`). Use
 /// [`write_document_with_options`] to opt into deflate of larger
-/// arrays.
+/// arrays, carry a captured footer id, or drop the footer.
 pub fn write_document(doc: &FbxDocument) -> Result<Vec<u8>> {
     write_document_with_options(doc, &WriterOptions::default())
 }
 
-/// Like [`write_document`] but parameterised by [`WriterOptions`].
-///
-/// Currently the only knob the options struct exposes is
-/// per-array deflate compression (`Encoding == 1`); the document
-/// structure (header, Node Record layout, NULL-record sentinel
-/// placement) is unaffected.
+/// Like [`write_document`] but parameterised by [`WriterOptions`]:
+/// per-array deflate compression (`Encoding == 1`), the footer id,
+/// and footer emission. The document structure (header, Node Record
+/// layout, NULL-record sentinel placement) is unaffected by the
+/// options.
 pub fn write_document_with_options(doc: &FbxDocument, opts: &WriterOptions) -> Result<Vec<u8>> {
     let use_64bit = doc.version >= FBX_VERSION_64BIT_THRESHOLD;
     let mut out = Vec::new();
@@ -151,6 +198,22 @@ pub fn write_document_with_options(doc: &FbxDocument, opts: &WriterOptions) -> R
     // size matches the file's 32-bit-vs-64-bit Node Record layout.
     let null_record_bytes = if use_64bit { 25 } else { 13 };
     out.extend(std::iter::repeat(0u8).take(null_record_bytes));
+    // Trailing footer block — the observer-derived shape documented on
+    // `binary::FOOTER_TRAILER` (16-byte id, zero pad to the next
+    // 16-byte file-offset boundary, 4 zeros, version echo, 120 zeros,
+    // constant trailer signature). Observed on the staged v7400
+    // fixture; the >= 7500 form is assumed identical apart from the
+    // wider NULL record already emitted above.
+    if opts.emit_footer {
+        out.extend_from_slice(&opts.footer_id);
+        while out.len() % 16 != 0 {
+            out.push(0);
+        }
+        out.extend_from_slice(&[0u8; 4]);
+        out.extend_from_slice(&doc.version.to_le_bytes());
+        out.extend(std::iter::repeat(0u8).take(120));
+        out.extend_from_slice(&FOOTER_TRAILER);
+    }
     Ok(out)
 }
 
@@ -198,12 +261,16 @@ fn write_node(
     }
     let prop_list_len = out.len() - prop_start;
 
-    // Nested list: every child + the NULL-record sentinel. The
-    // Gessler spec says the nested list is **omitted entirely** when
-    // there are no children, so we only emit it when the vector is
-    // populated. (Some loaders accept both forms; the omitted form is
-    // what every well-formed exporter writes.)
-    if !node.children.is_empty() {
+    // Nested list: every child + the NULL-record sentinel. Emitted
+    // when the node has children — and ALSO when the node has neither
+    // properties nor children: the staged fixture's only
+    // property-less child-less record (`References`) carries an
+    // explicit empty nested list (NULL record only), with no
+    // counterexample anywhere in the fixture, so that is the writer
+    // canon (see the module docs' "Empty-body canon"). Nodes with
+    // properties but no children omit the nested list entirely, like
+    // every fixture leaf. The parser accepts both encodings.
+    if !node.children.is_empty() || node.properties.is_empty() {
         for child in &node.children {
             write_node(child, out, use_64bit, opts)?;
         }
@@ -637,6 +704,111 @@ mod tests {
         };
         assert_eq!(arr.len(), 2048);
         assert!(arr.iter().all(|&v| v == 0.0));
+    }
+
+    #[test]
+    fn default_output_carries_a_parsable_footer() {
+        let doc = build_compressible_doc(7400, 4);
+        let bytes = write_document(&doc).expect("write");
+        let footer = crate::binary::parse_footer(&bytes).expect("footer decodes");
+        assert_eq!(footer.id, [0u8; 16], "default id is all-zeros");
+        // The last 16 bytes are the constant trailer signature.
+        assert_eq!(&bytes[bytes.len() - 16..], FOOTER_TRAILER);
+        // And the record tree still round-trips.
+        let parsed = binary::parse(&bytes).expect("parses");
+        assert_eq!(parsed.root.children.len(), 1);
+    }
+
+    #[test]
+    fn footer_id_option_round_trips_and_64bit_layout_works() {
+        let id = [0xA5u8; 16];
+        for version in [7400u32, 7700] {
+            let doc = build_compressible_doc(version, 4);
+            let opts = WriterOptions::default().footer_id(id);
+            let bytes = write_document_with_options(&doc, &opts).expect("write");
+            let footer = crate::binary::parse_footer(&bytes)
+                .unwrap_or_else(|| panic!("footer decodes at version {version}"));
+            assert_eq!(footer.id, id);
+        }
+    }
+
+    #[test]
+    fn emit_footer_false_restores_the_footerless_shape() {
+        let doc = build_compressible_doc(7400, 4);
+        let opts = WriterOptions::default().emit_footer(false);
+        let bytes = write_document_with_options(&doc, &opts).expect("write");
+        assert_eq!(crate::binary::parse_footer(&bytes), None);
+        // Footer-less output ends at the 13-byte top-level NULL record.
+        assert_eq!(&bytes[bytes.len() - 13..], &[0u8; 13]);
+        assert!(binary::parse(&bytes).is_ok());
+    }
+
+    #[test]
+    fn footer_alignment_pad_reaches_a_16_byte_boundary() {
+        // Vary the payload size so the id lands at different offsets;
+        // the version-echo block must always start 16-aligned (the
+        // fixture-observed rule). parse_footer enforces the shape, so
+        // decoding across a size sweep proves the pad logic.
+        for count in 0..8usize {
+            let doc = build_compressible_doc(7400, count);
+            let bytes = write_document(&doc).expect("write");
+            assert!(
+                crate::binary::parse_footer(&bytes).is_some(),
+                "footer shape holds at array count {count}"
+            );
+        }
+    }
+
+    #[test]
+    fn property_less_child_less_node_gets_an_explicit_empty_nested_list() {
+        // The staged fixture's `References` record shape: no
+        // properties, no children, but an explicit NULL-record-only
+        // nested list. Writer canon must reproduce it.
+        let doc = FbxDocument {
+            version: 7400,
+            root: FbxNode {
+                name: String::new(),
+                properties: Vec::new(),
+                children: vec![FbxNode {
+                    name: "References".into(),
+                    properties: Vec::new(),
+                    children: Vec::new(),
+                }],
+            },
+        };
+        let bytes = write_document_with_options(&doc, &WriterOptions::default().emit_footer(false))
+            .expect("write");
+        // Record layout: header(13) + name(10) + empty nested list
+        // (13-byte NULL) = 36 bytes, then the top-level NULL (13).
+        let record = &bytes[27..];
+        let end_offset = u32::from_le_bytes([record[0], record[1], record[2], record[3]]) as usize;
+        assert_eq!(end_offset, 27 + 13 + 10 + 13, "explicit empty list");
+        // A property-carrying leaf keeps the omitted-list form.
+        let doc2 = FbxDocument {
+            version: 7400,
+            root: FbxNode {
+                name: String::new(),
+                properties: Vec::new(),
+                children: vec![FbxNode {
+                    name: "Leaf".into(),
+                    properties: vec![FbxProperty::I32(1)],
+                    children: Vec::new(),
+                }],
+            },
+        };
+        let bytes2 =
+            write_document_with_options(&doc2, &WriterOptions::default().emit_footer(false))
+                .expect("write");
+        let record2 = &bytes2[27..];
+        let end2 = u32::from_le_bytes([record2[0], record2[1], record2[2], record2[3]]) as usize;
+        assert_eq!(end2, 27 + 13 + 4 + 5, "no nested list on a leaf");
+        // Both parse back to the same logical shape they came from.
+        assert!(binary::parse(&bytes).unwrap().root.children[0]
+            .children
+            .is_empty());
+        assert!(binary::parse(&bytes2).unwrap().root.children[0]
+            .children
+            .is_empty());
     }
 
     #[test]
