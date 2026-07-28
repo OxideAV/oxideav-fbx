@@ -59,6 +59,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `FbxFooter::id_hex` / `id_from_hex` convert the id to/from the
   32-char hex form used for extras threading.
 
+- Round 433 — **Footer id threading through `Scene3D`.** `FbxDecoder`
+  surfaces a decoded binary file's footer id on
+  `Scene3D::extras["fbx:footer_id"]` (32-char hex); `FbxEncoder`
+  (binary form) carries it back into the trailing footer block, with
+  an explicit non-zero `WriterOptions::footer_id` taking precedence.
+  The id survives the full decode → encode → decode loop; ASCII I/O
+  is unaffected (the text form has no footer construct).
+
 - Round 433 — **Binary footer emission + empty-body canon.**
   `write_document` now terminates its output with the observer-derived
   footer block by default (all-zero id; the version echo + alignment

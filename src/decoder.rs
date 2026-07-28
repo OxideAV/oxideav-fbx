@@ -34,16 +34,26 @@ impl FbxDecoder {
 
 impl Mesh3DDecoder for FbxDecoder {
     fn decode(&mut self, bytes: &[u8]) -> Result<Scene3D> {
-        let doc = if is_binary_fbx(bytes) {
-            binary::parse(bytes)?
+        let (doc, footer) = if is_binary_fbx(bytes) {
+            (binary::parse(bytes)?, binary::parse_footer(bytes))
         } else if ascii::is_ascii_fbx(bytes) {
-            ascii::parse(bytes)?
+            // The ASCII form has no footer construct.
+            (ascii::parse(bytes)?, None)
         } else {
             return Err(Error::unsupported(
                 "input is neither binary FBX (Kaydara magic) nor ASCII FBX (`; FBX` banner)",
             ));
         };
-        let scene = scene::build_scene(&doc)?;
+        let mut scene = scene::build_scene(&doc)?;
+        // Surface the binary footer's 16-byte per-file id (hex form)
+        // so a re-encode can reproduce the file's trailing block
+        // byte-for-byte. Absent / malformed footers surface nothing.
+        if let Some(footer) = footer {
+            scene.extras.insert(
+                "fbx:footer_id".to_string(),
+                serde_json::Value::String(footer.id_hex()),
+            );
+        }
         self.last_document = Some(doc);
         Ok(scene)
     }

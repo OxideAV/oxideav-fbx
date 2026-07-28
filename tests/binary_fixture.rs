@@ -102,4 +102,9 @@ fn fixture_decodes_to_a_single_cube_scene() {
     // doc's observed 72-double Vertices / 36-int index arrays).
     assert_eq!(prim.positions.len(), 36);
     assert_eq!(scene.materials.len(), 1);
+    // The footer id is surfaced for encoder-side round-tripping.
+    assert_eq!(
+        scene.extras.get("fbx:footer_id").and_then(|v| v.as_str()),
+        Some("fabcaf0fd2c0d863b278f48914f32675")
+    );
 }
