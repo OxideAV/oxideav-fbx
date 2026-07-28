@@ -322,6 +322,38 @@ pub fn encode_scene_with_options(scene: &Scene3D, opts: &SceneEncodeOptions) -> 
         }
     }
 
+    // -- Bind pose (round 433) ------------------------------------------
+    // One `Pose : "BindPose"` element re-emitted from the
+    // `fbx:bind_pose` node extras the decode side surfaces
+    // ([`crate::pose`]): each posed node contributes a
+    // `PoseNode { Node : i64, Matrix : d[16] }` pair carrying the
+    // world-space bind matrix (row-major — the exact record shape the
+    // pose module reads). The derived `fbx:bind_pose_parent_local`
+    // extras are NOT emitted: the decode side recomputes them from
+    // the world matrices + the scene-graph parent map.
+    let pose_entries: Vec<(i64, Vec<f64>)> = scene
+        .nodes
+        .iter()
+        .enumerate()
+        .filter_map(|(ni, node)| {
+            let arr = node.extras.get("fbx:bind_pose")?.as_array()?;
+            if arr.len() != 16 {
+                return None;
+            }
+            let mut m = Vec::with_capacity(16);
+            for v in arr {
+                m.push(v.as_f64()?);
+            }
+            Some((node_ids[ni], m))
+        })
+        .collect();
+    if !pose_entries.is_empty() {
+        let pose_id = alloc.next();
+        objects
+            .children
+            .push(build_bind_pose(pose_entries, pose_id));
+    }
+
     // -- Deformers (round 384) -------------------------------------------
     // Skin / Cluster trees for every skinned node + BlendShape /
     // BlendShapeChannel / Geometry{Shape} trees for every primitive
@@ -1265,6 +1297,45 @@ fn name_class(name: &str, class: &str) -> Vec<u8> {
     v.push(0x01);
     v.extend_from_slice(class.as_bytes());
     v
+}
+
+/// Build the `Pose : "BindPose"` element from the collected
+/// `(Model id, world matrix)` pairs — the inverse of
+/// [`crate::pose::extract_poses`]'s read side. The record shape is the
+/// one the pose module documents from the FBX 7.x element convention:
+/// object-record triple `(uid, "BindPose\x00\x01Pose", "BindPose")`
+/// with one `PoseNode { Node : i64, Matrix : d[16] }` child per posed
+/// bone (`Matrix` is a direct d-array sub-record, row-major, world
+/// space).
+fn build_bind_pose(entries: Vec<(i64, Vec<f64>)>, id: i64) -> FbxNode {
+    let children = entries
+        .into_iter()
+        .map(|(node_id, matrix)| FbxNode {
+            name: "PoseNode".to_string(),
+            properties: Vec::new(),
+            children: vec![
+                FbxNode {
+                    name: "Node".to_string(),
+                    properties: vec![FbxProperty::I64(node_id)],
+                    children: Vec::new(),
+                },
+                FbxNode {
+                    name: "Matrix".to_string(),
+                    properties: vec![FbxProperty::F64Array(matrix)],
+                    children: Vec::new(),
+                },
+            ],
+        })
+        .collect();
+    FbxNode {
+        name: "Pose".to_string(),
+        properties: vec![
+            FbxProperty::I64(id),
+            FbxProperty::String(name_class("BindPose", "Pose")),
+            FbxProperty::String(b"BindPose".to_vec()),
+        ],
+        children,
+    }
 }
 
 /// Build a `Geometry` element record from a [`Mesh`].

@@ -59,6 +59,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `FbxFooter::id_hex` / `id_from_hex` convert the id to/from the
   32-char hex form used for extras threading.
 
+- Round 433 — **Bind-pose re-emission (`Pose : "BindPose"`).** The
+  encoder now closes the Pose round trip: every scene-graph node
+  carrying the decode-side `extras["fbx:bind_pose"]` world matrix
+  (16-element row-major JSON array, per `crate::pose`) contributes a
+  `PoseNode { Node : i64, Matrix : d[16] }` pair to a single emitted
+  `Pose` element (object triple `(uid, "BindPose\x00\x01Pose",
+  "BindPose")`). The derived `fbx:bind_pose_parent_local` extras are
+  not emitted — decode recomputes them from the world matrices + the
+  scene-graph parent map. Wrong-arity extras are skipped; scenes
+  without bind poses emit no Pose element. Round-trip-tested through
+  both the binary and ASCII forms.
+
 - Round 433 — **Footer id threading through `Scene3D`.** `FbxDecoder`
   surfaces a decoded binary file's footer id on
   `Scene3D::extras["fbx:footer_id"]` (32-char hex); `FbxEncoder`

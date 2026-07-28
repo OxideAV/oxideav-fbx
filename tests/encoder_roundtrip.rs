@@ -1509,3 +1509,140 @@ fn emitted_material_template_defaults_resolve_on_decode() {
         m.base_color
     );
 }
+
+/// A 16-element row-major matrix as the JSON array shape the pose
+/// module stores on `extras["fbx:bind_pose"]`.
+fn mat_json(m: [f64; 16]) -> serde_json::Value {
+    serde_json::Value::Array(
+        m.iter()
+            .map(|&v| serde_json::Value::Number(serde_json::Number::from_f64(v).unwrap()))
+            .collect(),
+    )
+}
+
+fn translation_mat(t: [f64; 3]) -> [f64; 16] {
+    [
+        1.0, 0.0, 0.0, t[0], //
+        0.0, 1.0, 0.0, t[1], //
+        0.0, 0.0, 1.0, t[2], //
+        0.0, 0.0, 0.0, 1.0,
+    ]
+}
+
+/// Bind-pose world matrices on `fbx:bind_pose` extras must survive the
+/// full `Scene3D → Pose element → Scene3D` loop, and the decode side
+/// must re-derive the parent-local form from the re-read world
+/// matrices + the scene-graph hierarchy.
+#[test]
+fn bind_pose_extras_survive_round_trip() {
+    let mut scene = Scene3D::new();
+    let parent = scene.add_node(Node::new().with_name("Hip"));
+    let child = scene.add_node(Node::new().with_name("Knee"));
+    scene.nodes[parent.0 as usize].children.push(child);
+    scene.roots.push(parent);
+
+    let parent_world = translation_mat([10.0, 0.0, 0.0]);
+    let child_world = translation_mat([10.0, 5.0, 0.0]);
+    scene.nodes[parent.0 as usize]
+        .extras
+        .insert("fbx:bind_pose".to_string(), mat_json(parent_world));
+    scene.nodes[child.0 as usize]
+        .extras
+        .insert("fbx:bind_pose".to_string(), mat_json(child_world));
+
+    let scene2 = decode(&encode_binary(&scene));
+    let find = |name: &str| {
+        scene2
+            .nodes
+            .iter()
+            .find(|n| n.name.as_deref() == Some(name))
+            .unwrap_or_else(|| panic!("node {name} survives"))
+    };
+    let p2 = find("Hip");
+    let c2 = find("Knee");
+
+    let world_of = |n: &Node| -> Vec<f64> {
+        n.extras["fbx:bind_pose"]
+            .as_array()
+            .expect("bind pose array")
+            .iter()
+            .map(|v| v.as_f64().unwrap())
+            .collect()
+    };
+    assert_eq!(world_of(p2), parent_world.to_vec());
+    assert_eq!(world_of(c2), child_world.to_vec());
+
+    // Decode re-derives the parent-local form: the child sits at a
+    // pure (0, 5, 0) translation relative to its parent.
+    let c_local = c2.extras["fbx:bind_pose_parent_local"]
+        .as_array()
+        .expect("derived parent-local");
+    assert!((c_local[3].as_f64().unwrap() - 0.0).abs() < 1e-5);
+    assert!((c_local[7].as_f64().unwrap() - 5.0).abs() < 1e-5);
+    assert!((c_local[11].as_f64().unwrap() - 0.0).abs() < 1e-5);
+}
+
+/// The same closure through the ASCII text form (the Pose element is
+/// front-end agnostic — one node tree, two renderings).
+#[test]
+fn bind_pose_extras_survive_ascii_round_trip() {
+    let mut scene = Scene3D::new();
+    let bone = scene.add_node(Node::new().with_name("Bone"));
+    scene.roots.push(bone);
+    let world = translation_mat([4.0, 6.0, -2.0]);
+    scene.nodes[bone.0 as usize]
+        .extras
+        .insert("fbx:bind_pose".to_string(), mat_json(world));
+
+    let bytes = FbxEncoder::new()
+        .form(FbxOutputForm::Ascii)
+        .encode(&scene)
+        .expect("ascii encode");
+    let scene2 = decode(&bytes);
+    let b2 = scene2
+        .nodes
+        .iter()
+        .find(|n| n.name.as_deref() == Some("Bone"))
+        .expect("bone survives");
+    let got: Vec<f64> = b2.extras["fbx:bind_pose"]
+        .as_array()
+        .expect("bind pose array")
+        .iter()
+        .map(|v| v.as_f64().unwrap())
+        .collect();
+    assert_eq!(got, world.to_vec());
+}
+
+/// A malformed `fbx:bind_pose` extra (wrong arity) is skipped rather
+/// than emitted as a broken Pose record, and a scene with no bind-pose
+/// extras emits no Pose element at all.
+#[test]
+fn malformed_or_absent_bind_pose_extras_emit_no_pose_element() {
+    let mut scene = Scene3D::new();
+    let nid = scene.add_node(Node::new().with_name("N"));
+    scene.roots.push(nid);
+    scene.nodes[nid.0 as usize].extras.insert(
+        "fbx:bind_pose".to_string(),
+        serde_json::json!([1.0, 2.0, 3.0]),
+    );
+    let bytes = encode_binary(&scene);
+    let doc = oxideav_fbx::binary::parse(&bytes).expect("parses");
+    let objects = doc.root.child("Objects").expect("Objects");
+    assert!(
+        objects.children_named("Pose").next().is_none(),
+        "wrong-arity extra emits no Pose element"
+    );
+
+    let mut clean = Scene3D::new();
+    let n2 = clean.add_node(Node::new().with_name("M"));
+    clean.roots.push(n2);
+    let bytes2 = encode_binary(&clean);
+    let doc2 = oxideav_fbx::binary::parse(&bytes2).expect("parses");
+    assert!(doc2
+        .root
+        .child("Objects")
+        .expect("Objects")
+        .children_named("Pose")
+        .next()
+        .is_none());
+}
