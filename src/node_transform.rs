@@ -401,10 +401,12 @@ enum LocalTransform {
     Incomplete { reason: &'static str },
 }
 
-/// Resolve a `Model`'s effective `Properties70` into its composed
-/// local transform + companion extras.
-fn decode_local_transform(props: &PropertyMap) -> DecodedTransform {
-    let mut chain = TransformChain {
+/// Read the chain fields from a resolved `Properties70` map. The
+/// returned chain's `rotation_order` stays at the XYZ default; the
+/// raw `RotationOrder` int (when present) rides alongside so callers
+/// apply their own out-of-table policy.
+pub(crate) fn chain_from_props(props: &PropertyMap) -> (TransformChain, Option<i64>) {
+    let chain = TransformChain {
         lcl_translation: props
             .as_lcl_translation("Lcl Translation")
             .unwrap_or([0.0; 3]),
@@ -420,7 +422,46 @@ fn decode_local_transform(props: &PropertyMap) -> DecodedTransform {
         scaling_pivot: vec3_or_zero(props, "ScalingPivot"),
         rotation_order: RotationOrder::Xyz,
     };
-    let order_int = props.as_enum("RotationOrder").map(i64::from);
+    (chain, props.as_enum("RotationOrder").map(i64::from))
+}
+
+/// Resolve every `Model`'s effective (template-resolved)
+/// [`TransformChain`], keyed by FBX element id. Models whose
+/// `RotationOrder` int falls outside the documented `0..=6` table are
+/// omitted (the scene decode marks those `fbx:transform_incomplete`).
+/// Used by the animation module to slot animated `Lcl` values into
+/// the middle of the doc §1 chain.
+pub fn model_chains(doc: &FbxDocument) -> HashMap<i64, TransformChain> {
+    let definitions = Definitions::from_root(&doc.root);
+    let template = definitions.template_for("Model");
+    let mut out = HashMap::new();
+    let Some(objects) = doc.root.child("Objects") else {
+        return out;
+    };
+    for child in objects.children_named("Model") {
+        let Some(id) = element_id(child) else {
+            continue;
+        };
+        let own = PropertyMap::from_element(child);
+        let resolved = match template {
+            Some(t) => own.with_template_defaults(t),
+            None => own,
+        };
+        let (mut chain, order_int) = chain_from_props(&resolved);
+        match order_int.map(RotationOrder::from_enum_int) {
+            Some(None) => continue,
+            Some(Some(order)) => chain.rotation_order = order,
+            None => {}
+        }
+        out.insert(id, chain);
+    }
+    out
+}
+
+/// Resolve a `Model`'s effective `Properties70` into its composed
+/// local transform + companion extras.
+fn decode_local_transform(props: &PropertyMap) -> DecodedTransform {
+    let (mut chain, order_int) = chain_from_props(props);
 
     let mut extras: Vec<(String, serde_json::Value)> = Vec::new();
 

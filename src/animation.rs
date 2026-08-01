@@ -52,19 +52,26 @@
 //! seconds (`f32`), so we divide by [`KTIME_TICKS_PER_SECOND`] when
 //! materialising the sampler.
 //!
-//! # Rotation
+//! # Rotation and the transform chain
 //!
-//! `Lcl Rotation` curves carry **Euler angles in degrees** per the
-//! transform-chain in `fbx-node-transforms.md`. The default rotation
+//! `Lcl Rotation` curves carry **Euler angles in degrees** per
+//! `docs/3d/fbx/fbx-node-transform-chain.md`; the default rotation
 //! order is XYZ when no `RotationOrder` property is set on the bound
-//! Model. Round 2 emits one [`oxideav_mesh3d::AnimationProperty::Rotation`]
-//! sampler per stack with values in
-//! [`oxideav_mesh3d::AnimationValues::Quat`] xyzw form — the Euler
-//! triplet at each keyframe is converted to a quaternion via
-//! [`euler_xyz_to_quat`]. Files using non-XYZ rotation orders deviate
-//! from this approximation; per the doc, full FBX rotation handling
-//! requires `PreRotation` / `PostRotation` / pivot composition that
-//! is NYI.
+//! Model. Rotation samplers surface as
+//! [`oxideav_mesh3d::AnimationValues::Quat`] xyzw quaternions.
+//!
+//! When the bound Model's transform chain carries **extensions**
+//! (pivots / offsets / Pre-/PostRotation / non-XYZ `RotationOrder` —
+//! see [`crate::node_transform::TransformChain`]), the animated `Lcl`
+//! values slot into the middle of the doc §1 product exactly as the
+//! static ones do: per merged keyframe the chain is re-composed with
+//! the sampled `T(t)` / `R(t)` / `S(t)` (unanimated properties hold
+//! their static `Lcl` values), so the emitted translation channel
+//! picks up the pivot swing of an animated rotation and the rotation
+//! channel is `Rpre · R(t) · Rpost⁻¹` in the Model's rotation order.
+//! For trivial chains the per-property fast path emits each channel
+//! independently via [`euler_xyz_to_quat`] (identical output —
+//! `Q = R(XYZ)` and the translation term reduces to `T`).
 
 use std::collections::HashMap;
 
@@ -74,6 +81,7 @@ use oxideav_mesh3d::{
 };
 
 use crate::binary::{FbxDocument, FbxNode, FbxProperty};
+use crate::node_transform::TransformChain;
 
 /// FBX KTime constant — number of fixed-point ticks per real-world
 /// second. Public knowledge in the FBX-tooling community; used here
@@ -286,6 +294,15 @@ pub fn extract_animations(
         }
     }
 
+    // Per-node resolved transform chains — a node whose chain carries
+    // extensions (pivots / Pre-/PostRotation / rotation order) needs
+    // its animated Lcl values composed through the doc §1 product
+    // rather than emitted verbatim.
+    let node_chains: HashMap<NodeId, TransformChain> = crate::node_transform::model_chains(doc)
+        .into_iter()
+        .filter_map(|(fid, chain)| model_nodes.get(&fid).map(|nid| (*nid, chain)))
+        .collect();
+
     // Materialise one Animation per stack.
     let mut animations: Vec<Animation> = Vec::new();
     for (stack_id, name) in stacks.iter() {
@@ -296,9 +313,31 @@ pub fn extract_animations(
         });
 
         if let Some(channels) = per_stack.get(stack_id) {
+            // Group the Vec3-property buckets per node so
+            // extension-bearing chains can compose them jointly.
+            let mut grouped: HashMap<NodeId, [Option<&ComponentCurves>; 3]> = HashMap::new();
             for ((node_id, tag), comps) in channels {
-                if let Some(channel) = build_channel(*node_id, prop_from_tag(*tag), comps) {
-                    anim.channels.push(channel);
+                if *tag <= 2 {
+                    grouped.entry(*node_id).or_default()[usize::from(*tag)] = Some(comps);
+                }
+            }
+            for (node_id, [t_c, r_c, s_c]) in grouped {
+                match node_chains.get(&node_id) {
+                    Some(chain) if chain.has_extensions() => {
+                        anim.channels
+                            .extend(build_composed_channels(node_id, chain, t_c, r_c, s_c));
+                    }
+                    _ => {
+                        for (tag, comps) in [(0u8, t_c), (1, r_c), (2, s_c)] {
+                            if let Some(comps) = comps {
+                                if let Some(channel) =
+                                    build_channel(node_id, prop_from_tag(tag), comps)
+                                {
+                                    anim.channels.push(channel);
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -376,17 +415,15 @@ fn build_channel(
     property: AnimationProperty,
     comps: &ComponentCurves,
 ) -> Option<AnimationChannel> {
-    let xs = comps.x.as_ref()?;
+    let xs = comps.x.as_ref();
     let ys = comps.y.as_ref();
     let zs = comps.z.as_ref();
 
-    // Build the merged time axis.
+    // Build the merged time axis over whichever components exist —
+    // exporters animate components independently, so a Z-only (or
+    // Y-only) curve set is a legitimate channel.
     let mut merged_times: Vec<f32> = Vec::new();
-    push_times(&mut merged_times, &xs.times_secs);
-    if let Some(c) = ys {
-        push_times(&mut merged_times, &c.times_secs);
-    }
-    if let Some(c) = zs {
+    for c in [xs, ys, zs].into_iter().flatten() {
         push_times(&mut merged_times, &c.times_secs);
     }
     merged_times.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
@@ -395,16 +432,16 @@ fn build_channel(
         return None;
     }
 
-    // Resample each component onto the merged grid.
-    let xv: Vec<f32> = merged_times.iter().map(|t| sample_linear(xs, *t)).collect();
-    let yv: Vec<f32> = merged_times
-        .iter()
-        .map(|t| ys.map(|c| sample_linear(c, *t)).unwrap_or(0.0))
-        .collect();
-    let zv: Vec<f32> = merged_times
-        .iter()
-        .map(|t| zs.map(|c| sample_linear(c, *t)).unwrap_or(0.0))
-        .collect();
+    // Resample each component onto the merged grid (absent → 0.0).
+    let resample = |c: Option<&RawCurve>| -> Vec<f32> {
+        merged_times
+            .iter()
+            .map(|t| c.map(|c| sample_linear(c, *t)).unwrap_or(0.0))
+            .collect()
+    };
+    let xv = resample(xs);
+    let yv = resample(ys);
+    let zv = resample(zs);
 
     let values = match property {
         AnimationProperty::Rotation => {
@@ -438,6 +475,105 @@ fn build_channel(
             interpolation: Interpolation::Linear,
         },
     })
+}
+
+/// Build the coupled channel set for a node whose transform chain
+/// carries extensions (`docs/3d/fbx/fbx-node-transform-chain.md` §1).
+///
+/// The animated `Lcl` values replace the static ones **inside** the
+/// chain product, so per merged keyframe the full chain is
+/// re-composed via [`TransformChain::compose`]:
+///
+/// - the **translation** channel is always emitted — its composed
+///   value `T + Roff + Rp + Q·(Soff + Sp − Rp − S∘Sp)` varies with
+///   any of the three animated properties (the pivot swing of an
+///   animated rotation lands here);
+/// - the **rotation** channel (`Rpre · R(t) · Rpost⁻¹` in the
+///   Model's rotation order) is emitted iff rotation curves exist;
+/// - the **scale** channel (`S(t)` verbatim) is emitted iff scaling
+///   curves exist.
+///
+/// Unanimated properties hold their static `Lcl` values; a missing
+/// component inside an animated property samples as `0.0` (the same
+/// convention [`build_channel`] applies). Successive quaternion keys
+/// are sign-aligned so a linear/slerp consumer takes the short arc.
+fn build_composed_channels(
+    node: NodeId,
+    chain: &TransformChain,
+    t_curves: Option<&ComponentCurves>,
+    r_curves: Option<&ComponentCurves>,
+    s_curves: Option<&ComponentCurves>,
+) -> Vec<AnimationChannel> {
+    // Union time grid across every present component curve.
+    let mut times: Vec<f32> = Vec::new();
+    for curves in [t_curves, r_curves, s_curves].into_iter().flatten() {
+        for c in [&curves.x, &curves.y, &curves.z].into_iter().flatten() {
+            push_times(&mut times, &c.times_secs);
+        }
+    }
+    times.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    times.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
+    if times.is_empty() {
+        return Vec::new();
+    }
+
+    let sample_vec3 = |curves: Option<&ComponentCurves>, statics: [f64; 3], t: f32| -> [f64; 3] {
+        match curves {
+            None => statics,
+            Some(cc) => {
+                let comp = |c: &Option<RawCurve>| {
+                    c.as_ref().map_or(0.0, |c| f64::from(sample_linear(c, t)))
+                };
+                [comp(&cc.x), comp(&cc.y), comp(&cc.z)]
+            }
+        }
+    };
+
+    let mut tv: Vec<[f32; 3]> = Vec::with_capacity(times.len());
+    let mut rv: Vec<[f32; 4]> = Vec::with_capacity(times.len());
+    let mut sv: Vec<[f32; 3]> = Vec::with_capacity(times.len());
+    for &t in &times {
+        let mut c = chain.clone();
+        c.lcl_translation = sample_vec3(t_curves, chain.lcl_translation, t);
+        c.lcl_rotation = sample_vec3(r_curves, chain.lcl_rotation, t);
+        c.lcl_scaling = sample_vec3(s_curves, chain.lcl_scaling, t);
+        let (ct, cq, cs) = c.compose();
+        tv.push([ct[0] as f32, ct[1] as f32, ct[2] as f32]);
+        let mut q = [cq[0] as f32, cq[1] as f32, cq[2] as f32, cq[3] as f32];
+        // Sign-align with the previous key (q and −q are the same
+        // rotation; alignment keeps interpolation on the short arc).
+        if let Some(prev) = rv.last() {
+            let dot: f32 = (0..4).map(|i| prev[i] * q[i]).sum();
+            if dot < 0.0 {
+                q = [-q[0], -q[1], -q[2], -q[3]];
+            }
+        }
+        rv.push(q);
+        sv.push([cs[0] as f32, cs[1] as f32, cs[2] as f32]);
+    }
+
+    let channel = |property, values| AnimationChannel {
+        target: AnimationTarget { node, property },
+        sampler: AnimationSampler {
+            keyframes: times.clone(),
+            values,
+            interpolation: Interpolation::Linear,
+        },
+    };
+    let mut out = vec![channel(
+        AnimationProperty::Translation,
+        AnimationValues::Vec3(tv),
+    )];
+    if r_curves.is_some() {
+        out.push(channel(
+            AnimationProperty::Rotation,
+            AnimationValues::Quat(rv),
+        ));
+    }
+    if s_curves.is_some() {
+        out.push(channel(AnimationProperty::Scale, AnimationValues::Vec3(sv)));
+    }
+    out
 }
 
 /// Append every time from `src` into `dst` (deduping happens after a

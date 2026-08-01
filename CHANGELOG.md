@@ -56,7 +56,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (round-trip-tested, including a no-double-application guard and a
   hand-built `Scene3D` synthesis case).
 
+- Round 436 — **animated transform-chain composition.** Animation
+  channels bound to a Model whose chain carries extensions (pivots /
+  offsets / Pre-/PostRotation / non-XYZ `RotationOrder`) are now
+  composed through the doc §1 product per merged keyframe: the
+  rotation channel is `Rpre · R(t) · Rpost⁻¹` in the Model's rotation
+  order, and the translation channel picks up the pivot swing
+  `T(t) + Roff + Rp + Q(t)·(Soff + Sp − Rp − S(t)∘Sp)` (unanimated
+  properties hold their static `Lcl` values; successive quaternion
+  keys are sign-aligned onto the short arc). Trivial chains keep the
+  independent per-property fast path with identical output. New
+  public helper `node_transform::model_chains` resolves every
+  Model's template-resolved `TransformChain` by FBX id.
+
 ### Fixed
+
+- Round 436 — **component-subset animation curves no longer drop.**
+  A `Lcl` channel whose exporter animated only the Y and/or Z
+  component (no `d|X` curve) previously produced **no** channel at
+  all — the merger required X. All component subsets now merge onto
+  the union grid with absent components sampling as `0.0` (the
+  existing missing-component convention).
 
 - Round 433 — **`C` boolean token bytes.** The staged
   box-binary-v7400.fbx fixture stores its only `C` property
