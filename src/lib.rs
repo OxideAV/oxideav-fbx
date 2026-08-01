@@ -146,12 +146,13 @@
 //!   [`encoder`] / [`scene_writer`] / [`anim_writer`].
 //!
 //! # What's NOT covered
-//! - Encoder: the full node-transform chain (pivots /
-//!   pre-post-rotation / `RotationOrder`) — now composed exactly on
-//!   decode per `docs/3d/fbx/fbx-node-transform-chain.md` §1 (see
-//!   [`node_transform`]) — is not yet re-synthesised on encode; the
-//!   footer's 16-byte per-file id derivation is undocumented, so fresh
-//!   encodes carry an all-zero id (captured ids reproduce verbatim).
+//! - The footer's 16-byte per-file id derivation is undocumented, so
+//!   fresh encodes carry an all-zero id (captured ids reproduce
+//!   verbatim). (The node-transform chain — pivots /
+//!   pre-post-rotation / `RotationOrder` — now composes exactly on
+//!   decode per `docs/3d/fbx/fbx-node-transform-chain.md` §1 and
+//!   re-emits from the `fbx:*` chain extras on encode; see
+//!   [`node_transform`] / [`scene_writer`].)
 //! - Animation: per-layer compositing, cubic / step / TCB
 //!   interpolation, pivot / pre-rotation / post-rotation chains.
 //! - Skin: `SKINNING_METHOD_DUAL_QUATERNION` produces plain LBS

@@ -545,8 +545,10 @@ pub fn geometric_transform(node: &Node) -> Option<Transform> {
     })
 }
 
-/// Read a `[f64; 3]` JSON array off `Node::extras`.
-fn extras_vec3(node: &Node, key: &str) -> Option<[f64; 3]> {
+/// Read a `[f64; 3]` JSON array off `Node::extras`. Shared with the
+/// encode side ([`crate::scene_writer`]), which re-emits the chain
+/// records from the same extras keys.
+pub(crate) fn extras_vec3(node: &Node, key: &str) -> Option<[f64; 3]> {
     let arr = node.extras.get(key)?.as_array()?;
     if arr.len() != 3 {
         return None;

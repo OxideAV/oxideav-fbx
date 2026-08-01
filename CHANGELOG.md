@@ -40,6 +40,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (previously any non-trivial pivot / offset / pre-post-rotation /
   non-XYZ order did).
 
+- Round 436 — **node-transform-chain synthesis on encode.** The
+  encoder mirrors the decode-side chain: a node carrying the
+  `fbx:lcl_*` chain extras re-emits the **authored** `Lcl` triple
+  from the extras (never from the composed `Node::transform`, which
+  would double-apply the pivot terms) plus every surfaced extension
+  record with its documented shape — `Vector3D` triples for
+  `RotationOffset` / `RotationPivot` / `PreRotation` /
+  `PostRotation` / `ScalingOffset` / `ScalingPivot` and the doc §2
+  `GeometricTranslation` / `GeometricRotation` / `GeometricScaling`,
+  `enum` ints for `RotationOrder` / `InheritType`. Nodes without
+  chain extras keep the plain `Transform::Trs` → `Lcl` decompose
+  path. `decode → encode → decode` now preserves both the composed
+  transform and the raw authored chain in binary and ASCII forms
+  (round-trip-tested, including a no-double-application guard and a
+  hand-built `Scene3D` synthesis case).
+
 ### Fixed
 
 - Round 433 — **`C` boolean token bytes.** The staged

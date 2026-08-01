@@ -2035,13 +2035,43 @@ fn build_model(node: &Node, id: i64) -> FbxNode {
     }
 }
 
-/// Build the `Properties70` block carrying `Lcl Translation` /
-/// `Lcl Rotation` / `Lcl Scaling`. Only non-default components are
-/// emitted (the decode path resolves omissions against the template /
-/// identity default), so an identity transform produces no records.
+/// Build the `Properties70` block carrying the node-transform chain.
+///
+/// Two source forms (mirroring `crate::node_transform`'s decode):
+///
+/// - **Authored-chain form** — the node carries `fbx:lcl_*` extras
+///   (the decode side surfaces them whenever any pivot / offset /
+///   Pre-/PostRotation / non-XYZ `RotationOrder` is non-trivial;
+///   `Node::transform` then holds the *composed* reduction). The
+///   authored `Lcl` triple is re-emitted from the extras — never from
+///   `Node::transform`, which would double-apply the pivot terms —
+///   alongside the chain-extension records below.
+/// - **Plain form** — no chain extras: `Node::transform` decomposes
+///   to the `Lcl` triple directly (`T * R(XYZ) * S`, the exact
+///   inverse of the decode-side composition for a trivial chain).
+///   Only non-default components are emitted (the decode path
+///   resolves omissions against the template / identity default), so
+///   an identity transform produces no records.
+///
+/// In both forms every surfaced chain extra is re-emitted with its
+/// documented record shape: `Vector3D` triples for pivots / offsets /
+/// Pre-/PostRotation and the doc-§2 geometric TRS, `enum` ints for
+/// `RotationOrder` / `InheritType`.
 fn build_node_transform_props(node: &Node) -> FbxNode {
-    let (translation, rotation_deg, scale) = decompose_trs(node.transform);
     let mut ps: Vec<FbxNode> = Vec::new();
+
+    let authored_chain = node.extras.contains_key("fbx:lcl_translation")
+        || node.extras.contains_key("fbx:lcl_rotation")
+        || node.extras.contains_key("fbx:lcl_scaling");
+    let (translation, rotation_deg, scale) = if authored_chain {
+        (
+            crate::node_transform::extras_vec3(node, "fbx:lcl_translation").unwrap_or([0.0; 3]),
+            crate::node_transform::extras_vec3(node, "fbx:lcl_rotation").unwrap_or([0.0; 3]),
+            crate::node_transform::extras_vec3(node, "fbx:lcl_scaling").unwrap_or([1.0, 1.0, 1.0]),
+        )
+    } else {
+        decompose_trs(node.transform)
+    };
     if translation != [0.0, 0.0, 0.0] {
         ps.push(p_lcl("Lcl Translation", translation));
     }
@@ -2051,10 +2081,55 @@ fn build_node_transform_props(node: &Node) -> FbxNode {
     if scale != [1.0, 1.0, 1.0] {
         ps.push(p_lcl("Lcl Scaling", scale));
     }
+
+    // Chain-extension + geometric-TRS records (doc §1 / §2 names).
+    for (key, name) in [
+        ("fbx:rotation_offset", "RotationOffset"),
+        ("fbx:rotation_pivot", "RotationPivot"),
+        ("fbx:pre_rotation", "PreRotation"),
+        ("fbx:post_rotation", "PostRotation"),
+        ("fbx:scaling_offset", "ScalingOffset"),
+        ("fbx:scaling_pivot", "ScalingPivot"),
+        ("fbx:geometric_translation", "GeometricTranslation"),
+        ("fbx:geometric_rotation", "GeometricRotation"),
+        ("fbx:geometric_scaling", "GeometricScaling"),
+    ] {
+        if let Some(v) = crate::node_transform::extras_vec3(node, key) {
+            ps.push(p_vector3d(name, v));
+        }
+    }
+    for (key, name) in [
+        ("fbx:rotation_order", "RotationOrder"),
+        ("fbx:inherit_type", "InheritType"),
+    ] {
+        if let Some(v) = node.extras.get(key).and_then(|v| v.as_i64()) {
+            ps.push(p_enum(name, v as i32));
+        }
+    }
+
     FbxNode {
         name: "Properties70".to_string(),
         properties: Vec::new(),
         children: ps,
+    }
+}
+
+/// `P: "<name>", "Vector3D", "Vector", "", x, y, z` — the `Vector3D`
+/// triple shape the fixture's `FbxNode` template uses for the
+/// transform-chain records (`RotationPivot` / `PreRotation` / ...).
+fn p_vector3d(name: &str, v: [f64; 3]) -> FbxNode {
+    FbxNode {
+        name: "P".to_string(),
+        properties: vec![
+            FbxProperty::String(name.as_bytes().to_vec()),
+            FbxProperty::String(b"Vector3D".to_vec()),
+            FbxProperty::String(b"Vector".to_vec()),
+            FbxProperty::String(Vec::new()),
+            FbxProperty::F64(v[0]),
+            FbxProperty::F64(v[1]),
+            FbxProperty::F64(v[2]),
+        ],
+        children: Vec::new(),
     }
 }
 
