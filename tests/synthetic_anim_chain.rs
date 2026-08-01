@@ -269,3 +269,125 @@ fn trivial_chain_keeps_independent_channels() {
         AnimationProperty::Rotation
     ));
 }
+
+/// `decode → encode → decode` of an animated chain-bearing node must
+/// reproduce the same composed channels — the encoder de-composes
+/// the channels back to authored `Lcl` curves (the re-encoded Model
+/// carries its pivot records again, so emitting composed values
+/// verbatim would double-apply the chain).
+#[test]
+fn animated_chain_round_trips_without_double_application() {
+    use oxideav_mesh3d::Mesh3DEncoder;
+
+    // Same fixture as `animated_rotation_composes_through_pivot_chain`.
+    let mut model = element("Model", 900, "Swinger", "Model", "Mesh");
+    model.children = vec![FbxNode {
+        name: "Properties70".into(),
+        properties: Vec::new(),
+        children: vec![
+            p_vec3("Lcl Translation", "Lcl Translation", [10.0, 0.0, 0.0]),
+            p_vec3("RotationPivot", "Vector3D", [1.0, 0.0, 0.0]),
+        ],
+    }];
+    let one_sec = KTIME_TICKS_PER_SECOND as i64;
+    let stack = element("AnimationStack", 910, "Take 001", "AnimStack", "");
+    let layer = element("AnimationLayer", 911, "BaseLayer", "AnimLayer", "");
+    let curve_node = element("AnimationCurveNode", 912, "R", "AnimCurveNode", "");
+    let cz = curve(913, &[0, one_sec], &[0.0, 90.0]);
+    let objects = FbxNode {
+        name: "Objects".into(),
+        properties: Vec::new(),
+        children: vec![model, stack, layer, curve_node, cz],
+    };
+    let conns = FbxNode {
+        name: "Connections".into(),
+        properties: Vec::new(),
+        children: vec![
+            c_oo(900, 0),
+            c_oo(911, 910),
+            c_oo(912, 911),
+            c_op(912, 900, "Lcl Rotation"),
+            c_op(913, 912, "d|Z"),
+        ],
+    };
+    let doc = FbxDocument {
+        version: 7500,
+        root: FbxNode {
+            name: String::new(),
+            properties: Vec::new(),
+            children: vec![objects, conns],
+        },
+    };
+
+    let bytes = write_document(&doc).expect("encode synthetic doc");
+    let first = FbxDecoder::new().decode(&bytes).expect("first decode");
+    let re_encoded = oxideav_fbx::FbxEncoder::new()
+        .encode(&first)
+        .expect("re-encode");
+    let second = FbxDecoder::new().decode(&re_encoded).expect("re-decode");
+
+    type ChannelData = (Vec<f32>, Vec<[f32; 4]>, Vec<[f32; 3]>);
+    let channels_of = |scene: &oxideav_mesh3d::Scene3D| -> HashMap<u8, ChannelData> {
+        let mut out = HashMap::new();
+        for anim in &scene.animations {
+            for ch in &anim.channels {
+                let tag = match ch.target.property {
+                    AnimationProperty::Translation => 0u8,
+                    AnimationProperty::Rotation => 1,
+                    AnimationProperty::Scale => 2,
+                    AnimationProperty::MorphWeights => 3,
+                };
+                let (mut quats, mut vecs) = (Vec::new(), Vec::new());
+                match &ch.sampler.values {
+                    AnimationValues::Quat(q) => quats = q.clone(),
+                    AnimationValues::Vec3(v) => vecs = v.clone(),
+                    AnimationValues::Scalar(_) => {}
+                }
+                out.insert(tag, (ch.sampler.keyframes.clone(), quats, vecs));
+            }
+        }
+        out
+    };
+
+    let a = channels_of(&first);
+    let b = channels_of(&second);
+    assert_eq!(a.len(), b.len(), "channel sets must match");
+
+    // Translation channel: same composed values — in particular the
+    // t=1 pivot swing (11, −1, 0) must NOT be double-applied.
+    let (ta, _, tva) = a.get(&0).expect("first translation");
+    let (tb, _, tvb) = b.get(&0).expect("second translation");
+    assert_eq!(ta.len(), tb.len());
+    for (va, vb) in tva.iter().zip(tvb) {
+        for i in 0..3 {
+            assert!(
+                (va[i] - vb[i]).abs() < 1e-4,
+                "translation drifted: {tva:?} vs {tvb:?}"
+            );
+        }
+    }
+    assert!((tvb.last().unwrap()[0] - 11.0).abs() < 1e-4);
+    assert!((tvb.last().unwrap()[1] + 1.0).abs() < 1e-4);
+
+    // Rotation channel: same rotations (q ≡ −q allowed).
+    let (_, qa, _) = a.get(&1).expect("first rotation");
+    let (_, qb, _) = b.get(&1).expect("second rotation");
+    assert_eq!(qa.len(), qb.len());
+    for (x, y) in qa.iter().zip(qb) {
+        let dot: f32 = (0..4).map(|i| x[i] * y[i]).sum();
+        assert!(dot.abs() > 1.0 - 1e-4, "rotation drifted: {x:?} vs {y:?}");
+    }
+
+    // And the re-decoded rest transform is unchanged.
+    let node = second
+        .nodes
+        .iter()
+        .find(|n| n.name.as_deref() == Some("Swinger"))
+        .expect("node survives");
+    match node.transform {
+        oxideav_mesh3d::Transform::Trs { translation, .. } => {
+            assert!((translation[0] - 10.0).abs() < 1e-4, "rest drifted");
+        }
+        oxideav_mesh3d::Transform::Matrix(_) => panic!("expected Trs"),
+    }
+}

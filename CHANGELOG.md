@@ -69,6 +69,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   public helper `node_transform::model_chains` resolves every
   Model's template-resolved `TransformChain` by FBX id.
 
+- Round 436 — **chain-aware animation re-encode (de-composition).**
+  The animation writer inverts the decode-side composition for
+  chain-bearing nodes: per union-grid keyframe the composed channel
+  samples are pushed back through the inverse closed form
+  (`R = Rpre⁻¹·Q·Rpost`, Euler-extracted in the Model's rotation
+  order via the new `node_transform::quat_to_euler` — exact inverse
+  of `euler_to_quat` for all seven orders incl. gimbal poses —
+  and `T = t − Roff − Rp − Q·(Soff + Sp − Rp − S∘Sp)` via the new
+  `TransformChain::decompose_sample`), so the emitted curves carry
+  the **authored** `Lcl` values. Without this, the re-encoded Model
+  (which regains its pivot records) would double-apply the chain on
+  the next decode. Euler curve keys are ±360°-unwrapped for
+  continuity; `node_transform::chain_from_extras` rebuilds the
+  authored chain from a node's `fbx:*` extras.
+  `decode → encode → decode` of an animated pivot chain is
+  round-trip-tested (composed channels and rest transform equal, no
+  double application).
+
 ### Fixed
 
 - Round 436 — **component-subset animation curves no longer drop.**

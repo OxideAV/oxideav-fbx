@@ -243,6 +243,47 @@ impl TransformChain {
         (t, q, s)
     }
 
+    /// Inverse of [`TransformChain::compose`] for one composed
+    /// sample: given a composed `(translation, rotation-quat, scale)`
+    /// triple, recover the authored `(Lcl Translation, Lcl Rotation
+    /// Euler-degrees, Lcl Scaling)` under this chain's static pivots
+    /// / offsets / Pre-/PostRotation / rotation order:
+    ///
+    /// ```text
+    /// R    = Rpre⁻¹ · Q · Rpost          (then Euler-extracted in `rotation_order`)
+    /// T    = t − Roff − Rp − Q·(Soff + Sp − Rp − S∘Sp)
+    /// S    = s
+    /// ```
+    ///
+    /// Used by the encode side to write **authored** `Lcl` animation
+    /// curves for a chain-bearing node — emitting the composed values
+    /// verbatim would double-apply the chain on the next decode.
+    pub fn decompose_sample(
+        &self,
+        translation: [f64; 3],
+        rotation: [f64; 4],
+        scale: [f64; 3],
+    ) -> ([f64; 3], [f64; 3], [f64; 3]) {
+        let q_pre = euler_to_quat(self.pre_rotation, RotationOrder::Xyz);
+        let q_post = euler_to_quat(self.post_rotation, RotationOrder::Xyz);
+        let q_r = quat_mul(quat_conjugate(q_pre), quat_mul(rotation, q_post));
+        let lcl_rotation = quat_to_euler(q_r, self.rotation_order);
+
+        let sp = self.scaling_pivot;
+        let w = [
+            self.scaling_offset[0] + sp[0] - self.rotation_pivot[0] - scale[0] * sp[0],
+            self.scaling_offset[1] + sp[1] - self.rotation_pivot[1] - scale[1] * sp[1],
+            self.scaling_offset[2] + sp[2] - self.rotation_pivot[2] - scale[2] * sp[2],
+        ];
+        let qw = rotate_vec(rotation, w);
+        let lcl_translation = [
+            translation[0] - self.rotation_offset[0] - self.rotation_pivot[0] - qw[0],
+            translation[1] - self.rotation_offset[1] - self.rotation_pivot[1] - qw[1],
+            translation[2] - self.rotation_offset[2] - self.rotation_pivot[2] - qw[2],
+        ];
+        (lcl_translation, lcl_rotation, scale)
+    }
+
     /// `true` when any record beyond the plain `Lcl` triple is
     /// non-trivial, i.e. the composed `Trs` is not simply
     /// `T · R(XYZ) · S` of the raw `Lcl` values.
@@ -269,6 +310,70 @@ pub fn euler_to_quat(deg: [f64; 3], order: RotationOrder) -> [f64; 4] {
     quat_mul(qc, quat_mul(qb, qa))
 }
 
+/// Recover a Euler-degree triple from an xyzw rotation quaternion
+/// under the given [`RotationOrder`] — the inverse of
+/// [`euler_to_quat`] (`euler_to_quat(quat_to_euler(q, o), o)` is the
+/// same rotation as `q`, up to the usual `q ≡ −q` ambiguity).
+///
+/// Extraction works on the rotation-matrix entries: with application
+/// axes `[a, b, c]` (so `R = R_c · R_b · R_a`) and `ε` the parity of
+/// the permutation `(a, b, c)`,
+///
+/// ```text
+/// sin β = −ε·R[c][a]
+/// α = atan2(ε·R[c][b], R[c][c])      (about axis a)
+/// γ = atan2(ε·R[b][a], R[a][a])      (about axis c)
+/// ```
+///
+/// At the gimbal singularity (`|sin β| = 1`) the `a`/`c` rotations
+/// share an axis; the conventional `γ = 0` representative is
+/// returned.
+pub fn quat_to_euler(q: [f64; 4], order: RotationOrder) -> [f64; 3] {
+    let [a, b, c] = order.application_axes();
+    // Permutation parity of (a, b, c): +1 for the cyclic (even)
+    // permutations of (0, 1, 2).
+    let eps = if (a + 1) % 3 == b { 1.0 } else { -1.0 };
+    let m = quat_to_mat3(q);
+
+    let sin_b = (-eps * m[c][a]).clamp(-1.0, 1.0);
+    let mut deg = [0.0; 3];
+    if sin_b.abs() < 1.0 - 1e-9 {
+        deg[a] = (eps * m[c][b]).atan2(m[c][c]).to_degrees();
+        deg[b] = sin_b.asin().to_degrees();
+        deg[c] = (eps * m[b][a]).atan2(m[a][a]).to_degrees();
+    } else {
+        // Gimbal lock: β = ±90°, γ pinned to 0.
+        let sigma = sin_b.signum();
+        deg[a] = (sigma * m[a][b]).atan2(sigma * eps * m[a][c]).to_degrees();
+        deg[b] = sigma * 90.0;
+        deg[c] = 0.0;
+    }
+    deg
+}
+
+/// 3×3 rotation matrix (column-vector convention) from an xyzw unit
+/// quaternion.
+fn quat_to_mat3(q: [f64; 4]) -> [[f64; 3]; 3] {
+    let [x, y, z, w] = q;
+    [
+        [
+            1.0 - 2.0 * (y * y + z * z),
+            2.0 * (x * y - z * w),
+            2.0 * (x * z + y * w),
+        ],
+        [
+            2.0 * (x * y + z * w),
+            1.0 - 2.0 * (x * x + z * z),
+            2.0 * (y * z - x * w),
+        ],
+        [
+            2.0 * (x * z - y * w),
+            2.0 * (y * z + x * w),
+            1.0 - 2.0 * (x * x + y * y),
+        ],
+    ]
+}
+
 /// Unit quaternion for a rotation of `deg` degrees about axis `axis`
 /// (`0` = X, `1` = Y, `2` = Z), xyzw layout.
 fn axis_quat(axis: usize, deg: f64) -> [f64; 4] {
@@ -280,7 +385,7 @@ fn axis_quat(axis: usize, deg: f64) -> [f64; 4] {
 }
 
 /// Hamilton quaternion product, xyzw layout.
-fn quat_mul(a: [f64; 4], b: [f64; 4]) -> [f64; 4] {
+pub(crate) fn quat_mul(a: [f64; 4], b: [f64; 4]) -> [f64; 4] {
     let [ax, ay, az, aw] = a;
     let [bx, by, bz, bw] = b;
     [
@@ -292,12 +397,12 @@ fn quat_mul(a: [f64; 4], b: [f64; 4]) -> [f64; 4] {
 }
 
 /// Conjugate == inverse for unit quaternions.
-fn quat_conjugate(q: [f64; 4]) -> [f64; 4] {
+pub(crate) fn quat_conjugate(q: [f64; 4]) -> [f64; 4] {
     [-q[0], -q[1], -q[2], q[3]]
 }
 
 /// Rotate a vector by a unit quaternion (`q · v · q⁻¹`).
-fn rotate_vec(q: [f64; 4], v: [f64; 3]) -> [f64; 3] {
+pub(crate) fn rotate_vec(q: [f64; 4], v: [f64; 3]) -> [f64; 3] {
     let p = [v[0], v[1], v[2], 0.0];
     let r = quat_mul(quat_mul(q, p), quat_conjugate(q));
     [r[0], r[1], r[2]]
@@ -583,6 +688,39 @@ pub fn geometric_transform(node: &Node) -> Option<Transform> {
         translation: vec3_f32(t.unwrap_or([0.0; 3])),
         rotation: [q[0] as f32, q[1] as f32, q[2] as f32, q[3] as f32],
         scale: vec3_f32(s.unwrap_or([1.0, 1.0, 1.0])),
+    })
+}
+
+/// Rebuild the authored [`TransformChain`] from a node's `fbx:*`
+/// chain extras — the encode-side inverse of the raw-chain surfacing
+/// in [`extract_node_transforms`]. Returns `None` when the node
+/// carries no `fbx:lcl_*` chain extras (plain node — its
+/// `Node::transform` is authoritative) or when `fbx:rotation_order`
+/// falls outside the documented `0..=6` table.
+pub fn chain_from_extras(node: &Node) -> Option<TransformChain> {
+    let has = |k: &str| node.extras.contains_key(k);
+    if !(has("fbx:lcl_translation") || has("fbx:lcl_rotation") || has("fbx:lcl_scaling")) {
+        return None;
+    }
+    let rotation_order = match node
+        .extras
+        .get("fbx:rotation_order")
+        .and_then(|v| v.as_i64())
+    {
+        None => RotationOrder::Xyz,
+        Some(v) => RotationOrder::from_enum_int(v)?,
+    };
+    Some(TransformChain {
+        lcl_translation: extras_vec3(node, "fbx:lcl_translation").unwrap_or([0.0; 3]),
+        lcl_rotation: extras_vec3(node, "fbx:lcl_rotation").unwrap_or([0.0; 3]),
+        lcl_scaling: extras_vec3(node, "fbx:lcl_scaling").unwrap_or([1.0, 1.0, 1.0]),
+        rotation_offset: extras_vec3(node, "fbx:rotation_offset").unwrap_or([0.0; 3]),
+        rotation_pivot: extras_vec3(node, "fbx:rotation_pivot").unwrap_or([0.0; 3]),
+        pre_rotation: extras_vec3(node, "fbx:pre_rotation").unwrap_or([0.0; 3]),
+        post_rotation: extras_vec3(node, "fbx:post_rotation").unwrap_or([0.0; 3]),
+        scaling_offset: extras_vec3(node, "fbx:scaling_offset").unwrap_or([0.0; 3]),
+        scaling_pivot: extras_vec3(node, "fbx:scaling_pivot").unwrap_or([0.0; 3]),
+        rotation_order,
     })
 }
 
@@ -1198,6 +1336,93 @@ mod tests {
         let map = props70(vec![p_enum("InheritType", 0)]);
         let d = decode_local_transform(&map);
         assert!(d.extras.is_empty());
+    }
+
+    /// `quat_to_euler` inverts `euler_to_quat` (up to `q ≡ −q`) for
+    /// every order, including gimbal-lock poses.
+    #[test]
+    fn quat_to_euler_inverts_euler_to_quat_all_orders() {
+        let triples = [
+            [30.0, -45.0, 60.0],
+            [10.0, 20.0, -30.0],
+            [-170.0, 15.0, 100.0],
+            [0.0, 90.0, 0.0],
+            [90.0, -90.0, 0.0],
+            [45.0, 0.0, -90.0],
+        ];
+        for order_int in 0..=6 {
+            let order = RotationOrder::from_enum_int(order_int).unwrap();
+            for deg in triples {
+                let q = euler_to_quat(deg, order);
+                let back = quat_to_euler(q, order);
+                let q2 = euler_to_quat(back, order);
+                let dot: f64 = (0..4).map(|i| q[i] * q2[i]).sum();
+                assert!(
+                    dot.abs() > 1.0 - 1e-9,
+                    "order {order:?}, deg {deg:?}: {q:?} vs {q2:?} (via {back:?})"
+                );
+            }
+        }
+    }
+
+    /// `decompose_sample` inverts `compose` for a fully non-trivial
+    /// chain in every rotation order.
+    #[test]
+    fn decompose_sample_inverts_compose() {
+        for order_int in 0..=6 {
+            let order = RotationOrder::from_enum_int(order_int).unwrap();
+            let chain = TransformChain {
+                lcl_translation: [1.5, -2.0, 3.25],
+                lcl_rotation: [30.0, -45.0, 60.0],
+                lcl_scaling: [2.0, 0.5, 1.25],
+                rotation_offset: [0.25, 0.5, -0.75],
+                rotation_pivot: [1.0, 2.0, -1.0],
+                pre_rotation: [10.0, 20.0, -30.0],
+                post_rotation: [-15.0, 5.0, 25.0],
+                scaling_offset: [-0.5, 0.25, 0.125],
+                scaling_pivot: [0.5, -1.5, 2.5],
+                rotation_order: order,
+            };
+            let (t, q, s) = chain.compose();
+            let (lt, lr, ls) = chain.decompose_sample(t, q, s);
+            for i in 0..3 {
+                assert!(
+                    (lt[i] - chain.lcl_translation[i]).abs() < 1e-9,
+                    "order {order:?}: T {lt:?}"
+                );
+                assert!((ls[i] - chain.lcl_scaling[i]).abs() < 1e-12);
+            }
+            // Euler angles may come back as an equivalent triple —
+            // compare as rotations.
+            let qa = euler_to_quat(lr, order);
+            let qb = euler_to_quat(chain.lcl_rotation, order);
+            let dot: f64 = (0..4).map(|i| qa[i] * qb[i]).sum();
+            assert!(dot.abs() > 1.0 - 1e-9, "order {order:?}: R {lr:?}");
+        }
+    }
+
+    /// `chain_from_extras` rebuilds exactly what the decode side
+    /// surfaced.
+    #[test]
+    fn chain_from_extras_round_trips_surfaced_chain() {
+        let map = props70(vec![
+            p_vec3("Lcl Translation", "Lcl Translation", [1.0, 2.0, 3.0]),
+            p_vec3("RotationPivot", "Vector3D", [4.0, 5.0, 6.0]),
+            p_vec3("PreRotation", "Vector3D", [0.0, 30.0, 0.0]),
+            p_enum("RotationOrder", 5),
+        ]);
+        let d = decode_local_transform(&map);
+        let mut node = Node::new();
+        for (k, v) in &d.extras {
+            node.extras.insert(k.clone(), v.clone());
+        }
+        let chain = chain_from_extras(&node).expect("chain extras present");
+        assert_eq!(chain.lcl_translation, [1.0, 2.0, 3.0]);
+        assert_eq!(chain.rotation_pivot, [4.0, 5.0, 6.0]);
+        assert_eq!(chain.pre_rotation, [0.0, 30.0, 0.0]);
+        assert_eq!(chain.rotation_order, RotationOrder::Zyx);
+        // Plain node → None.
+        assert!(chain_from_extras(&Node::new()).is_none());
     }
 
     #[test]

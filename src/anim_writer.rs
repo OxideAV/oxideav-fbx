@@ -38,10 +38,11 @@
 //! rounded to the nearest tick and stored as an `l` (i64) array. The
 //! decode path divides back by the same constant.
 
-use oxideav_mesh3d::{Animation, AnimationProperty, AnimationValues, NodeId};
+use oxideav_mesh3d::{Animation, AnimationChannel, AnimationProperty, AnimationValues, NodeId};
 
 use crate::animation::KTIME_TICKS_PER_SECOND;
 use crate::binary::{FbxNode, FbxProperty};
+use crate::node_transform::TransformChain;
 use crate::scene_writer::quat_to_euler_xyz_deg_pub;
 
 /// Output of [`build_animation_objects`]: the element records that go
@@ -65,6 +66,7 @@ pub(crate) fn build_animation_objects(
     animations: &[Animation],
     node_fbx_id: impl Fn(NodeId) -> Option<i64>,
     morph_channel_id: impl Fn(NodeId) -> Option<i64>,
+    node_chain: impl Fn(NodeId) -> Option<TransformChain>,
     mut alloc: impl FnMut() -> i64,
 ) -> AnimEmit {
     let mut objects = Vec::new();
@@ -90,11 +92,16 @@ pub(crate) fn build_animation_objects(
         // AnimationLayer -> AnimationStack OO.
         connections.push(conn_oo(layer_id, stack_id));
 
+        // Group the T/R/S channels per target node (first-seen order
+        // preserved) so a chain-bearing node's channels can be
+        // de-composed jointly; morph channels emit inline.
+        let mut trs_nodes: Vec<NodeId> = Vec::new();
+        let mut trs_groups: Vec<[Option<&AnimationChannel>; 3]> = Vec::new();
         for ch in &anim.channels {
-            let target_prop = match ch.target.property {
-                AnimationProperty::Translation => "Lcl Translation",
-                AnimationProperty::Rotation => "Lcl Rotation",
-                AnimationProperty::Scale => "Lcl Scaling",
+            let slot = match ch.target.property {
+                AnimationProperty::Translation => 0usize,
+                AnimationProperty::Rotation => 1,
+                AnimationProperty::Scale => 2,
                 // MorphWeights — a single-curve DeformPercent channel
                 // targeting the node's BlendShapeChannel deformer.
                 AnimationProperty::MorphWeights => {
@@ -126,40 +133,62 @@ pub(crate) fn build_animation_objects(
                     continue;
                 }
             };
-            let model_id = match node_fbx_id(ch.target.node) {
+            let idx = match trs_nodes.iter().position(|n| *n == ch.target.node) {
+                Some(i) => i,
+                None => {
+                    trs_nodes.push(ch.target.node);
+                    trs_groups.push([None; 3]);
+                    trs_nodes.len() - 1
+                }
+            };
+            trs_groups[idx][slot] = Some(ch);
+        }
+
+        for (node, group) in trs_nodes.iter().zip(&trs_groups) {
+            let model_id = match node_fbx_id(*node) {
                 Some(id) => id,
                 None => continue,
             };
-
-            // Per-axis (X/Y/Z) component series for this channel.
-            let times = &ch.sampler.keyframes;
-            let components = match channel_components(&ch.sampler.values, times.len()) {
-                Some(c) => c,
-                None => continue,
+            let emitted = match node_chain(*node) {
+                Some(chain) => decompose_chain_curves(&chain, group),
+                None => Vec::new(),
             };
-
-            let curve_node_id = alloc();
-            objects.push(element(
-                "AnimationCurveNode",
-                curve_node_id,
-                target_prop,
-                "",
-                Vec::new(),
-            ));
-            // AnimationCurveNode -> Model OP (the property name).
-            connections.push(conn_op(curve_node_id, model_id, target_prop));
-            // AnimationCurveNode -> AnimationLayer OO.
-            connections.push(conn_oo(curve_node_id, layer_id));
-
-            for (axis_tag, values) in [
-                ("d|X", &components[0]),
-                ("d|Y", &components[1]),
-                ("d|Z", &components[2]),
-            ] {
-                let curve_id = alloc();
-                objects.push(build_curve(curve_id, times, values));
-                // AnimationCurve -> AnimationCurveNode OP (the axis tag).
-                connections.push(conn_op(curve_id, curve_node_id, axis_tag));
+            if !emitted.is_empty() {
+                // Chain-bearing node: authored Lcl curves recovered
+                // via TransformChain::decompose_sample.
+                for (target_prop, times, components) in emitted {
+                    emit_trs_curves(
+                        &mut objects,
+                        &mut connections,
+                        &mut alloc,
+                        layer_id,
+                        model_id,
+                        target_prop,
+                        &times,
+                        &components,
+                    );
+                }
+                continue;
+            }
+            // Plain node: each channel's values emit verbatim.
+            for (slot, ch) in group.iter().enumerate() {
+                let Some(ch) = ch else { continue };
+                let target_prop = ["Lcl Translation", "Lcl Rotation", "Lcl Scaling"][slot];
+                let times = &ch.sampler.keyframes;
+                let components = match channel_components(&ch.sampler.values, times.len()) {
+                    Some(c) => c,
+                    None => continue,
+                };
+                emit_trs_curves(
+                    &mut objects,
+                    &mut connections,
+                    &mut alloc,
+                    layer_id,
+                    model_id,
+                    target_prop,
+                    times,
+                    &components,
+                );
             }
         }
     }
@@ -168,6 +197,212 @@ pub(crate) fn build_animation_objects(
         objects,
         connections,
     }
+}
+
+/// Emit one `AnimationCurveNode` + three per-axis `AnimationCurve`s
+/// with their `OO` / `OP` wiring.
+#[allow(clippy::too_many_arguments)]
+fn emit_trs_curves(
+    objects: &mut Vec<FbxNode>,
+    connections: &mut Vec<FbxNode>,
+    alloc: &mut impl FnMut() -> i64,
+    layer_id: i64,
+    model_id: i64,
+    target_prop: &str,
+    times: &[f32],
+    components: &[Vec<f32>; 3],
+) {
+    let curve_node_id = alloc();
+    objects.push(element(
+        "AnimationCurveNode",
+        curve_node_id,
+        target_prop,
+        "",
+        Vec::new(),
+    ));
+    // AnimationCurveNode -> Model OP (the property name).
+    connections.push(conn_op(curve_node_id, model_id, target_prop));
+    // AnimationCurveNode -> AnimationLayer OO.
+    connections.push(conn_oo(curve_node_id, layer_id));
+
+    for (axis_tag, values) in [
+        ("d|X", &components[0]),
+        ("d|Y", &components[1]),
+        ("d|Z", &components[2]),
+    ] {
+        let curve_id = alloc();
+        objects.push(build_curve(curve_id, times, values));
+        // AnimationCurve -> AnimationCurveNode OP (the axis tag).
+        connections.push(conn_op(curve_id, curve_node_id, axis_tag));
+    }
+}
+
+/// De-compose a chain-bearing node's channel group back to authored
+/// `Lcl` component curves.
+///
+/// The decode side composes `T(t)` / `R(t)` / `S(t)` through the doc
+/// §1 product (`docs/3d/fbx/fbx-node-transform-chain.md`); since the
+/// re-encoded `Model` carries its pivot / offset / Pre-/PostRotation
+/// / `RotationOrder` records again, the curves must carry the
+/// **authored** values — emitting the composed samples verbatim would
+/// double-apply the chain on the next decode. Per union-grid
+/// keyframe, [`TransformChain::decompose_sample`] inverts the closed
+/// form (absent channels sample as the chain's static composition);
+/// Euler components are unwrapped (±360°) to stay continuous across
+/// keys. One `(property, times, components)` tuple is returned per
+/// channel present in the group.
+fn decompose_chain_curves(
+    chain: &TransformChain,
+    group: &[Option<&AnimationChannel>; 3],
+) -> Vec<AuthoredCurveSet> {
+    let [t_ch, r_ch, s_ch] = group;
+    if t_ch.is_none() && r_ch.is_none() && s_ch.is_none() {
+        return Vec::new();
+    }
+
+    // Union time grid over every present channel.
+    let mut times: Vec<f32> = Vec::new();
+    for ch in group.iter().flatten() {
+        times.extend_from_slice(&ch.sampler.keyframes);
+    }
+    times.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    times.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
+    if times.is_empty() {
+        return Vec::new();
+    }
+
+    // Static composition backs any absent channel.
+    let (static_t, static_q, static_s) = chain.compose();
+
+    let mut lcl_t: Vec<[f64; 3]> = Vec::with_capacity(times.len());
+    let mut lcl_r: Vec<[f64; 3]> = Vec::with_capacity(times.len());
+    let mut lcl_s: Vec<[f64; 3]> = Vec::with_capacity(times.len());
+    for &t in &times {
+        let ct = sample_vec3_channel(*t_ch, t).unwrap_or(static_t);
+        let cq = sample_quat_channel(*r_ch, t).unwrap_or(static_q);
+        let cs = sample_vec3_channel(*s_ch, t).unwrap_or(static_s);
+        let (at, ar, a_s) = chain.decompose_sample(ct, cq, cs);
+        // Unwrap Euler components against the previous key so the
+        // linearly-interpolated curve doesn't spin through ±360°.
+        let ar = match lcl_r.last() {
+            Some(prev) => {
+                let mut u = ar;
+                for i in 0..3 {
+                    while u[i] - prev[i] > 180.0 {
+                        u[i] -= 360.0;
+                    }
+                    while u[i] - prev[i] < -180.0 {
+                        u[i] += 360.0;
+                    }
+                }
+                u
+            }
+            None => ar,
+        };
+        lcl_t.push(at);
+        lcl_r.push(ar);
+        lcl_s.push(a_s);
+    }
+
+    let split = |vals: &[[f64; 3]]| -> [Vec<f32>; 3] {
+        [
+            vals.iter().map(|v| v[0] as f32).collect(),
+            vals.iter().map(|v| v[1] as f32).collect(),
+            vals.iter().map(|v| v[2] as f32).collect(),
+        ]
+    };
+
+    let mut out = Vec::new();
+    if t_ch.is_some() {
+        out.push(("Lcl Translation", times.clone(), split(&lcl_t)));
+    }
+    if r_ch.is_some() {
+        out.push(("Lcl Rotation", times.clone(), split(&lcl_r)));
+    }
+    if s_ch.is_some() {
+        out.push(("Lcl Scaling", times.clone(), split(&lcl_s)));
+    }
+    out
+}
+
+/// One authored `Lcl` curve set ready for emission: the FBX target
+/// property name, the union keyframe grid, and the three per-axis
+/// component series.
+type AuthoredCurveSet = (&'static str, Vec<f32>, [Vec<f32>; 3]);
+
+/// Sample a `Vec3` channel at `t` (linear, endpoint-clamped).
+/// `None` when the channel is absent or not `Vec3`-valued.
+fn sample_vec3_channel(ch: Option<&AnimationChannel>, t: f32) -> Option<[f64; 3]> {
+    let ch = ch?;
+    let AnimationValues::Vec3(vals) = &ch.sampler.values else {
+        return None;
+    };
+    let (i, j, frac) = bracket(&ch.sampler.keyframes, t)?;
+    if vals.len() != ch.sampler.keyframes.len() {
+        return None;
+    }
+    let (a, b) = (vals[i], vals[j]);
+    Some([
+        f64::from(a[0]) + f64::from(b[0] - a[0]) * frac,
+        f64::from(a[1]) + f64::from(b[1] - a[1]) * frac,
+        f64::from(a[2]) + f64::from(b[2] - a[2]) * frac,
+    ])
+}
+
+/// Sample a `Quat` channel at `t` (normalised linear blend on the
+/// short arc, endpoint-clamped). `None` when absent / not `Quat`.
+fn sample_quat_channel(ch: Option<&AnimationChannel>, t: f32) -> Option<[f64; 4]> {
+    let ch = ch?;
+    let AnimationValues::Quat(vals) = &ch.sampler.values else {
+        return None;
+    };
+    let (i, j, frac) = bracket(&ch.sampler.keyframes, t)?;
+    if vals.len() != ch.sampler.keyframes.len() {
+        return None;
+    }
+    let a = vals[i];
+    let mut b = vals[j];
+    let dot: f32 = (0..4).map(|k| a[k] * b[k]).sum();
+    if dot < 0.0 {
+        b = [-b[0], -b[1], -b[2], -b[3]];
+    }
+    let mut q = [0.0f64; 4];
+    for k in 0..4 {
+        q[k] = f64::from(a[k]) + f64::from(b[k] - a[k]) * frac;
+    }
+    let norm = (q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]).sqrt();
+    if norm > 0.0 {
+        for c in &mut q {
+            *c /= norm;
+        }
+    }
+    Some(q)
+}
+
+/// Locate `t` on a keyframe grid: returns `(i, j, frac)` with
+/// endpoint clamping. `None` for an empty grid.
+fn bracket(times: &[f32], t: f32) -> Option<(usize, usize, f64)> {
+    if times.is_empty() {
+        return None;
+    }
+    if t <= times[0] {
+        return Some((0, 0, 0.0));
+    }
+    if t >= times[times.len() - 1] {
+        let last = times.len() - 1;
+        return Some((last, last, 0.0));
+    }
+    let mut i = 0;
+    while i + 1 < times.len() && times[i + 1] < t {
+        i += 1;
+    }
+    let (t0, t1) = (times[i], times[i + 1]);
+    let frac = if t1 > t0 {
+        f64::from(t - t0) / f64::from(t1 - t0)
+    } else {
+        0.0
+    };
+    Some((i, i + 1, frac))
 }
 
 /// Decompose a channel's [`AnimationValues`] into three per-keyframe

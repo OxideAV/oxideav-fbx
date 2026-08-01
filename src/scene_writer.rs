@@ -386,10 +386,21 @@ pub fn encode_scene_with_options(scene: &Scene3D, opts: &SceneEncodeOptions) -> 
                 .find(|(n, _)| *n == nid)
                 .and_then(|(_, ids)| ids.first().copied())
         };
+        // A chain-bearing node's channels must be de-composed back to
+        // authored Lcl curves (the Model re-gains its pivot records,
+        // so emitting the composed values would double-apply the
+        // chain on the next decode).
+        let chain_for = |nid: oxideav_mesh3d::NodeId| {
+            scene
+                .nodes
+                .get(nid.0 as usize)
+                .and_then(crate::node_transform::chain_from_extras)
+        };
         let anim_emit = crate::anim_writer::build_animation_objects(
             &scene.animations,
             node_to_fbx,
             morph_channel_for,
+            chain_for,
             || alloc.next(),
         );
         objects.children.extend(anim_emit.objects);
