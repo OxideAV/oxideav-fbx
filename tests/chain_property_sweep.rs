@@ -281,11 +281,12 @@ fn chain_model(id: i64, name: &str, chain: &TransformChain) -> FbxNode {
     }
 }
 
-/// 3. Random chain documents survive `decode → encode → decode` with
-/// the composed transform intact (32 documents × 4 models each).
+/// 3. Random chain documents survive `decode → encode → decode`
+///    with the composed transform intact (32 documents, 4 models
+///    each).
 #[test]
 fn sweep_chain_documents_round_trip() {
-    let mut rng = Lcg(0xf1f7_0e5);
+    let mut rng = Lcg(0x0f1f_70e5);
     for doc_case in 0..32 {
         let mut models = Vec::new();
         let mut conns = Vec::new();
