@@ -50,20 +50,40 @@ clean-room from third-party documentation:
 - Object-graph walker: indexes `Geometry` and `Model` from `Objects`,
   walks `Connections` `OO` records to wire Geometry → Model and
   Model → root.
-- **Node local transforms** — each `Model`'s `Lcl Translation` /
-  `Lcl Rotation` (XYZ-Euler-degrees → quaternion) / `Lcl Scaling`
-  P-records (resolved against the `ObjectType: "Model"`
-  `PropertyTemplate` defaults) become the scene-graph node's local
-  `Transform::Trs` (`T * R * S`), so an authored placement reaches the
-  `Scene3D` instead of collapsing to the origin. The reduced
-  `T * R(XYZ) * S` form is applied only when the full FBX
-  node-transform chain provably reduces to it (pivots / offsets /
-  pre-post-rotation zero, `RotationOrder == 0` XYZ — the common case);
-  a non-trivial pivot / offset / pre-post-rotation / non-XYZ order
-  leaves the node at identity and surfaces the raw `Lcl` components +
-  a `Node::extras["fbx:transform_incomplete"]` reason marker (the full
-  chain composition order + the `RotationOrder` enum table are a
-  `docs/3d/fbx/` gap).
+- **Node local transforms — the full FBX node-transform chain** —
+  per `docs/3d/fbx/fbx-node-transform-chain.md` §1, each `Model`'s
+  local matrix is the product `T · Roff · Rp · Rpre · R · Rpost⁻¹ ·
+  Rp⁻¹ · Soff · Sp · S · Sp⁻¹` (`Lcl Translation` / `RotationOffset`
+  / `RotationPivot` / `PreRotation` / `Lcl Rotation` (inverse of
+  `PostRotation`) / `ScalingOffset` / `ScalingPivot` /
+  `Lcl Scaling`), resolved against the `ObjectType: "Model"`
+  `PropertyTemplate` defaults. The chain composes **exactly** into
+  the node's `Transform::Trs` via the closed form
+  `t = T + Roff + Rp + Q·(Soff + Sp − Rp − S∘Sp)`,
+  `Q = Rpre · R(order) · Rpost⁻¹`, `s = S` (no matrix decomposition;
+  pinned in-tree against the literal 11-factor matrix product for
+  all seven rotation orders). `RotationOrder` follows the doc §3
+  table — order `ABC` applies `A` first (`R = R_C · R_B · R_A`);
+  `0` = XYZ default, `6` (`SphericXYZ`) builds its rest matrix as
+  XYZ while the raw enum stays recoverable on
+  `extras["fbx:rotation_order"]`. When any chain extension is
+  non-trivial the raw authored components also surface on
+  `Node::extras` (`fbx:lcl_*` / `fbx:rotation_offset` /
+  `fbx:rotation_pivot` / `fbx:pre_rotation` / `fbx:post_rotation` /
+  `fbx:scaling_offset` / `fbx:scaling_pivot`) so the encoder
+  re-emits the authored chain verbatim. The doc §2 **geometric
+  transform** (`GeometricTranslation` / `GeometricRotation` /
+  `GeometricScaling`) is a post-multiplied, **non-inheriting**
+  mesh-only offset — never composed into `Node::transform` (children
+  must not inherit it); it surfaces on `extras["fbx:geometric_*"]`
+  and `node_transform::geometric_transform` rebuilds the
+  `OT · OR · OS` product to post-multiply onto the node's world
+  matrix for that node's own mesh. A non-default `InheritType`
+  surfaces raw on `extras["fbx:inherit_type"]` (the per-type
+  world-transform formula is the doc's §4 open item). Only a
+  `RotationOrder` enum int outside the documented `0..=6` table
+  leaves a node at identity, with
+  `extras["fbx:transform_incomplete"] = "rotation_order_unrecognized"`.
 - Mesh extraction: `Vertices` + `PolygonVertexIndex` →
   per-corner `Primitive(Topology::Triangles)` (ngons fan-triangulated;
   end-of-polygon negatives bit-NOT decoded). `LayerElementNormal` /
@@ -562,7 +582,15 @@ clean-room from third-party documentation:
     every attribute through the index buffer.
   - **Nodes / hierarchy** — one `Model` per node with
     `Lcl Translation` / `Lcl Rotation` (XYZ-Euler degrees) /
-    `Lcl Scaling` P-records + the parent/child OO edges;
+    `Lcl Scaling` P-records + the parent/child OO edges. Nodes
+    carrying the decode-side chain extras re-emit the **authored**
+    chain instead (the `fbx:lcl_*` triple verbatim — never the
+    composed `Node::transform`, which would double-apply the pivot
+    terms — plus `RotationOffset` / `RotationPivot` / `PreRotation`
+    / `PostRotation` / `ScalingOffset` / `ScalingPivot` `Vector3D`
+    records, `RotationOrder` / `InheritType` enums, and the
+    `Geometric*` TRS), so `decode → encode → decode` preserves both
+    the composed transform and the authored chain;
     `fbx:node_attribute_kind` `"LimbNode"` / `"Null"` markers re-emit
     their `NodeAttribute` so bone / locator tags survive re-encode.
     The §7c trailing Model-body leaves (`Shading: T` /
@@ -655,9 +683,7 @@ the partial-support edges and the not-yet-implemented surfaces.
   accepts). Bytes matching neither the binary magic nor the ASCII
   banner return a single sniff-failure error. The ASCII writer is
   described under "ASCII writer" above.
-- Encoder lossy edges — the full FBX node-transform chain (pivots /
-  pre-post-rotation / `RotationOrder`) is not synthesised (reduced
-  `T * R(XYZ) * S` only, matching the decode-side docs gap);
+- Encoder lossy edges —
   `Mesh::weights` static per-target morph weights have no FBX
   read-back home (the decode side initialises them to `0.0`);
   multi-primitive meshes skip the extras-borne extra-layer
@@ -671,9 +697,13 @@ the partial-support edges and the not-yet-implemented surfaces.
   16-byte per-file id's *derivation* is undocumented by every staged
   source, so freshly-encoded scenes carry an all-zero id (a captured
   id from `parse_footer` / `fbx:footer_id` is reproduced verbatim).
-- Animation: per-layer compositing weights, `KeyAttrFlags` cubic /
-  step / TCB interpolation modes, `PreRotation` / `PostRotation` /
-  pivot composition. Linear sampling between keyframes only.
+- Animation: per-layer compositing weights and `KeyAttrFlags` cubic /
+  step / TCB interpolation modes remain unsupported — linear sampling
+  between keyframes only. (`PreRotation` / `PostRotation` / pivot /
+  `RotationOrder` composition **is** applied: channels bound to a
+  chain-bearing Model re-compose the doc §1 product per merged
+  keyframe, so the rotation channel is `Rpre · R(t) · Rpost⁻¹` and
+  the translation channel carries the pivot swing.)
 - Skin: `SKINNING_METHOD_DUAL_QUATERNION` / `BLENDED_DQ_LINEAR`
   surface as plain LBS buffers (the doc notes this is safe to ignore
   unless the renderer specifically needs it).
