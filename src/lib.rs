@@ -153,8 +153,10 @@
 //!   decode per `docs/3d/fbx/fbx-node-transform-chain.md` §1 and
 //!   re-emits from the `fbx:*` chain extras on encode; see
 //!   [`node_transform`] / [`scene_writer`].)
-//! - Animation: per-layer compositing, cubic / step / TCB
-//!   interpolation, pivot / pre-rotation / post-rotation chains.
+//! - Animation: per-layer compositing and cubic / step / TCB
+//!   interpolation. (Pivot / Pre-/PostRotation / `RotationOrder`
+//!   composition **is** applied to channels on chain-bearing Models,
+//!   both directions — see [`animation`] / [`anim_writer`].)
 //! - Skin: `SKINNING_METHOD_DUAL_QUATERNION` produces plain LBS
 //!   buffers (the doc notes this is safe to ignore in most cases).
 //! - BlendShape: in-between keyframes are collapsed to `target_shape`.
