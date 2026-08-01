@@ -146,9 +146,10 @@
 //!   [`encoder`] / [`scene_writer`] / [`anim_writer`].
 //!
 //! # What's NOT covered
-//! - Encoder: the full node-transform chain
-//!   (pivots / pre-post-rotation / `RotationOrder` — the same
-//!   `docs/3d/fbx/` gap the decode side hits) is not synthesised; the
+//! - Encoder: the full node-transform chain (pivots /
+//!   pre-post-rotation / `RotationOrder`) — now composed exactly on
+//!   decode per `docs/3d/fbx/fbx-node-transform-chain.md` §1 (see
+//!   [`node_transform`]) — is not yet re-synthesised on encode; the
 //!   footer's 16-byte per-file id derivation is undocumented, so fresh
 //!   encodes carry an all-zero id (captured ids reproduce verbatim).
 //! - Animation: per-layer compositing, cubic / step / TCB

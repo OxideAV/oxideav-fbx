@@ -1,16 +1,19 @@
-//! Round 367 — end-to-end `Model` node local-transform decode via the
-//! full `Mesh3DDecoder::decode` (binary front-end) path.
+//! End-to-end `Model` node local-transform decode via the full
+//! `Mesh3DDecoder::decode` (binary front-end) path — the complete
+//! node-transform chain per `docs/3d/fbx/fbx-node-transform-chain.md`.
 //!
-//! Builds a synthetic binary-FBX byte buffer with two `Model` records:
+//! Builds a synthetic binary-FBX byte buffer with four `Model`
+//! records whose composed transforms are verified analytically:
 //!
-//! - `Placed` carries a `Properties70` with `Lcl Translation`,
-//!   `Lcl Rotation` (90° about X), and `Lcl Scaling` — the chain
-//!   reduces to `T * R(XYZ) * S`, so its node receives a non-identity
-//!   `Transform::Trs`.
-//! - `Pivoted` carries a non-zero `PreRotation` `Vector3D` — the
-//!   reduced form would be lossy, so its node stays at identity and a
-//!   `Node::extras["fbx:transform_incomplete"]` reason marker plus the
-//!   raw `Lcl` components surface instead.
+//! - `Placed` carries the plain `Lcl` triple — composes to
+//!   `T * R(XYZ) * S` with no chain extras.
+//! - `PreRotated` carries a `PreRotation` — the doc §1 chain gives
+//!   `Q = Rpre · R`, and the raw chain surfaces on `extras`.
+//! - `Pivoted` carries `RotationPivot` + a 90° Z rotation — the doc
+//!   §1 closed form gives `t = T + Rp + Q·(−Rp)`.
+//! - `Ordered` carries `RotationOrder = 5` (`ZYX`, the doc §3 table)
+//!   with a two-axis rotation whose composed action on a basis
+//!   vector discriminates ZYX from XYZ.
 //!
 //! All record shapes follow `docs/3d/fbx/fbx-binary-properties70.md`
 //! §4 / §5 (Properties70 `P` grammar; object record header) and the
@@ -46,6 +49,21 @@ fn p_vec3(name: &str, type_name: &str, v: [f64; 3]) -> FbxNode {
     }
 }
 
+/// A `P:` enum record `[name, "enum", "", "", v]`.
+fn p_enum(name: &str, v: i32) -> FbxNode {
+    FbxNode {
+        name: "P".into(),
+        properties: vec![
+            s(name.as_bytes()),
+            s(b"enum"),
+            s(b""),
+            s(b""),
+            FbxProperty::I32(v),
+        ],
+        children: Vec::new(),
+    }
+}
+
 fn properties70(records: Vec<FbxNode>) -> FbxNode {
     FbxNode {
         name: "Properties70".into(),
@@ -75,8 +93,35 @@ fn c_oo(child: i64, parent: i64) -> FbxNode {
     }
 }
 
+fn trs(t: &Transform) -> ([f32; 3], [f32; 4], [f32; 3]) {
+    match *t {
+        Transform::Trs {
+            translation,
+            rotation,
+            scale,
+        } => (translation, rotation, scale),
+        Transform::Matrix(_) => panic!("expected decomposed Trs"),
+    }
+}
+
+/// Rotate a vector by an xyzw quaternion.
+fn rotate(q: [f32; 4], v: [f32; 3]) -> [f32; 3] {
+    let mul = |a: [f32; 4], b: [f32; 4]| -> [f32; 4] {
+        [
+            a[3] * b[0] + a[0] * b[3] + a[1] * b[2] - a[2] * b[1],
+            a[3] * b[1] - a[0] * b[2] + a[1] * b[3] + a[2] * b[0],
+            a[3] * b[2] + a[0] * b[1] - a[1] * b[0] + a[2] * b[3],
+            a[3] * b[3] - a[0] * b[0] - a[1] * b[1] - a[2] * b[2],
+        ]
+    };
+    let p = [v[0], v[1], v[2], 0.0];
+    let c = [-q[0], -q[1], -q[2], q[3]];
+    let r = mul(mul(q, p), c);
+    [r[0], r[1], r[2]]
+}
+
 #[test]
-fn model_local_transforms_round_trip_through_binary_decoder() {
+fn model_transform_chain_composes_through_binary_decoder() {
     let placed = model_with_props(
         700,
         "Placed",
@@ -86,24 +131,41 @@ fn model_local_transforms_round_trip_through_binary_decoder() {
             p_vec3("Lcl Scaling", "Lcl Scaling", [2.0, 2.0, 2.0]),
         ]),
     );
-    let pivoted = model_with_props(
+    let pre_rotated = model_with_props(
         701,
-        "Pivoted",
+        "PreRotated",
         properties70(vec![
             p_vec3("Lcl Translation", "Lcl Translation", [4.0, 5.0, 6.0]),
-            p_vec3("PreRotation", "Vector3D", [0.0, 30.0, 0.0]),
+            p_vec3("PreRotation", "Vector3D", [0.0, 90.0, 0.0]),
+        ]),
+    );
+    let pivoted = model_with_props(
+        702,
+        "Pivoted",
+        properties70(vec![
+            p_vec3("Lcl Translation", "Lcl Translation", [10.0, 0.0, 0.0]),
+            p_vec3("RotationPivot", "Vector3D", [1.0, 0.0, 0.0]),
+            p_vec3("Lcl Rotation", "Lcl Rotation", [0.0, 0.0, 90.0]),
+        ]),
+    );
+    let ordered = model_with_props(
+        703,
+        "Ordered",
+        properties70(vec![
+            p_enum("RotationOrder", 5),
+            p_vec3("Lcl Rotation", "Lcl Rotation", [90.0, 0.0, 90.0]),
         ]),
     );
 
     let objects = FbxNode {
         name: "Objects".into(),
         properties: Vec::new(),
-        children: vec![placed, pivoted],
+        children: vec![placed, pre_rotated, pivoted, ordered],
     };
     let conns = FbxNode {
         name: "Connections".into(),
         properties: Vec::new(),
-        children: vec![c_oo(700, 0), c_oo(701, 0)],
+        children: vec![c_oo(700, 0), c_oo(701, 0), c_oo(702, 0), c_oo(703, 0)],
     };
     let root = FbxNode {
         name: String::new(),
@@ -127,40 +189,68 @@ fn model_local_transforms_round_trip_through_binary_decoder() {
         }
     }
 
-    // `Placed` reduces to TRS: T=(1,2,3), R=90° about X, S=(2,2,2).
+    // `Placed` is the plain triple: T=(1,2,3), R=90° about X,
+    // S=(2,2,2); no chain extras.
     let placed = by_name.get("Placed").expect("Placed node surfaced");
-    match placed.transform {
-        Transform::Trs {
-            translation,
-            rotation,
-            scale,
-        } => {
-            assert_eq!(translation, [1.0, 2.0, 3.0]);
-            assert_eq!(scale, [2.0, 2.0, 2.0]);
-            let h = std::f32::consts::FRAC_1_SQRT_2;
-            assert!((rotation[0] - h).abs() < 1e-5, "rot x = {}", rotation[0]);
-            assert!((rotation[3] - h).abs() < 1e-5, "rot w = {}", rotation[3]);
-        }
-        Transform::Matrix(_) => panic!("expected decomposed Trs"),
-    }
+    let (translation, rotation, scale) = trs(&placed.transform);
+    assert_eq!(translation, [1.0, 2.0, 3.0]);
+    assert_eq!(scale, [2.0, 2.0, 2.0]);
+    let h = std::f32::consts::FRAC_1_SQRT_2;
+    assert!((rotation[0] - h).abs() < 1e-5, "rot x = {}", rotation[0]);
+    assert!((rotation[3] - h).abs() < 1e-5, "rot w = {}", rotation[3]);
     assert!(!placed.extras.contains_key("fbx:transform_incomplete"));
+    assert!(!placed.extras.contains_key("fbx:lcl_translation"));
 
-    // `Pivoted` has a non-zero PreRotation → stays at identity, marks
-    // the lossy reduction, and surfaces the raw Lcl components.
-    let pivoted = by_name.get("Pivoted").expect("Pivoted node surfaced");
-    assert_eq!(pivoted.transform, Transform::identity());
-    assert_eq!(
-        pivoted
-            .extras
-            .get("fbx:transform_incomplete")
-            .and_then(|v| v.as_str()),
-        Some("pre_rotation"),
-    );
-    let raw_t = pivoted
+    // `PreRotated`: Q = Rpre (90° about Y) since Lcl Rotation is
+    // absent; translation is untouched (pivots zero). Raw chain
+    // surfaces for re-encode.
+    let pre = by_name.get("PreRotated").expect("PreRotated node surfaced");
+    let (translation, rotation, _) = trs(&pre.transform);
+    assert_eq!(translation, [4.0, 5.0, 6.0]);
+    assert!((rotation[1] - h).abs() < 1e-5 && (rotation[3] - h).abs() < 1e-5);
+    assert!(!pre.extras.contains_key("fbx:transform_incomplete"));
+    let raw_t = pre
         .extras
         .get("fbx:lcl_translation")
         .and_then(|v| v.as_array())
-        .expect("raw Lcl Translation surfaced on incomplete node");
+        .expect("raw Lcl Translation surfaced alongside the chain");
     assert_eq!(raw_t[0].as_f64(), Some(4.0));
     assert_eq!(raw_t[2].as_f64(), Some(6.0));
+    let raw_pre = pre
+        .extras
+        .get("fbx:pre_rotation")
+        .and_then(|v| v.as_array())
+        .expect("raw PreRotation surfaced");
+    assert_eq!(raw_pre[1].as_f64(), Some(90.0));
+
+    // `Pivoted`: doc §1 closed form t = T + Rp + Q·(−Rp) with a 90° Z
+    // rotation: Q·(−1,0,0) = (0,−1,0) → t = (11,−1,0). The pivot
+    // point itself maps back onto T + Rp.
+    let piv = by_name.get("Pivoted").expect("Pivoted node surfaced");
+    let (translation, rotation, _) = trs(&piv.transform);
+    assert!((translation[0] - 11.0).abs() < 1e-5, "t = {translation:?}");
+    assert!((translation[1] + 1.0).abs() < 1e-5, "t = {translation:?}");
+    assert!(translation[2].abs() < 1e-5);
+    // Local action check: the pivot (1,0,0) must land at T + pivot.
+    let p = rotate(rotation, [1.0, 0.0, 0.0]);
+    let moved = [
+        p[0] + translation[0],
+        p[1] + translation[1],
+        p[2] + translation[2],
+    ];
+    assert!((moved[0] - 11.0).abs() < 1e-5 && moved[1].abs() < 1e-5);
+
+    // `Ordered` (ZYX): applies Z first — +Y → −X, then the X
+    // rotation keeps −X fixed. Raw enum surfaces on extras.
+    let ord = by_name.get("Ordered").expect("Ordered node surfaced");
+    let (_, rotation, _) = trs(&ord.transform);
+    let v = rotate(rotation, [0.0, 1.0, 0.0]);
+    assert!(v[0] < -0.999, "ZYX expected +Y → −X, got {v:?}");
+    assert_eq!(
+        ord.extras
+            .get("fbx:rotation_order")
+            .and_then(|v| v.as_i64()),
+        Some(5)
+    );
+    assert!(!ord.extras.contains_key("fbx:transform_incomplete"));
 }

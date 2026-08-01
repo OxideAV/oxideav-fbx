@@ -275,16 +275,18 @@ pub fn build_scene(doc: &FbxDocument) -> Result<Scene3D> {
     // gets read (e.g. when LimbNode → Skeleton wiring lands).
     let _ = model_subtypes;
 
-    // Round 367 — static node local transforms. Each `Model`'s
-    // `Lcl Translation` / `Lcl Rotation` / `Lcl Scaling` P-records
-    // (resolved against the `ObjectType: "Model"` PropertyTemplate
-    // defaults) become the node's local `Transform::Trs`. Runs before
-    // the deformer / animation passes so an animated node starts from
-    // its authored rest transform; the FBX node-transform chain's
-    // pivot / offset / pre-post-rotation extensions are surfaced on
-    // `Node::extras` with a `fbx:transform_incomplete` marker when
-    // present (their composition order is a docs gap). See
-    // `crate::node_transform`.
+    // Static node local transforms — the full FBX node-transform
+    // chain per `docs/3d/fbx/fbx-node-transform-chain.md` §1: each
+    // `Model`'s `Lcl` triple + pivots / offsets / Pre-/PostRotation /
+    // `RotationOrder` (resolved against the `ObjectType: "Model"`
+    // PropertyTemplate defaults) compose exactly into the node's
+    // local `Transform::Trs`. Runs before the deformer / animation
+    // passes so an animated node starts from its authored rest
+    // transform. Non-trivial chain components are additionally
+    // surfaced raw on `Node::extras` (`fbx:lcl_*` / `fbx:*_pivot` /
+    // ...) for lossless re-encode; the non-inheriting geometric TRS
+    // (doc §2) surfaces on `fbx:geometric_*` without touching the
+    // node transform. See `crate::node_transform`.
     extract_node_transforms(doc, &mut scene, &model_nodes);
 
     // Round 2: deformers (Skin / Cluster / BlendShape) and animations.

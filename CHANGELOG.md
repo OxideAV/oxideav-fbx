@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Round 436 — **full node-transform chain composition on decode.**
+  The freshly staged `docs/3d/fbx/fbx-node-transform-chain.md` §1
+  documents the local-transform product
+  `T · Roff · Rp · Rpre · R · Rpost⁻¹ · Rp⁻¹ · Soff · Sp · S · Sp⁻¹`
+  and the §3 `RotationOrder` table, so the reduced-chain guard is
+  gone: every `Model`'s pivots / offsets / Pre-/PostRotation /
+  `RotationOrder` now compose **exactly** into the node's
+  `Transform::Trs` via the closed form
+  `t = T + Roff + Rp + Q·(Soff + Sp − Rp − S∘Sp)`,
+  `Q = Rpre · R(order) · Rpost⁻¹`, `s = S` (no matrix
+  decomposition; verified in-tree against the literal 11-factor
+  matrix product for all seven orders). New public surface:
+  `node_transform::{RotationOrder, TransformChain, euler_to_quat,
+  geometric_transform}`. Non-trivial chains additionally surface
+  their raw authored components on `Node::extras` (`fbx:lcl_*`,
+  `fbx:rotation_offset` / `fbx:rotation_pivot` / `fbx:pre_rotation` /
+  `fbx:post_rotation` / `fbx:scaling_offset` / `fbx:scaling_pivot`,
+  `fbx:rotation_order`) for lossless re-encode. The doc §2
+  non-inheriting geometric TRS surfaces on `fbx:geometric_*` extras
+  (never composed into the node transform — it applies to the node's
+  own mesh only) with `node_transform::geometric_transform` rebuilding
+  the `OT · OR · OS` product; a non-default `InheritType` surfaces
+  raw on `fbx:inherit_type` (its per-type formula is the doc's §4
+  open item). `RotationOrder = 6` (`SphericXYZ`) builds its rest
+  matrix as XYZ per the doc while keeping the raw enum recoverable;
+  only an enum int **outside** the documented `0..=6` table now
+  leaves a node at identity with the
+  `fbx:transform_incomplete = "rotation_order_unrecognized"` marker
+  (previously any non-trivial pivot / offset / pre-post-rotation /
+  non-XYZ order did).
+
 ### Fixed
 
 - Round 433 — **`C` boolean token bytes.** The staged
