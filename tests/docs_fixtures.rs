@@ -326,3 +326,37 @@ fn all_fixtures_decode_to_populated_scenes() {
         );
     }
 }
+
+/// The skin-anim fixture's 90 `AnimationCurve`s each carry the three
+/// key-attribute sub-records: the raw catalogue surfaces all of them
+/// with resolved join keys and non-empty verbatim arrays. (No bit is
+/// interpreted — the value assignment is the GAP-TRACKER's open
+/// item.)
+#[test]
+fn skin_anim_key_attr_catalogue_surfaces_from_real_bytes() {
+    let Some(bytes) = fixture("skin-anim-binary-v7400.fbx") else {
+        return;
+    };
+    let scene = decode(&bytes);
+    let catalogue = scene
+        .extras
+        .get("fbx:key_attrs")
+        .and_then(|v| v.as_array())
+        .expect("fbx:key_attrs present");
+    assert_eq!(catalogue.len(), 90, "one entry per attributed curve");
+    for entry in catalogue {
+        let e = entry.as_object().expect("object entry");
+        assert!(e.contains_key("stack"), "stack join key resolves");
+        assert!(e.contains_key("property"));
+        assert!(e.contains_key("axis"));
+        assert!(e["key_count"].as_u64().unwrap_or(0) > 0);
+        for k in ["flags", "data_bits", "ref_count"] {
+            assert!(
+                !e[k].as_array().expect(k).is_empty(),
+                "{k} array is non-empty"
+            );
+        }
+    }
+    // And the animation itself still decodes.
+    assert!(!scene.animations.is_empty());
+}
