@@ -429,15 +429,42 @@ impl<'a> Parser<'a> {
 
     /// Parse zero-or-more comma-separated scalar values (the
     /// `value-list` non-terminal in §3 of the grammar).
+    ///
+    /// A comma may be followed by a line break before the next value
+    /// — the continuation form the staged
+    /// `docs/3d/fbx/fixtures/texture-video-ascii-v7500.fbx` fixture
+    /// demonstrates on its embedded-media record, where the SDK
+    /// writes the value list as a bare leading comma with the (large,
+    /// base64) quoted string on the following line:
+    ///
+    /// ```text
+    /// Content: ,
+    ///  "AAAKAAAAAAAA..."
+    /// ```
+    ///
+    /// After an explicit comma the list therefore continues across
+    /// newlines; without one, the line break still ends the list (the
+    /// §3 leaf shape).
     fn parse_value_list(&mut self) -> Result<Vec<FbxProperty>> {
         let mut out = Vec::new();
         // An empty value-list is fine: leaf with no values (e.g. node
         // openings like `FBXHeaderExtension:  {`).
+        self.skip_inline_trivia();
+        let mut expect_value = false;
+        if self.peek() == Some(b',') {
+            // Leading-comma continuation (see above): the first value
+            // sits on a following line.
+            self.bump();
+            self.skip_trivia();
+            expect_value = true;
+        }
         loop {
             self.skip_inline_trivia();
-            match self.peek() {
-                None | Some(b'\n' | b'\r' | b'{' | b'}') => return Ok(out),
-                _ => {}
+            if !expect_value {
+                match self.peek() {
+                    None | Some(b'\n' | b'\r' | b'{' | b'}') => return Ok(out),
+                    _ => {}
+                }
             }
             let v = self.parse_scalar_value()?;
             out.push(v);
@@ -445,6 +472,10 @@ impl<'a> Parser<'a> {
             match self.peek() {
                 Some(b',') => {
                     self.bump();
+                    // Values may continue on the next line after an
+                    // explicit comma.
+                    self.skip_trivia();
+                    expect_value = true;
                     continue;
                 }
                 _ => return Ok(out),

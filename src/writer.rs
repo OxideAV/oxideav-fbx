@@ -375,6 +375,13 @@ fn write_property(prop: &FbxProperty, out: &mut Vec<u8>, opts: &WriterOptions) -
             let raw: Vec<u8> = arr.iter().map(|&v| if v { 1u8 } else { 0u8 }).collect();
             write_array_body(out, arr.len(), &raw, opts);
         }
+        FbxProperty::ByteArray(arr) => {
+            // `c` — 1-byte elements; width pinned from the staged
+            // box-binary-v7500.fbx `ImageData` record (ArrayLength ==
+            // decompressed byte count).
+            out.push(b'c');
+            write_array_body(out, arr.len(), arr, opts);
+        }
         // -- Special types (Gessler §"Special types") --
         FbxProperty::String(bytes) => {
             out.push(b'S');

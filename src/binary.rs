@@ -122,6 +122,15 @@ pub enum FbxProperty {
     I32Array(Vec<i32>),
     /// `b` — array of bools (1 byte per element).
     BoolArray(Vec<bool>),
+    /// `c` — array of raw bytes (1 byte per element). Part of the
+    /// documented type-code alphabet (`docs/3d/fbx/README.md`
+    /// "Property type codes"); the element width is pinned from the
+    /// staged `fixtures/box-binary-v7500.fbx` bytes, whose
+    /// `ImageData` record carries `ArrayLength = 12288` deflating to
+    /// exactly 12288 bytes (1 byte/element). Kept distinct from
+    /// [`FbxProperty::BoolArray`]: the observed payload is `0xff`
+    /// pixel bytes, not booleans.
+    ByteArray(Vec<u8>),
     /// `S` — length-prefixed string, raw bytes (NOT NUL-terminated).
     String(Vec<u8>),
     /// `R` — length-prefixed raw binary blob.
@@ -587,6 +596,11 @@ fn read_property(bytes: &[u8], off: usize) -> Result<(FbxProperty, usize)> {
             p = next;
             let out: Vec<bool> = data.iter().map(|&b| b != 0).collect();
             FbxProperty::BoolArray(out)
+        }
+        b'c' => {
+            let (data, next) = read_array_payload(bytes, p, 1)?;
+            p = next;
+            FbxProperty::ByteArray(data)
         }
         // -- Special types (Gessler §"Special types") --
         b'S' => {

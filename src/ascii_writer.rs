@@ -395,6 +395,15 @@ fn write_scalar(p: &FbxProperty, out: &mut Vec<u8>) -> Result<()> {
                  cannot round-trip through ASCII)",
             ));
         }
+        // `c` byte arrays are binary-only, like `R` blobs: no ASCII
+        // grammar form is observed or documented for them.
+        FbxProperty::ByteArray(_) => {
+            return Err(Error::invalid(
+                "ascii FBX writer: `c` byte array has no ASCII representation \
+                 (binary-only type code; the §6 typed-array shorthand covers \
+                 numeric arrays only)",
+            ));
+        }
         // Arrays at the scalar slot are a writer bug — the dispatcher
         // in `write_node` should have routed them through
         // `write_array_node`.

@@ -22,8 +22,11 @@ clean-room from third-party documentation:
 
 - Binary container reader: 27-byte header, recursive Node Record
   walker (32-bit pre-7500, 64-bit ≥ 7500), full property type-code
-  dispatch (`Y` `C` `I` `F` `D` `L` scalars, `f` `d` `l` `i` `b`
-  arrays incl. zlib-deflated via `compcol` — the inflate path is
+  dispatch (`Y` `C` `I` `F` `D` `L` scalars, `f` `d` `l` `i` `b` `c`
+  arrays — `c` is the raw-byte array of the documented type-code
+  alphabet (`docs/3d/fbx/README.md`), its 1-byte element width pinned
+  from the staged box-binary-v7500.fbx thumbnail `ImageData` record —
+  incl. zlib-deflated via `compcol` — the inflate path is
   bounded at the array's known post-inflate size so a hostile
   `CompressedLength` cannot expand into a decompression bomb — `S` /
   `R` strings & blobs). The `C` boolean wire byte follows the
@@ -735,7 +738,12 @@ the partial-support edges and the not-yet-implemented surfaces.
   needs verbatim for `PolygonVertexIndex` / `UVIndex` / `Materials`)
   and fall back to `I64Array` when any element overflows (matching
   the binary `l` variant the animation module's KTime puller
-  accepts). Bytes matching neither the binary magic nor the ASCII
+  accepts). A comma may be followed by a line break before the next
+  value — the continuation form the staged
+  texture-video-ascii-v7500.fbx fixture demonstrates on its
+  embedded-media record (`Content: ,` with the base64 string on the
+  following line) — so SDK-written embedded-texture files parse.
+  Bytes matching neither the binary magic nor the ASCII
   banner return a single sniff-failure error. The ASCII writer is
   described under "ASCII writer" above.
 - Encoder lossy edges —

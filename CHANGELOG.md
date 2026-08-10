@@ -108,6 +108,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Residual per doc §5: `FbxSkeleton` / `FbxNull` /
   `FbxBlendShapeChannel` bodies are unobserved on the wire.
 
+- Round 439 — **staged-corpus validation suite + two decode gaps it
+  exposed.** New docs-fixture tests (skip-cleanly-when-absent; the
+  corpus stays in the docs repo) covering the freshly staged
+  `box-binary-v7500.fbx` (64-bit node records; footer id matching
+  the `fbx-binary-properties70.md` §2a table; typed-tree re-encode
+  closure raw and re-deflated) and the
+  `cubes-pivots-ascii-v7500.fbx` §1.1 differential pair (the pivot
+  block composes to identity on the doc's named cube — `Soff +
+  (I−S)·Sp = 0` verified at 1e-12, composed transform equal to the
+  authored `Lcl` triple and to the pivot-free export's counterpart),
+  plus per-fixture §4a axis decoding, typed-tree round-trip and
+  full-decode sweeps across all seven staged files. Landing the
+  sweep surfaced and fixed two gaps:
+  - the **`c` (raw-byte) array type code** — part of the documented
+    alphabet (`docs/3d/fbx/README.md`), element width pinned from
+    the staged v7500 thumbnail `ImageData` bytes (ArrayLength ==
+    decompressed byte count) — now decodes to the new
+    `FbxProperty::ByteArray` and re-encodes through the binary
+    writer (binary-only, like `R`: the ASCII writer reports it
+    cleanly as unrepresentable);
+  - the ASCII **comma-continuation** form — the SDK writes
+    embedded-media records as `Content: ,` with the (large, base64)
+    quoted string on the following line; after an explicit comma the
+    value list now continues across newlines, so SDK-written
+    embedded-texture ASCII files parse.
+
 - Round 436 — **full node-transform chain composition on decode.**
   The freshly staged `docs/3d/fbx/fbx-node-transform-chain.md` §1
   documents the local-transform product
