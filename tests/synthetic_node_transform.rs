@@ -254,3 +254,115 @@ fn model_transform_chain_composes_through_binary_decoder() {
     );
     assert!(!ord.extras.contains_key("fbx:transform_incomplete"));
 }
+
+/// End-to-end `InheritType` composition (round 439): wire enum ints
+/// on the `Model` P-records reach `extras["fbx:inherit_type"]`
+/// through the binary decoder, and `inherit::world_transforms`
+/// applies the doc §4 products per node.
+///
+/// A parent with non-uniform scale carries three children, one per
+/// documented mode; the leaf worlds are checked against the mode
+/// semantics (`docs/3d/fbx/fbx-node-transform-chain.md` §4):
+/// mode 1 = naive concatenation, mode 2 = parent local scale
+/// stripped from the linear block, mode 0 = parent scale applied
+/// after the child rotation.
+#[test]
+fn inherit_type_composes_through_binary_decoder() {
+    use oxideav_fbx::inherit;
+
+    let parent = model_with_props(
+        800,
+        "Parent",
+        properties70(vec![p_vec3("Lcl Scaling", "Lcl Scaling", [2.0, 3.0, 4.0])]),
+    );
+    // Each child: translation (1,0,0), 90° Z rotation, one mode each.
+    let child = |id: i64, name: &str, mode: i32| {
+        model_with_props(
+            id,
+            name,
+            properties70(vec![
+                p_vec3("Lcl Translation", "Lcl Translation", [1.0, 0.0, 0.0]),
+                p_vec3("Lcl Rotation", "Lcl Rotation", [0.0, 0.0, 90.0]),
+                p_enum("InheritType", mode),
+            ]),
+        )
+    };
+    let objects = FbxNode {
+        name: "Objects".into(),
+        properties: Vec::new(),
+        children: vec![
+            parent,
+            child(801, "ModeRrSs", 0),
+            child(802, "ModeRSrs", 1),
+            child(803, "ModeRrs", 2),
+        ],
+    };
+    let conns = FbxNode {
+        name: "Connections".into(),
+        properties: Vec::new(),
+        children: vec![c_oo(800, 0), c_oo(801, 800), c_oo(802, 800), c_oo(803, 800)],
+    };
+    let doc = FbxDocument {
+        version: 7500,
+        root: FbxNode {
+            name: String::new(),
+            properties: Vec::new(),
+            children: vec![objects, conns],
+        },
+    };
+
+    let bytes = write_document(&doc).expect("encode synthetic doc");
+    let scene = FbxDecoder::new().decode(&bytes).expect("decode");
+
+    let node_named = |name: &str| {
+        scene
+            .nodes
+            .iter()
+            .position(|n| n.name.as_deref() == Some(name))
+            .map(|i| oxideav_mesh3d::NodeId(i as u32))
+            .expect(name)
+    };
+    // Wire ints surfaced: mode 0 is the template default (silent),
+    // 1 and 2 explicit.
+    let n0 = node_named("ModeRrSs");
+    let n1 = node_named("ModeRSrs");
+    let n2 = node_named("ModeRrs");
+    let inherit_of = |nid: oxideav_mesh3d::NodeId| {
+        scene.nodes[nid.0 as usize]
+            .extras
+            .get("fbx:inherit_type")
+            .and_then(|v| v.as_i64())
+    };
+    assert_eq!(inherit_of(n0), None);
+    assert_eq!(inherit_of(n1), Some(1));
+    assert_eq!(inherit_of(n2), Some(2));
+
+    let worlds = inherit::world_transforms(&scene);
+    assert_eq!(worlds.len(), 4);
+
+    // All three children translate identically: parent world applied
+    // to (1,0,0) = (2,0,0).
+    for nid in [n0, n1, n2] {
+        let w = worlds[&nid];
+        assert!((w[0][3] - 2.0).abs() < 1e-6, "{w:?}");
+        assert!(w[1][3].abs() < 1e-6 && w[2][3].abs() < 1e-6);
+    }
+
+    // Mode 1 (naive): RS = P_S · L_R — column 0 (image of +X) is
+    // rotated then scaled in parent space: +X → +Y·3.
+    let w1 = worlds[&n1];
+    assert!((w1[1][0] - 3.0).abs() < 1e-6, "{w1:?}");
+    assert!((w1[0][1] + 2.0).abs() < 1e-6, "{w1:?}");
+
+    // Mode 0 (RrSs): RS = L_R · P_S — scaled in child space first:
+    // column 0 = L_R · (2·e_x) = 2·e_y.
+    let w0 = worlds[&n0];
+    assert!((w0[1][0] - 2.0).abs() < 1e-6, "{w0:?}");
+    assert!((w0[0][1] + 3.0).abs() < 1e-6, "{w0:?}");
+
+    // Mode 2 (Rrs): the parent's local scale is divided back out —
+    // the linear block is the bare 90° rotation.
+    let w2 = worlds[&n2];
+    assert!((w2[1][0] - 1.0).abs() < 1e-6, "{w2:?}");
+    assert!((w2[0][1] + 1.0).abs() < 1e-6, "{w2:?}");
+}

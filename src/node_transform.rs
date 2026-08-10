@@ -64,10 +64,13 @@
 //!
 //! ## InheritType
 //!
-//! The doc §4 leaves the per-inherit-type world-transform formula
-//! open, so a non-zero `InheritType` is surfaced raw on
-//! `extras["fbx:inherit_type"]` (and re-emitted on encode) without
-//! this crate interpreting it.
+//! `InheritType` selects how the **parent's** rotation and scale
+//! propagate — a world-transform concern, not part of this module's
+//! local composition. A non-zero value surfaces raw on
+//! `extras["fbx:inherit_type"]` (and re-emits on encode); the doc §4
+//! per-type composition products are implemented by
+//! [`crate::inherit`] (`inherit::world_transforms` walks a decoded
+//! scene honouring them).
 
 use std::collections::HashMap;
 
@@ -587,8 +590,8 @@ fn decode_local_transform(props: &PropertyMap) -> DecodedTransform {
         extras.push(("fbx:geometric_scaling".to_string(), json_vec3(geo_s)));
     }
 
-    // InheritType (doc §4 item 3 — formula per type undocumented):
-    // surfaced raw, uninterpreted, when non-default.
+    // InheritType (doc §4) — a world-composition selector, surfaced
+    // raw when non-default; `crate::inherit` consumes it.
     if let Some(inherit) = props.as_enum("InheritType") {
         if inherit != 0 {
             extras.push((

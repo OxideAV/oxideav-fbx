@@ -236,6 +236,11 @@ pub mod globals;
 /// [`oxideav_mesh3d::Scene3D::extras`] per
 /// `docs/3d/fbx/fbx-ascii-grammar.md` §7a (round 335).
 pub mod header_info;
+/// `InheritType` world-transform composition — the three documented
+/// parent-scale propagation rules
+/// (`docs/3d/fbx/fbx-node-transform-chain.md` §4) applied over a
+/// decoded scene graph (round 439).
+pub mod inherit;
 /// `NodeAttribute` (`Light` / `Camera`) surfacing onto [`oxideav_mesh3d`]
 /// (round 207).
 pub mod lights_cameras;

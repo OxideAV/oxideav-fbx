@@ -28,6 +28,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sentinel); round-tripped extras still win verbatim. New public
   surface: `globals::{axis_from_ints, axis_to_ints}`.
 
+- Round 439 — **`InheritType` world-transform composition.** The
+  `docs/3d/fbx/fbx-node-transform-chain.md` §4 products (previously
+  the doc's open item, so the crate only surfaced the raw enum) are
+  now implemented by the new `inherit` module:
+  `InheritType::{RrSs, RSrs, Rrs}` with the pinned `0`/`1`/`2` wire
+  ints, `inherit_type_of` reading the decode-side
+  `extras["fbx:inherit_type"]` surface, `compose_world` applying one
+  step of the mode table (`0`: `P_R·L_R·P_S·L_S`; `1`:
+  `P_R·P_S·L_R·L_S` — exactly naive matrix concatenation, which is
+  why ordinary Maya exports, whose Models carry `InheritType = 1`,
+  render correctly under plain scene-graph composition; `2`:
+  `P_R·L_R·(P_S·p_s⁻¹)·L_S`), and `world_transforms(&scene)` walking
+  a decoded scene graph. Translation stays outside the product in
+  all modes (parent's full world matrix applied to the §1
+  chain-local translation); chain-bearing nodes recompose their
+  authored `fbx:lcl_*` extras at f64 precision; the §2 geometric TRS
+  stays excluded (post-multiply
+  `node_transform::geometric_transform` for the node's own mesh).
+  Verified in-tree against the literal §4 matrix products and
+  end-to-end through the binary decoder (three siblings, one per
+  mode, under a non-uniformly-scaled parent).
+
 - Round 436 — **full node-transform chain composition on decode.**
   The freshly staged `docs/3d/fbx/fbx-node-transform-chain.md` §1
   documents the local-transform product

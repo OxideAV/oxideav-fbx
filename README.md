@@ -79,8 +79,16 @@ clean-room from third-party documentation:
   and `node_transform::geometric_transform` rebuilds the
   `OT · OR · OS` product to post-multiply onto the node's world
   matrix for that node's own mesh. A non-default `InheritType`
-  surfaces raw on `extras["fbx:inherit_type"]` (the per-type
-  world-transform formula is the doc's §4 open item). Only a
+  surfaces raw on `extras["fbx:inherit_type"]`, and the **doc §4
+  composition products are implemented** by the `inherit` module:
+  `inherit::world_transforms(&scene)` walks a decoded scene applying
+  the three documented parent-scale propagation rules per node
+  (`0` `RrSs` = `P_R·L_R·P_S·L_S`, `1` `RSrs` = `P_R·P_S·L_R·L_S` —
+  exactly naive matrix concatenation, the value ordinary Maya exports
+  carry — and `2` `Rrs` = `P_R·L_R·(P_S·p_s⁻¹)·L_S`), with the
+  translation riding the parent's full world matrix in all three
+  modes and chain-bearing nodes recomposed from their authored
+  `fbx:lcl_*` extras at f64 precision. Only a
   `RotationOrder` enum int outside the documented `0..=6` table
   leaves a node at identity, with
   `extras["fbx:transform_incomplete"] = "rotation_order_unrecognized"`.
