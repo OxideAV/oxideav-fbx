@@ -610,9 +610,20 @@ clean-room from third-party documentation:
   to binary or ASCII. The `Definitions` census is derived from the
   actually-emitted `Objects` tree (every class counted,
   `GlobalSettings` participating as in the fixture) and carries the
-  five fixture-staged `PropertyTemplate` default sets (`FbxAnimStack`
-  / `FbxAnimLayer` / `FbxMesh` / `FbxSurfaceLambert` / `FbxNode`);
-  unstaged classes stay count-only.
+  nine fixture-staged `PropertyTemplate` default sets — `FbxAnimStack`
+  / `FbxAnimLayer` / `FbxMesh` / `FbxSurfaceLambert` / `FbxNode` from
+  cubes-ascii-v7500.fbx plus, per
+  `docs/3d/fbx/fbx-property-templates.md` §3, `FbxFileTexture` (16
+  records) / `FbxVideo` (20) / `FbxAnimCurveNode` (the single
+  value-less `d` Compound) and the 106-record `FbxCamera` body,
+  the latter emitted for `NodeAttribute` exactly when every attribute
+  in the document is a `Camera` (the doc §2 rule 2 concrete-class /
+  no-template-on-mixture behaviour). `Deformer` / `Pose` /
+  `AnimationCurve` stay count-only **by rule**, not by gap (doc §2
+  rule 1 — those classes declare no FBX properties, so no producer
+  ever writes a template for them); `Constraint` re-emits its
+  round-tripped one-template-per-kind set (see the Constraints
+  bullet).
   - **Geometry** — one `Geometry` per mesh (per-corner `Vertices` +
     sequential-triangle `PolygonVertexIndex`), with one
     `LayerElementNormal` per normal buffer, one `LayerElementUV` per
@@ -731,11 +742,15 @@ the partial-support edges and the not-yet-implemented surfaces.
   `Mesh::weights` static per-target morph weights have no FBX
   read-back home (the decode side initialises them to `0.0`);
   multi-primitive meshes skip the extras-borne extra-layer
-  re-emission (no unambiguous per-primitive concatenation); classes
-  without a fixture-staged template body (Texture / Video /
-  NodeAttribute / Deformer / AnimationCurveNode / AnimationCurve)
-  emit count-only `Definitions` blocks — synthesising their default
-  sets needs the template bodies staged in `docs/3d/fbx/`.
+  re-emission (no unambiguous per-primitive concatenation). The
+  `Definitions` template gap is closed: every class with a staged
+  body emits it (see the encoder bullet above) and the count-only
+  remainder (`Deformer` / `Pose` / `AnimationCurve`; `NodeAttribute`
+  on a mixed attribute set) is the **documented producer behaviour**,
+  not a gap — the only unobserved bodies left are `FbxSkeleton` /
+  `FbxNull` / `FbxBlendShapeChannel`
+  (`docs/3d/fbx/fbx-property-templates.md` §5, needing
+  differently-shaped exports).
 - Binary footer id derivation — the footer's structure round-trips
   byte-faithfully (see the "Binary footer" bullet above), but the
   16-byte per-file id's *derivation* is undocumented by every staged

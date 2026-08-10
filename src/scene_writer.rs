@@ -993,6 +993,20 @@ fn build_definitions(objects: &FbxNode, scene: &Scene3D) -> FbxNode {
         }
     }
 
+    // `NodeAttribute` follows `fbx-property-templates.md` §2 rule 2:
+    // the template is named for the *concrete* attribute class, and a
+    // file whose attributes are a mixture of kinds gets **no**
+    // template rather than choosing one. The concrete body staged in
+    // the docs is `FbxCamera` (§3.5), so it is emitted exactly when
+    // every emitted `NodeAttribute` is a `"Camera"`.
+    let mut node_attr_subtypes = objects
+        .children
+        .iter()
+        .filter(|c| c.name == "NodeAttribute")
+        .map(|c| c.properties.get(2).and_then(FbxProperty::as_str));
+    let node_attr_all_camera = objects.children.iter().any(|c| c.name == "NodeAttribute")
+        && node_attr_subtypes.all(|s| s == Some("Camera"));
+
     let mut push_class = |class: &str, count: usize| {
         let mut ot_children = vec![FbxNode {
             name: "Count".to_string(),
@@ -1010,6 +1024,10 @@ fn build_definitions(objects: &FbxNode, scene: &Scene3D) -> FbxNode {
         // `fbx:constraint_templates` extras.
         if class == "Constraint" {
             ot_children.extend(crate::constraint::constraint_template_nodes(scene));
+        } else if class == "NodeAttribute" {
+            if node_attr_all_camera {
+                ot_children.push(template_node("FbxCamera", FBX_CAMERA_TEMPLATE));
+            }
         } else if let Some(template) = class_property_template(class) {
             ot_children.push(template);
         }
@@ -1059,21 +1077,36 @@ type TRecord = (&'static str, &'static str, &'static str, &'static str, TDef);
 
 /// `PropertyTemplate: "<template>" { Properties70 { ... } }` — the
 /// §7b class-default property set for the classes whose template
-/// bodies the staged `docs/3d/fbx/fixtures/cubes-ascii-v7500.fbx`
-/// fixture carries verbatim (`FbxAnimStack` / `FbxAnimLayer` /
-/// `FbxMesh` / `FbxSurfaceLambert` / `FbxNode`). Classes without a
-/// staged template body (Texture / Video / NodeAttribute / Deformer /
-/// AnimationCurveNode / AnimationCurve) stay count-only rather than
-/// inventing a default set the docs don't provide.
+/// bodies the staged fixtures carry verbatim: `FbxAnimStack` /
+/// `FbxAnimLayer` / `FbxMesh` / `FbxSurfaceLambert` / `FbxNode` from
+/// `docs/3d/fbx/fixtures/cubes-ascii-v7500.fbx`, plus — per
+/// `docs/3d/fbx/fbx-property-templates.md` §3 — `FbxFileTexture`
+/// (§3.1) / `FbxVideo` (§3.2) / `FbxAnimCurveNode` (§3.3) from
+/// `texture-video-ascii-v7500.fbx` and `FbxCamera` (§3.5) from
+/// `camera-attr-binary-v7400.fbx`. `Deformer` / `Pose` /
+/// `AnimationCurve` stay count-only **by rule**, not by gap: the
+/// doc's §2 rule 1 establishes those classes declare no FBX
+/// properties, so no producer ever writes a template for them.
+/// `NodeAttribute` follows the §2 rule 2 concrete-class behaviour —
+/// see [`build_definitions`].
 fn class_property_template(class: &str) -> Option<FbxNode> {
     let (template_name, records) = match class {
         "AnimationStack" => ("FbxAnimStack", FBX_ANIM_STACK_TEMPLATE),
         "AnimationLayer" => ("FbxAnimLayer", FBX_ANIM_LAYER_TEMPLATE),
+        "AnimationCurveNode" => ("FbxAnimCurveNode", FBX_ANIM_CURVE_NODE_TEMPLATE),
         "Geometry" => ("FbxMesh", FBX_MESH_TEMPLATE),
         "Material" => ("FbxSurfaceLambert", FBX_SURFACE_LAMBERT_TEMPLATE),
         "Model" => ("FbxNode", FBX_NODE_TEMPLATE),
+        "Texture" => ("FbxFileTexture", FBX_FILE_TEXTURE_TEMPLATE),
+        "Video" => ("FbxVideo", FBX_VIDEO_TEMPLATE),
         _ => return None,
     };
+    Some(template_node(template_name, records))
+}
+
+/// Materialise one `PropertyTemplate` node from a static
+/// [`TRecord`] table.
+fn template_node(template_name: &str, records: &[TRecord]) -> FbxNode {
     let ps: Vec<FbxNode> = records
         .iter()
         .map(|&(name, type_name, label, flags, def)| {
@@ -1102,7 +1135,7 @@ fn class_property_template(class: &str) -> Option<FbxNode> {
             }
         })
         .collect();
-    Some(FbxNode {
+    FbxNode {
         name: "PropertyTemplate".to_string(),
         properties: vec![FbxProperty::String(template_name.as_bytes().to_vec())],
         children: vec![FbxNode {
@@ -1110,7 +1143,7 @@ fn class_property_template(class: &str) -> Option<FbxNode> {
             properties: Vec::new(),
             children: ps,
         }],
-    })
+    }
 }
 
 /// `ObjectType: "AnimationStack" { PropertyTemplate: "FbxAnimStack" }`
@@ -1135,6 +1168,250 @@ const FBX_ANIM_LAYER_TEMPLATE: &[TRecord] = &[
     ("RotationAccumulationMode", "enum", "", "", TDef::I(0)),
     ("ScaleAccumulationMode", "enum", "", "", TDef::I(0)),
     ("BlendModeBypass", "ULongLong", "", "", TDef::L(0)),
+];
+
+/// `ObjectType: "AnimationCurveNode" { PropertyTemplate:
+/// "FbxAnimCurveNode" }` default set —
+/// `docs/3d/fbx/fbx-property-templates.md` §3.3, identical in the
+/// two staged producers' fixtures: the whole template is the single
+/// value-less compound property `d` (the real channels are authored
+/// on the object as `d|X` / `d|Y` / `d|Z` / `d|DeformPercent`
+/// children of it, so there is nothing to default).
+const FBX_ANIM_CURVE_NODE_TEMPLATE: &[TRecord] = &[("d", "Compound", "", "", TDef::None)];
+
+/// `ObjectType: "Texture" { PropertyTemplate: "FbxFileTexture" }`
+/// default set — `docs/3d/fbx/fbx-property-templates.md` §3.1
+/// (16 records, from the staged `texture-video-ascii-v7500.fbx`
+/// producer rendition; note `"Texture alpha"`, a property name
+/// containing a space — names are free-form strings). Per the doc §5
+/// caveat, template bodies are producer renditions rather than a
+/// normative table; this is the staged one.
+const FBX_FILE_TEXTURE_TEMPLATE: &[TRecord] = &[
+    ("TextureTypeUse", "enum", "", "", TDef::I(0)),
+    ("Texture alpha", "Number", "", "A", TDef::D(1.0)),
+    ("CurrentMappingType", "enum", "", "", TDef::I(0)),
+    ("WrapModeU", "enum", "", "", TDef::I(0)),
+    ("WrapModeV", "enum", "", "", TDef::I(0)),
+    ("UVSwap", "bool", "", "", TDef::I(0)),
+    ("PremultiplyAlpha", "bool", "", "", TDef::I(1)),
+    ("Translation", "Vector", "", "A", TDef::V(0.0, 0.0, 0.0)),
+    ("Rotation", "Vector", "", "A", TDef::V(0.0, 0.0, 0.0)),
+    ("Scaling", "Vector", "", "A", TDef::V(1.0, 1.0, 1.0)),
+    (
+        "TextureRotationPivot",
+        "Vector3D",
+        "Vector",
+        "",
+        TDef::V(0.0, 0.0, 0.0),
+    ),
+    (
+        "TextureScalingPivot",
+        "Vector3D",
+        "Vector",
+        "",
+        TDef::V(0.0, 0.0, 0.0),
+    ),
+    ("CurrentTextureBlendMode", "enum", "", "", TDef::I(1)),
+    ("UVSet", "KString", "", "", TDef::S("default")),
+    ("UseMaterial", "bool", "", "", TDef::I(0)),
+    ("UseMipMap", "bool", "", "", TDef::I(0)),
+];
+
+/// `ObjectType: "Video" { PropertyTemplate: "FbxVideo" }` default
+/// set — `docs/3d/fbx/fbx-property-templates.md` §3.2 (20 records,
+/// staged `texture-video-ascii-v7500.fbx` producer rendition).
+const FBX_VIDEO_TEMPLATE: &[TRecord] = &[
+    ("Path", "KString", "XRefUrl", "", TDef::S("")),
+    ("RelPath", "KString", "XRefUrl", "", TDef::S("")),
+    ("Color", "ColorRGB", "Color", "", TDef::V(0.8, 0.8, 0.8)),
+    ("ClipIn", "KTime", "Time", "", TDef::L(0)),
+    ("ClipOut", "KTime", "Time", "", TDef::L(0)),
+    ("Offset", "KTime", "Time", "", TDef::L(0)),
+    ("PlaySpeed", "double", "Number", "", TDef::D(0.0)),
+    ("FreeRunning", "bool", "", "", TDef::I(0)),
+    ("Loop", "bool", "", "", TDef::I(0)),
+    ("Mute", "bool", "", "", TDef::I(0)),
+    ("AccessMode", "enum", "", "", TDef::I(0)),
+    ("ImageSequence", "bool", "", "", TDef::I(0)),
+    ("ImageSequenceOffset", "int", "Integer", "", TDef::I(0)),
+    ("FrameRate", "double", "Number", "", TDef::D(0.0)),
+    ("LastFrame", "int", "Integer", "", TDef::I(0)),
+    ("Width", "int", "Integer", "", TDef::I(0)),
+    ("Height", "int", "Integer", "", TDef::I(0)),
+    ("StartFrame", "int", "Integer", "", TDef::I(0)),
+    ("StopFrame", "int", "Integer", "", TDef::I(0)),
+    ("InterlaceMode", "enum", "", "", TDef::I(0)),
+];
+
+/// `ObjectType: "NodeAttribute" { PropertyTemplate: "FbxCamera" }`
+/// default set — `docs/3d/fbx/fbx-property-templates.md` §3.5 (106
+/// records, staged `camera-attr-binary-v7400.fbx` producer
+/// rendition). Emitted only when every `NodeAttribute` in the
+/// document is a `"Camera"` — the §2 rule 2 concrete-class /
+/// no-template-on-mixture behaviour. `"Background Texture"` /
+/// `"Foreground Texture"` are value-less `object` slots (filled by
+/// `OP` connections, the same mechanism constraint targets use).
+const FBX_CAMERA_TEMPLATE: &[TRecord] = &[
+    ("Color", "ColorRGB", "Color", "", TDef::V(0.8, 0.8, 0.8)),
+    ("Position", "Vector", "", "A", TDef::V(0.0, 0.0, -50.0)),
+    ("UpVector", "Vector", "", "A", TDef::V(0.0, 1.0, 0.0)),
+    (
+        "InterestPosition",
+        "Vector",
+        "",
+        "A",
+        TDef::V(0.0, 0.0, 0.0),
+    ),
+    ("Roll", "Roll", "", "A", TDef::D(0.0)),
+    ("OpticalCenterX", "OpticalCenterX", "", "A", TDef::D(0.0)),
+    ("OpticalCenterY", "OpticalCenterY", "", "A", TDef::D(0.0)),
+    (
+        "BackgroundColor",
+        "Color",
+        "",
+        "A",
+        TDef::V(0.63, 0.63, 0.63),
+    ),
+    ("TurnTable", "Number", "", "A", TDef::D(0.0)),
+    ("DisplayTurnTableIcon", "bool", "", "", TDef::I(0)),
+    ("UseMotionBlur", "bool", "", "", TDef::I(0)),
+    ("UseRealTimeMotionBlur", "bool", "", "", TDef::I(1)),
+    ("Motion Blur Intensity", "Number", "", "A", TDef::D(1.0)),
+    ("AspectRatioMode", "enum", "", "", TDef::I(0)),
+    ("AspectWidth", "double", "Number", "", TDef::D(320.0)),
+    ("AspectHeight", "double", "Number", "", TDef::D(200.0)),
+    ("PixelAspectRatio", "double", "Number", "", TDef::D(1.0)),
+    ("FilmOffsetX", "Number", "", "A", TDef::D(0.0)),
+    ("FilmOffsetY", "Number", "", "A", TDef::D(0.0)),
+    ("FilmWidth", "double", "Number", "", TDef::D(0.816)),
+    ("FilmHeight", "double", "Number", "", TDef::D(0.612)),
+    (
+        "FilmAspectRatio",
+        "double",
+        "Number",
+        "",
+        TDef::D(1.3333333333333333),
+    ),
+    ("FilmSqueezeRatio", "double", "Number", "", TDef::D(1.0)),
+    ("FilmFormatIndex", "enum", "", "", TDef::I(0)),
+    ("PreScale", "Number", "", "A", TDef::D(1.0)),
+    ("FilmTranslateX", "Number", "", "A", TDef::D(0.0)),
+    ("FilmTranslateY", "Number", "", "A", TDef::D(0.0)),
+    ("FilmRollPivotX", "Number", "", "A", TDef::D(0.0)),
+    ("FilmRollPivotY", "Number", "", "A", TDef::D(0.0)),
+    ("FilmRollValue", "Number", "", "A", TDef::D(0.0)),
+    ("FilmRollOrder", "enum", "", "", TDef::I(0)),
+    ("ApertureMode", "enum", "", "", TDef::I(2)),
+    ("GateFit", "enum", "", "", TDef::I(0)),
+    (
+        "FieldOfView",
+        "FieldOfView",
+        "",
+        "A",
+        TDef::D(25.114999771118164),
+    ),
+    ("FieldOfViewX", "FieldOfViewX", "", "A", TDef::D(40.0)),
+    ("FieldOfViewY", "FieldOfViewY", "", "A", TDef::D(40.0)),
+    ("FocalLength", "Number", "", "A", TDef::D(34.89327621672628)),
+    ("CameraFormat", "enum", "", "", TDef::I(0)),
+    ("UseFrameColor", "bool", "", "", TDef::I(0)),
+    (
+        "FrameColor",
+        "ColorRGB",
+        "Color",
+        "",
+        TDef::V(0.3, 0.3, 0.3),
+    ),
+    ("ShowName", "bool", "", "", TDef::I(1)),
+    ("ShowInfoOnMoving", "bool", "", "", TDef::I(1)),
+    ("ShowGrid", "bool", "", "", TDef::I(1)),
+    ("ShowOpticalCenter", "bool", "", "", TDef::I(0)),
+    ("ShowAzimut", "bool", "", "", TDef::I(1)),
+    ("ShowTimeCode", "bool", "", "", TDef::I(0)),
+    ("ShowAudio", "bool", "", "", TDef::I(0)),
+    (
+        "AudioColor",
+        "Vector3D",
+        "Vector",
+        "",
+        TDef::V(0.0, 1.0, 0.0),
+    ),
+    ("NearPlane", "double", "Number", "", TDef::D(10.0)),
+    ("FarPlane", "double", "Number", "", TDef::D(4000.0)),
+    ("AutoComputeClipPanes", "bool", "", "", TDef::I(0)),
+    ("ViewCameraToLookAt", "bool", "", "", TDef::I(1)),
+    ("ViewFrustumNearFarPlane", "bool", "", "", TDef::I(0)),
+    ("ViewFrustumBackPlaneMode", "enum", "", "", TDef::I(2)),
+    ("BackPlaneDistance", "Number", "", "A", TDef::D(4000.0)),
+    ("BackPlaneDistanceMode", "enum", "", "", TDef::I(1)),
+    ("ViewFrustumFrontPlaneMode", "enum", "", "", TDef::I(2)),
+    ("FrontPlaneDistance", "Number", "", "A", TDef::D(10.0)),
+    ("FrontPlaneDistanceMode", "enum", "", "", TDef::I(1)),
+    ("LockMode", "bool", "", "", TDef::I(0)),
+    ("LockInterestNavigation", "bool", "", "", TDef::I(0)),
+    ("FitImage", "bool", "", "", TDef::I(0)),
+    ("Crop", "bool", "", "", TDef::I(0)),
+    ("Center", "bool", "", "", TDef::I(1)),
+    ("KeepRatio", "bool", "", "", TDef::I(1)),
+    (
+        "BackgroundAlphaTreshold",
+        "double",
+        "Number",
+        "",
+        TDef::D(0.5),
+    ),
+    ("ShowBackplate", "bool", "", "", TDef::I(1)),
+    ("BackPlaneOffsetX", "Number", "", "A", TDef::D(0.0)),
+    ("BackPlaneOffsetY", "Number", "", "A", TDef::D(0.0)),
+    ("BackPlaneRotation", "Number", "", "A", TDef::D(0.0)),
+    ("BackPlaneScaleX", "Number", "", "A", TDef::D(1.0)),
+    ("BackPlaneScaleY", "Number", "", "A", TDef::D(1.0)),
+    ("Background Texture", "object", "", "", TDef::None),
+    ("FrontPlateFitImage", "bool", "", "", TDef::I(1)),
+    ("FrontPlateCrop", "bool", "", "", TDef::I(0)),
+    ("FrontPlateCenter", "bool", "", "", TDef::I(1)),
+    ("FrontPlateKeepRatio", "bool", "", "", TDef::I(1)),
+    ("Foreground Opacity", "double", "Number", "", TDef::D(1.0)),
+    ("ShowFrontplate", "bool", "", "", TDef::I(1)),
+    ("FrontPlaneOffsetX", "Number", "", "A", TDef::D(0.0)),
+    ("FrontPlaneOffsetY", "Number", "", "A", TDef::D(0.0)),
+    ("FrontPlaneRotation", "Number", "", "A", TDef::D(0.0)),
+    ("FrontPlaneScaleX", "Number", "", "A", TDef::D(1.0)),
+    ("FrontPlaneScaleY", "Number", "", "A", TDef::D(1.0)),
+    ("Foreground Texture", "object", "", "", TDef::None),
+    ("DisplaySafeArea", "bool", "", "", TDef::I(0)),
+    ("DisplaySafeAreaOnRender", "bool", "", "", TDef::I(0)),
+    ("SafeAreaDisplayStyle", "enum", "", "", TDef::I(1)),
+    (
+        "SafeAreaAspectRatio",
+        "double",
+        "Number",
+        "",
+        TDef::D(1.3333333333333333),
+    ),
+    ("Use2DMagnifierZoom", "bool", "", "", TDef::I(0)),
+    ("2D Magnifier Zoom", "Number", "", "A", TDef::D(100.0)),
+    ("2D Magnifier X", "Number", "", "A", TDef::D(50.0)),
+    ("2D Magnifier Y", "Number", "", "A", TDef::D(50.0)),
+    ("CameraProjectionType", "enum", "", "", TDef::I(0)),
+    ("OrthoZoom", "double", "Number", "", TDef::D(1.0)),
+    ("UseRealTimeDOFAndAA", "bool", "", "", TDef::I(0)),
+    ("UseDepthOfField", "bool", "", "", TDef::I(0)),
+    ("FocusSource", "enum", "", "", TDef::I(0)),
+    ("FocusAngle", "double", "Number", "", TDef::D(3.5)),
+    ("FocusDistance", "double", "Number", "", TDef::D(200.0)),
+    ("UseAntialiasing", "bool", "", "", TDef::I(0)),
+    (
+        "AntialiasingIntensity",
+        "double",
+        "Number",
+        "",
+        TDef::D(0.77777),
+    ),
+    ("AntialiasingMethod", "enum", "", "", TDef::I(0)),
+    ("UseAccumulationBuffer", "bool", "", "", TDef::I(0)),
+    ("FrameSamplingCount", "int", "Integer", "", TDef::I(7)),
+    ("FrameSamplingType", "enum", "", "", TDef::I(1)),
 ];
 
 /// `ObjectType: "Geometry" { PropertyTemplate: "FbxMesh" }` default
@@ -3091,9 +3368,93 @@ mod tests {
         let tpl = defs.template_for("Geometry").expect("Geometry template");
         assert_eq!(tpl.as_bool_typed("Primary Visibility"), Some(true));
 
-        // NodeAttribute has no staged template body — count-only.
+        // NodeAttribute for a Light scene — count-only per the
+        // fbx-property-templates.md §2 rule 2 (the staged concrete
+        // body is FbxCamera; a non-camera attribute set gets none).
         let na = defs.get("NodeAttribute").expect("NodeAttribute counted");
         assert_eq!(na.template_name, None);
+        assert!(defs.template_for("NodeAttribute").is_none());
+    }
+
+    /// The `fbx-property-templates.md` §3 bodies staged in round 439:
+    /// Texture → FbxFileTexture (§3.1), Video → FbxVideo (§3.2),
+    /// AnimationCurveNode → FbxAnimCurveNode (§3.3), and the §2
+    /// rule-2 NodeAttribute behaviour — FbxCamera (§3.5) exactly when
+    /// every attribute is a Camera, none on a mixture.
+    #[test]
+    fn staged_template_bodies_for_texture_video_and_camera() {
+        // Embedded-texture scene → Texture + Video elements.
+        let mut scene = Scene3D::new();
+        let mid = scene.add_mesh(triangle_mesh("Tri"));
+        let tex = scene.add_texture(oxideav_mesh3d::Texture::from_encoded(
+            "image/png",
+            vec![0x89, 0x50, 0x4e, 0x47],
+        ));
+        let mut mat = Material::new();
+        mat.base_color_texture = Some(oxideav_mesh3d::TextureRef::new(tex));
+        let matid = scene.add_material(mat);
+        scene.meshes[0].primitives[0].material = Some(matid);
+        let camera = scene.add_camera(oxideav_mesh3d::Camera::Perspective {
+            yfov: 1.0,
+            znear: 0.1,
+            zfar: Some(100.0),
+            aspect_ratio: Some(1.5),
+        });
+        let mut node = Node::new().with_mesh(mid);
+        node.camera = Some(camera);
+        let nid = scene.add_node(node);
+        scene.roots.push(nid);
+
+        let doc = encode_scene(&scene);
+        let defs = crate::definitions::Definitions::from_document(&doc);
+
+        let tpl = defs.template_for("Texture").expect("FbxFileTexture body");
+        assert_eq!(
+            defs.get("Texture").unwrap().template_name.as_deref(),
+            Some("FbxFileTexture")
+        );
+        assert_eq!(tpl.len(), 16);
+        assert_eq!(tpl.as_number("Texture alpha"), Some(1.0)); // space-bearing name
+        assert_eq!(tpl.as_kstring("UVSet"), Some("default"));
+        assert_eq!(tpl.as_enum("CurrentTextureBlendMode"), Some(1));
+
+        let tpl = defs.template_for("Video").expect("FbxVideo body");
+        assert_eq!(
+            defs.get("Video").unwrap().template_name.as_deref(),
+            Some("FbxVideo")
+        );
+        assert_eq!(tpl.len(), 20);
+        assert_eq!(tpl.as_ktime("ClipIn"), Some(0));
+        assert_eq!(tpl.as_color_rgb("Color"), Some([0.8, 0.8, 0.8]));
+
+        // All-camera NodeAttribute → the §3.5 FbxCamera body.
+        let tpl = defs
+            .template_for("NodeAttribute")
+            .expect("FbxCamera body for an all-camera attribute set");
+        assert_eq!(
+            defs.get("NodeAttribute").unwrap().template_name.as_deref(),
+            Some("FbxCamera")
+        );
+        assert_eq!(tpl.len(), 106); // §3.5: 106 properties
+        assert_eq!(tpl.as_double("FilmWidth"), Some(0.816));
+        assert_eq!(tpl.as_f64("FieldOfView"), Some(25.114999771118164));
+        assert_eq!(tpl.as_object_ref("Background Texture"), Some(""));
+        assert_eq!(tpl.as_enum("ApertureMode"), Some(2));
+        assert_eq!(tpl.as_int_typed("FrameSamplingCount"), Some(7));
+
+        // Mixture (camera + light) → no NodeAttribute template.
+        let light = scene.add_light(oxideav_mesh3d::Light::Point {
+            color: [1.0, 1.0, 1.0],
+            intensity: 1.0,
+            range: None,
+        });
+        let mut lnode = Node::new();
+        lnode.light = Some(light);
+        let lid = scene.add_node(lnode);
+        scene.roots.push(lid);
+        let doc = encode_scene(&scene);
+        let defs = crate::definitions::Definitions::from_document(&doc);
+        assert!(defs.get("NodeAttribute").is_some());
         assert!(defs.template_for("NodeAttribute").is_none());
     }
 

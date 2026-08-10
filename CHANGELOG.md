@@ -92,6 +92,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   implemented: doc §5 establishes there is no such FBX object class
   (the token only occurs inside MotionBuilder blind-data strings).
 
+- Round 439 — **encoder `Definitions` template gap closed** with the
+  bodies staged by `docs/3d/fbx/fbx-property-templates.md` §3
+  (transcriptions cross-checked record-for-record against the doc):
+  `Texture` → `FbxFileTexture` (16 records, §3.1), `Video` →
+  `FbxVideo` (20 records, §3.2), `AnimationCurveNode` →
+  `FbxAnimCurveNode` (the single value-less `d` Compound, §3.3), and
+  `NodeAttribute` → the 106-record `FbxCamera` body (§3.5) —
+  emitted exactly when every `NodeAttribute` in the document is a
+  `"Camera"`, per the §2 rule 2 concrete-class /
+  no-template-on-mixture producer behaviour. `Deformer` / `Pose` /
+  `AnimationCurve` stay count-only **by rule** (§2 rule 1: the
+  corresponding classes declare no FBX properties, so no producer
+  ever emits a template — previously described as a staging gap).
+  Residual per doc §5: `FbxSkeleton` / `FbxNull` /
+  `FbxBlendShapeChannel` bodies are unobserved on the wire.
+
 - Round 436 — **full node-transform chain composition on decode.**
   The freshly staged `docs/3d/fbx/fbx-node-transform-chain.md` §1
   documents the local-transform product
