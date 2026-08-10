@@ -697,18 +697,56 @@ fn build_takes(scene: &Scene3D) -> Option<FbxNode> {
 /// [`oxideav_mesh3d::Scene3D::unit`] (the decode path's
 /// `unit_from_scale_factor` maps `100.0 → Centimetres` / `1.0 → Metres`;
 /// other units write the factor as `centimetres-per-unit` so the raw
-/// value survives on `extras["fbx:unit_scale_factor"]`). When the scene
-/// carries axis `extras["fbx:up_axis"]` / `["fbx:front_axis"]` /
-/// `["fbx:coord_axis"]` ints (round-tripped from a decoded FBX), they
-/// are re-emitted as `int` P-records so the axis convention survives a
-/// decode→encode→decode cycle.
+/// value survives on `extras["fbx:unit_scale_factor"]`). Axis
+/// convention: round-tripped `extras["fbx:up_axis"]` /
+/// `["fbx:front_axis"]` / `["fbx:coord_axis"]` ints are re-emitted
+/// verbatim; a scene without them synthesises the six `int` records
+/// from the typed `Scene3D::up_axis` / `front_axis` fields via the
+/// `docs/3d/fbx/fbx-node-transform-chain.md` §4a table, so a fresh
+/// scene's axis convention reaches the wire too.
 fn build_global_settings(scene: &Scene3D) -> FbxNode {
     let mut ps: Vec<FbxNode> = Vec::new();
 
-    // Axis ints — re-emit only when the scene actually carries them
-    // (round-tripped from a decoded file). The FBX-int → Axis variant
-    // table is a docs gap, so we don't synthesise them from
-    // `Scene3D::up_axis` / `front_axis` (which would require the table).
+    // Axis ints. Round-tripped `fbx:*_axis*` extras win (they carry
+    // the source file's literal values, `OriginalUpAxis` included);
+    // a scene without them synthesises the six records from the typed
+    // `Scene3D::up_axis` / `front_axis` fields via the
+    // `docs/3d/fbx/fbx-node-transform-chain.md` §4a integer table
+    // (`0 = X`, `1 = Y`, `2 = Z`; signs as separate `±1` ints):
+    // `CoordAxis` is the remaining third index with the `+1` sign
+    // every staged fixture carries, and `OriginalUpAxis` is `−1` —
+    // the §4a *"exporter did not record one"* sentinel. Synthesis is
+    // skipped when up and front share an axis index (degenerate input
+    // the table can't represent).
+    let axis_extras_present = [
+        "fbx:up_axis",
+        "fbx:front_axis",
+        "fbx:coord_axis",
+        "fbx:up_axis_sign",
+        "fbx:front_axis_sign",
+        "fbx:coord_axis_sign",
+    ]
+    .iter()
+    .any(|k| scene.extras.contains_key(*k));
+    if !axis_extras_present {
+        let (up, up_sign) = crate::globals::axis_to_ints(scene.up_axis);
+        let (front, front_sign) = crate::globals::axis_to_ints(scene.front_axis);
+        if up != front {
+            let coord = 3 - up - front;
+            for (name, v) in [
+                ("UpAxis", up),
+                ("UpAxisSign", up_sign),
+                ("FrontAxis", front),
+                ("FrontAxisSign", front_sign),
+                ("CoordAxis", coord),
+                ("CoordAxisSign", 1),
+                ("OriginalUpAxis", -1),
+                ("OriginalUpAxisSign", 1),
+            ] {
+                ps.push(p_int(name, v));
+            }
+        }
+    }
     for (key, name) in [
         ("fbx:up_axis", "UpAxis"),
         ("fbx:up_axis_sign", "UpAxisSign"),

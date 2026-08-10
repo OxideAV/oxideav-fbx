@@ -222,11 +222,18 @@ clean-room from third-party documentation:
   metre units). Other
   `UnitScaleFactor` values surface the raw factor on
   `extras["fbx:unit_scale_factor"]` without claiming a typed
-  `Unit` mapping the docs don't provide. Axis ints (`UpAxis = 1`,
-  `FrontAxis = 2`, `CoordAxis = 0`) round-trip through `extras` but
-  the FBX-int → `Axis` variant table is absent from the staged docs,
-  so `Scene3D::up_axis` / `front_axis` stay at the `Scene3D::new`
-  defaults pending a follow-up grammar staging.
+  `Unit` mapping the docs don't provide. **Axis convention is typed
+  both ways**: per the `docs/3d/fbx/fbx-node-transform-chain.md` §4a
+  integer table (pinned from staged fixture bytes — `0 = X`, `1 = Y`,
+  `2 = Z`, signs as separate `±1` ints), the `UpAxis` / `FrontAxis`
+  pairs decode onto `Scene3D::up_axis` / `front_axis` (FBX `FrontAxis`
+  semantics kept literal — the axis pointing towards the viewer, so a
+  Maya export decodes `front_axis = PosZ`); the encoder synthesises
+  the six records from the typed fields for fresh scenes (`CoordAxis`
+  = the remaining index, `OriginalUpAxis` = the `−1` not-recorded
+  sentinel) while round-tripped `fbx:*_axis*` extras re-emit verbatim.
+  Out-of-table ints stay honest: raw on `extras`, typed fields at the
+  `Scene3D::new` defaults.
 - **`Definitions` / `PropertyTemplate` decoding + template-default
   resolution** — the top-level `Definitions` section (per
   `docs/3d/fbx/fbx-ascii-grammar.md` §7b: *"`Count` at the top is the

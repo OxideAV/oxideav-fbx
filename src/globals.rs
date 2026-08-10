@@ -53,16 +53,24 @@
 //!    factor stays available on `extras["fbx:unit_scale_factor"]` for
 //!    callers that need the literal exporter-side value.
 //!
-//! # No axis auto-conversion
+//! # Axis integers → typed [`oxideav_mesh3d::Axis`]
 //!
-//! The `UpAxis` / `FrontAxis` / `CoordAxis` integer enum mapping to
-//! the [`oxideav_mesh3d::Axis`] (positive/negative X/Y/Z) variants is
-//! **not** documented in the staged clean-room references: the
-//! `UpAxis` / `*Sign` integers are observed as `P`-record values but
-//! the int → axis-variant table is absent. The raw ints surface on
-//! `Scene3D::extras` and
-//! `Scene3D::up_axis` / `front_axis` stay at the [`Scene3D::new`]
-//! defaults (`PosY` / `NegZ`).
+//! Per `docs/3d/fbx/fbx-node-transform-chain.md` §4a the six axis
+//! `"int"` records are three `(axis, sign)` pairs with **`0 = X`,
+//! `1 = Y`, `2 = Z`** and the `*Sign` sibling carrying `+1` / `−1` as
+//! a separate plain integer (pinned from the staged fixture bytes:
+//! the three ASCII fixtures are Maya Y-up / Z-front / X-right and
+//! their `UpAxis = 1` / `FrontAxis = 2` / `CoordAxis = 0` values are
+//! mutually distinct and exhaust `{0, 1, 2}`). [`axis_from_ints`]
+//! implements that table, and `extract_global_settings` now sets
+//! [`Scene3D::up_axis`] / [`Scene3D::front_axis`] from the decoded
+//! `UpAxis` / `FrontAxis` pairs (an absent `*Sign` record defaults to
+//! `+1`, the only observed value). The FBX `FrontAxis` semantics are
+//! surfaced literally — the doc's *"which axis points towards the
+//! viewer"* — so a Maya export decodes as `front_axis = PosZ`. Axis
+//! ints outside the documented `{0, 1, 2}` table (or a sign outside
+//! `{+1, −1}`) leave the scene fields at the [`Scene3D::new`]
+//! defaults; the raw ints always stay on `Scene3D::extras`.
 //!
 //! # No coordinate-system / unit-scale auto-conversion
 //!
@@ -74,7 +82,7 @@
 
 use std::collections::HashMap;
 
-use oxideav_mesh3d::{Scene3D, Unit};
+use oxideav_mesh3d::{Axis, Scene3D, Unit};
 use serde_json::Value;
 
 use crate::binary::FbxDocument;
@@ -177,6 +185,19 @@ pub fn extract_global_settings(doc: &FbxDocument, scene: &mut Scene3D) -> usize 
         }
     }
 
+    // Axis convention → typed `Scene3D::up_axis` / `front_axis` per
+    // the `docs/3d/fbx/fbx-node-transform-chain.md` §4a integer table
+    // (`0 = X`, `1 = Y`, `2 = Z`; signs are separate `+1` / `−1`
+    // ints; an absent `*Sign` record defaults to `+1`, the only
+    // observed value). Out-of-table values leave the `Scene3D::new`
+    // defaults — the raw ints are already on `extras` above.
+    if let Some(axis) = typed_axis(&props, "UpAxis", "UpAxisSign") {
+        scene.up_axis = axis;
+    }
+    if let Some(axis) = typed_axis(&props, "FrontAxis", "FrontAxisSign") {
+        scene.front_axis = axis;
+    }
+
     // Merge into the scene's extras (preserves any prior entry).
     for (k, v) in extras {
         scene.extras.entry(k).or_insert(v);
@@ -206,6 +227,47 @@ pub fn unit_from_scale_factor(f: f64) -> Option<Unit> {
         return Some(Unit::Metres);
     }
     None
+}
+
+/// Map an FBX `(axis, sign)` integer pair to a typed [`Axis`] variant
+/// per the `docs/3d/fbx/fbx-node-transform-chain.md` §4a table:
+/// **`0 = X`, `1 = Y`, `2 = Z`**, with the sign a separate plain
+/// integer `+1` / `−1`. Returns `None` for any value outside those
+/// tables, so a caller can fall back to its own default rather than
+/// guess.
+pub fn axis_from_ints(axis: i64, sign: i64) -> Option<Axis> {
+    Some(match (axis, sign) {
+        (0, 1) => Axis::PosX,
+        (0, -1) => Axis::NegX,
+        (1, 1) => Axis::PosY,
+        (1, -1) => Axis::NegY,
+        (2, 1) => Axis::PosZ,
+        (2, -1) => Axis::NegZ,
+        _ => None?,
+    })
+}
+
+/// Inverse of [`axis_from_ints`] — the `(axis, sign)` integer pair
+/// for a typed [`Axis`] under the same §4a table.
+pub fn axis_to_ints(axis: Axis) -> (i32, i32) {
+    match axis {
+        Axis::PosX => (0, 1),
+        Axis::NegX => (0, -1),
+        Axis::PosY => (1, 1),
+        Axis::NegY => (1, -1),
+        Axis::PosZ => (2, 1),
+        Axis::NegZ => (2, -1),
+    }
+}
+
+/// Read one `(axis, sign)` record pair as a typed [`Axis`]. The axis
+/// record must be present and in-table; the sign record defaults to
+/// `+1` when absent (the only observed value — every staged fixture
+/// writes all three `*Sign` records as `1`).
+fn typed_axis(props: &PropertyMap, axis_name: &str, sign_name: &str) -> Option<Axis> {
+    let axis = i64::from(props.as_i32(axis_name)?);
+    let sign = props.as_i32(sign_name).map_or(1, i64::from);
+    axis_from_ints(axis, sign)
 }
 
 /// Pull a `KTime` value from the [`PropertyMap`].
@@ -609,5 +671,99 @@ mod tests {
         assert_eq!(unit_from_scale_factor(2.54), None);
         assert_eq!(unit_from_scale_factor(1000.0), None);
         assert_eq!(unit_from_scale_factor(0.0), None);
+    }
+
+    /// The §4a integer table, both directions, all twelve entries.
+    #[test]
+    fn axis_int_table_round_trips() {
+        for axis in [
+            Axis::PosX,
+            Axis::NegX,
+            Axis::PosY,
+            Axis::NegY,
+            Axis::PosZ,
+            Axis::NegZ,
+        ] {
+            let (i, s) = axis_to_ints(axis);
+            assert_eq!(axis_from_ints(i64::from(i), i64::from(s)), Some(axis));
+        }
+        // Doc §4a pins the assignment itself: 0 = X, 1 = Y, 2 = Z.
+        assert_eq!(axis_from_ints(0, 1), Some(Axis::PosX));
+        assert_eq!(axis_from_ints(1, 1), Some(Axis::PosY));
+        assert_eq!(axis_from_ints(2, 1), Some(Axis::PosZ));
+        // Out-of-table axis ints / signs stay None.
+        assert_eq!(axis_from_ints(3, 1), None);
+        assert_eq!(axis_from_ints(-1, 1), None);
+        assert_eq!(axis_from_ints(1, 0), None);
+        assert_eq!(axis_from_ints(1, 2), None);
+    }
+
+    /// The Maya fixture triple (`UpAxis 1` / `FrontAxis 2` /
+    /// `CoordAxis 0`, all signs `+1`) decodes to the typed Y-up /
+    /// Z-front convention.
+    #[test]
+    fn maya_axis_ints_set_typed_scene_axes() {
+        let doc = doc_with_globals(vec![
+            p("UpAxis", "int", vec![FbxProperty::I32(1)]),
+            p("UpAxisSign", "int", vec![FbxProperty::I32(1)]),
+            p("FrontAxis", "int", vec![FbxProperty::I32(2)]),
+            p("FrontAxisSign", "int", vec![FbxProperty::I32(1)]),
+            p("CoordAxis", "int", vec![FbxProperty::I32(0)]),
+            p("CoordAxisSign", "int", vec![FbxProperty::I32(1)]),
+        ]);
+        let mut scene = Scene3D::new();
+        extract_global_settings(&doc, &mut scene);
+        assert_eq!(scene.up_axis, Axis::PosY);
+        // FBX `FrontAxis` semantics surfaced literally: the axis that
+        // points towards the viewer — `+Z` here, not the mesh3d
+        // default `NegZ`.
+        assert_eq!(scene.front_axis, Axis::PosZ);
+    }
+
+    /// A Z-up / negative-sign pair decodes through the same table.
+    #[test]
+    fn z_up_negative_sign_decodes() {
+        let doc = doc_with_globals(vec![
+            p("UpAxis", "int", vec![FbxProperty::I32(2)]),
+            p("UpAxisSign", "int", vec![FbxProperty::I32(1)]),
+            p("FrontAxis", "int", vec![FbxProperty::I32(1)]),
+            p("FrontAxisSign", "int", vec![FbxProperty::I32(-1)]),
+        ]);
+        let mut scene = Scene3D::new();
+        extract_global_settings(&doc, &mut scene);
+        assert_eq!(scene.up_axis, Axis::PosZ);
+        assert_eq!(scene.front_axis, Axis::NegY);
+    }
+
+    /// An absent `*Sign` record defaults to `+1` (the only observed
+    /// value).
+    #[test]
+    fn missing_sign_record_defaults_positive() {
+        let doc = doc_with_globals(vec![p("UpAxis", "int", vec![FbxProperty::I32(0)])]);
+        let mut scene = Scene3D::new();
+        extract_global_settings(&doc, &mut scene);
+        assert_eq!(scene.up_axis, Axis::PosX);
+        // FrontAxis absent entirely → mesh3d default untouched.
+        assert_eq!(scene.front_axis, Axis::NegZ);
+    }
+
+    /// Out-of-table ints leave the typed fields at their defaults;
+    /// the raw values still ride on extras.
+    #[test]
+    fn out_of_table_axis_ints_leave_defaults() {
+        let doc = doc_with_globals(vec![
+            p("UpAxis", "int", vec![FbxProperty::I32(5)]),
+            p("UpAxisSign", "int", vec![FbxProperty::I32(1)]),
+            p("FrontAxis", "int", vec![FbxProperty::I32(2)]),
+            p("FrontAxisSign", "int", vec![FbxProperty::I32(3)]),
+        ]);
+        let mut scene = Scene3D::new();
+        extract_global_settings(&doc, &mut scene);
+        assert_eq!(scene.up_axis, Axis::PosY);
+        assert_eq!(scene.front_axis, Axis::NegZ);
+        assert_eq!(
+            scene.extras.get("fbx:up_axis").and_then(|v| v.as_i64()),
+            Some(5)
+        );
     }
 }

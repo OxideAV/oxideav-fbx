@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Round 439 — **`GlobalSettings` axis integers → typed
+  `Scene3D::up_axis` / `front_axis`, both directions.** The freshly
+  extended `docs/3d/fbx/fbx-node-transform-chain.md` §4a pins the axis
+  convention integers from staged fixture bytes (**`0 = X`, `1 = Y`,
+  `2 = Z`**, with the `*Sign` siblings as separate `+1` / `−1`
+  ints), closing the previous "int → `Axis` table absent" gap.
+  Decode now sets `Scene3D::up_axis` / `front_axis` from the
+  `UpAxis` / `UpAxisSign` / `FrontAxis` / `FrontAxisSign` records
+  (FBX `FrontAxis` semantics surfaced literally — the axis pointing
+  towards the viewer, so Maya exports decode as `front_axis = PosZ`;
+  an absent `*Sign` defaults to `+1`, the only observed value;
+  out-of-table ints leave the `Scene3D::new` defaults with the raw
+  ints still on `extras`). Encode synthesises the six axis records
+  from the typed fields for scenes without round-tripped
+  `fbx:*_axis*` extras (`CoordAxis` = the remaining index with the
+  observed `+1` sign, `OriginalUpAxis` = the §4a `−1` not-recorded
+  sentinel); round-tripped extras still win verbatim. New public
+  surface: `globals::{axis_from_ints, axis_to_ints}`.
+
 - Round 436 — **full node-transform chain composition on decode.**
   The freshly staged `docs/3d/fbx/fbx-node-transform-chain.md` §1
   documents the local-transform product

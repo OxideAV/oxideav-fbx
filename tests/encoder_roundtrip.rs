@@ -1769,3 +1769,69 @@ fn model_subtype_discriminator_round_trips() {
     let scene3 = decode(&bytes2);
     assert!(!scene3.nodes[0].extras.contains_key("fbx:model_subtype"));
 }
+
+/// Axis convention (round 439): a fresh scene's typed
+/// `Scene3D::up_axis` / `front_axis` reach the wire as the six
+/// `GlobalSettings` axis `int` records per the
+/// `docs/3d/fbx/fbx-node-transform-chain.md` §4a table and decode
+/// back to the same typed axes; `CoordAxis` is the remaining index
+/// with the observed `+1` sign, `OriginalUpAxis` the `-1`
+/// not-recorded sentinel.
+#[test]
+fn typed_axis_convention_round_trips() {
+    use oxideav_mesh3d::Axis;
+
+    let mut scene = Scene3D::new();
+    scene.up_axis = Axis::PosZ;
+    scene.front_axis = Axis::NegY;
+    let nid = scene.add_node(Node::new().with_name("N"));
+    scene.roots.push(nid);
+
+    let bytes = encode_binary(&scene);
+    let doc = oxideav_fbx::binary::parse(&bytes).expect("parses");
+    let gs = doc.root.child("GlobalSettings").expect("GlobalSettings");
+    let props = oxideav_fbx::properties70::PropertyMap::from_element(gs);
+    assert_eq!(props.as_i32("UpAxis"), Some(2));
+    assert_eq!(props.as_i32("UpAxisSign"), Some(1));
+    assert_eq!(props.as_i32("FrontAxis"), Some(1));
+    assert_eq!(props.as_i32("FrontAxisSign"), Some(-1));
+    // Remaining index: {0,1,2} minus up (2) and front (1) = 0 (X).
+    assert_eq!(props.as_i32("CoordAxis"), Some(0));
+    assert_eq!(props.as_i32("CoordAxisSign"), Some(1));
+    assert_eq!(props.as_i32("OriginalUpAxis"), Some(-1));
+
+    let scene2 = decode(&bytes);
+    assert_eq!(scene2.up_axis, Axis::PosZ);
+    assert_eq!(scene2.front_axis, Axis::NegY);
+
+    // And the mesh3d defaults (PosY up / NegZ front) survive too.
+    let mut plain = Scene3D::new();
+    let pid = plain.add_node(Node::new().with_name("P"));
+    plain.roots.push(pid);
+    let scene3 = decode(&encode_binary(&plain));
+    assert_eq!(scene3.up_axis, Axis::PosY);
+    assert_eq!(scene3.front_axis, Axis::NegZ);
+
+    // Round-tripped extras win over synthesis: a decoded Maya-style
+    // scene (front = +Z on the wire) re-encodes its literal ints.
+    let mut maya = Scene3D::new();
+    maya.up_axis = Axis::PosY;
+    maya.front_axis = Axis::PosZ;
+    maya.extras.insert(
+        "fbx:original_up_axis".to_string(),
+        serde_json::Value::from(1),
+    );
+    maya.extras
+        .insert("fbx:up_axis".to_string(), serde_json::Value::from(1));
+    let mid = maya.add_node(Node::new().with_name("M"));
+    maya.roots.push(mid);
+    let doc2 = oxideav_fbx::binary::parse(&encode_binary(&maya)).expect("parses");
+    let props2 = oxideav_fbx::properties70::PropertyMap::from_element(
+        doc2.root.child("GlobalSettings").expect("GlobalSettings"),
+    );
+    // Extras path: only the recorded records are emitted (no
+    // synthesised CoordAxis), and OriginalUpAxis keeps its literal 1.
+    assert_eq!(props2.as_i32("UpAxis"), Some(1));
+    assert_eq!(props2.as_i32("OriginalUpAxis"), Some(1));
+    assert_eq!(props2.as_i32("CoordAxis"), None);
+}
