@@ -265,7 +265,7 @@ fn structured_document_write_parse_closure_holds() {
     use oxideav_fbx::{write_document, FbxDocument, FbxNode, FbxProperty};
 
     fn random_property(rng: &mut Rng) -> FbxProperty {
-        match rng.below(10) {
+        match rng.below(11) {
             0 => FbxProperty::I16(rng.next() as i16),
             1 => FbxProperty::Bool(rng.next() & 1 == 1),
             2 => FbxProperty::I32(rng.next() as i32),
@@ -287,6 +287,11 @@ fn structured_document_write_parse_closure_holds() {
             8 => {
                 let n = rng.below(24);
                 FbxProperty::String((0..n).map(|_| b'a' + (rng.next() % 26) as u8).collect())
+            }
+            9 => {
+                // `c` raw-byte array (round 439).
+                let n = rng.below(24);
+                FbxProperty::ByteArray((0..n).map(|_| (rng.next() & 0xFF) as u8).collect())
             }
             _ => {
                 let n = rng.below(24);
