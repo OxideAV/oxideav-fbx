@@ -365,6 +365,35 @@ clean-room from third-party documentation:
   `decode → encode → decode` in both binary and ASCII forms (the
   derived `fbx:bind_pose_parent_local` entries are recomputed on
   decode rather than serialised).
+- **Constraints** — the full `Constraint` object grammar per
+  `docs/3d/fbx/fbx-constraint-grammar.md`, both directions.
+  Decode surfaces each `Objects { Constraint }` element on
+  `Scene3D::extras["fbx:constraints"]`: the `Constraint::<name>`
+  header, the human-readable kind display string (written twice —
+  header field and inner `Type:` leaf, doc §2), `MultiLayer`, the
+  object's **own** `Properties70` records verbatim (space-bearing
+  names like `"First Joint"`, the `"Weight"` property-*type* string,
+  value-less `"object"` slots — each value kind-tagged JSON so the
+  wire form re-emits deterministically), and the doc §3 load-bearing
+  structural fact: **targets live in `Connections` `OP` records, not
+  in `Properties70`** — each `C: "OP", <source>, <constraint>,
+  "<slot>"` edge resolves to `{ slot, node: <scene node index> }`
+  for Model endpoints (`{ slot, object: <name> }` otherwise). The
+  `Definitions` **one-template-per-kind** rule (doc §1 — a parser
+  assuming one `PropertyTemplate` per `ObjectType` loses every kind
+  after the first) is honoured end-to-end:
+  `Definitions::templates` keeps every template,
+  `Definitions::template_named` looks one up by its concrete class
+  name (`constraint::template_class_for_kind` maps `"Single Chain
+  IK"` → `FbxConstraintSingleChainIK` per the doc's naming pattern),
+  the bodies ride `extras["fbx:constraint_templates"]`, and the
+  encoder re-emits the multi-template `ObjectType: "Constraint"`
+  block + the constraint elements + their free-floating OP wiring —
+  the whole catalogue survives `decode → encode → decode` in binary
+  and ASCII forms. `MarkerSet` needs no implementation: doc §5
+  establishes it is **not an FBX object class** (the token only
+  occurs inside opaque MotionBuilder blind-data strings); the
+  character / control-rig family remains a docs acquisition item.
 - **`Properties70` typeName-discriminating accessors** —
   the existing [`PropertyMap::as_vec3`] and [`PropertyMap::as_str`]
   surface every triple-typed and string-typed `P`-record indiscriminately,

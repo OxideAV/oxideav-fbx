@@ -200,6 +200,10 @@ pub mod animation;
 pub mod ascii;
 pub mod ascii_writer;
 pub mod binary;
+/// `Constraint` object grammar — decode onto
+/// `Scene3D::extras["fbx:constraints"]` + lossless re-encode, per
+/// `docs/3d/fbx/fbx-constraint-grammar.md` (round 439).
+pub mod constraint;
 pub mod decoder;
 /// `Definitions` section decoder — per-class instance counts +
 /// `PropertyTemplate` default `Properties70` blocks resolved against

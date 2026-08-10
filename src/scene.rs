@@ -352,6 +352,15 @@ pub fn build_scene(doc: &FbxDocument) -> Result<Scene3D> {
     }
     extract_materials(doc, &mut scene, &model_to_mesh, &model_nodes);
 
+    // `Constraint` objects (round 439) — per
+    // `docs/3d/fbx/fbx-constraint-grammar.md`: header / `Type:` /
+    // `MultiLayer` / own `Properties70` verbatim + the OP-wired
+    // target slots (resolved to scene node indices for Model
+    // endpoints), plus the per-kind Definitions templates. Surfaced
+    // on `Scene3D::extras["fbx:constraints"]` /
+    // `["fbx:constraint_templates"]`; see `crate::constraint`.
+    crate::constraint::extract_constraints(doc, &mut scene, &model_nodes);
+
     // Bind-pose (Pose / "BindPose") surfacing. Runs after deformers so
     // the per-joint inverse-bind refinement can see the skeletons the
     // deformer module produced; the bone-node `extras` stash works for

@@ -62,16 +62,27 @@ pub struct ObjectTypeDefinition {
     /// Declared instance count for this class (the inner `Count`
     /// leaf). `None` when the block omits the leaf.
     pub count: Option<i64>,
-    /// The `PropertyTemplate: "<name>"` string — e.g. `"FbxMesh"`,
-    /// `"FbxSurfaceLambert"`, `"FbxNode"`. `None` when the class has
-    /// no template block (docs §7b shows `GlobalSettings` carrying
-    /// only a `Count`).
+    /// The **first** `PropertyTemplate: "<name>"` string — e.g.
+    /// `"FbxMesh"`, `"FbxSurfaceLambert"`, `"FbxNode"`. `None` when
+    /// the class has no template block (docs §7b shows
+    /// `GlobalSettings` carrying only a `Count`). Classes carrying
+    /// several templates keep them all in [`Self::templates`].
     pub template_name: Option<String>,
-    /// The template's decoded default `Properties70` block — the
-    /// *"default property set"* of docs §7b. `None` when there is no
-    /// `PropertyTemplate` child at all; an empty map when the
+    /// The **first** template's decoded default `Properties70` block
+    /// — the *"default property set"* of docs §7b. `None` when there
+    /// is no `PropertyTemplate` child at all; an empty map when the
     /// template exists but holds no `P` records.
     pub template: Option<PropertyMap>,
+    /// Every `PropertyTemplate` block in document order. Most classes
+    /// carry at most one, but `docs/3d/fbx/fbx-constraint-grammar.md`
+    /// §1 documents that `ObjectType: "Constraint"` carries **one
+    /// template per constraint kind present in the scene**, each
+    /// named for the concrete class
+    /// (`FbxConstraintSingleChainIK`, `FbxConstraintAim`, …) — *"a
+    /// parser that assumes a single `PropertyTemplate` per
+    /// `ObjectType` will lose defaults for every kind after the
+    /// first"*.
+    pub templates: Vec<(String, PropertyMap)>,
 }
 
 /// Decoded top-level `Definitions` section.
@@ -114,15 +125,28 @@ impl Definitions {
                 // property doesn't fit the §7b shape — skip it.
                 continue;
             };
-            let tpl_node = ot.child("PropertyTemplate");
+            // Every `PropertyTemplate` child, in document order —
+            // `ObjectType: "Constraint"` legitimately carries one per
+            // constraint kind (`fbx-constraint-grammar.md` §1).
+            let templates: Vec<(String, PropertyMap)> = ot
+                .children_named("PropertyTemplate")
+                .map(|t| {
+                    (
+                        t.properties
+                            .first()
+                            .and_then(FbxProperty::as_str)
+                            .unwrap_or_default()
+                            .to_owned(),
+                        PropertyMap::from_element(t),
+                    )
+                })
+                .collect();
             let def = ObjectTypeDefinition {
                 object_type: class.to_owned(),
                 count: leaf_i64(ot, "Count"),
-                template_name: tpl_node
-                    .and_then(|t| t.properties.first())
-                    .and_then(FbxProperty::as_str)
-                    .map(str::to_owned),
-                template: tpl_node.map(PropertyMap::from_element),
+                template_name: templates.first().map(|(n, _)| n.clone()),
+                template: templates.first().map(|(_, m)| m.clone()),
+                templates,
             };
             // Last-wins on a repeated class name — the same
             // override shape `PropertyMap` documents for repeated
@@ -145,6 +169,22 @@ impl Definitions {
     /// effective properties.
     pub fn template_for(&self, object_type: &str) -> Option<&PropertyMap> {
         self.types.get(object_type)?.template.as_ref()
+    }
+
+    /// The default `Properties70` set for one **concrete template
+    /// class** under an `ObjectType` — the lookup a
+    /// multiple-template class needs
+    /// (`fbx-constraint-grammar.md` §1: `ObjectType: "Constraint"`
+    /// carries one template per kind, keyed by the concrete class
+    /// name `FbxConstraintSingleChainIK` / `FbxConstraintAim` / …).
+    /// `None` when the class or the named template is absent.
+    pub fn template_named(&self, object_type: &str, template_name: &str) -> Option<&PropertyMap> {
+        self.types
+            .get(object_type)?
+            .templates
+            .iter()
+            .find(|(n, _)| n == template_name)
+            .map(|(_, m)| m)
     }
 
     /// Every declared class name, sorted for deterministic iteration.
@@ -359,6 +399,56 @@ mod tests {
     fn object_types_iteration_is_sorted() {
         let defs = Definitions::from_root(&sample_root());
         assert_eq!(defs.object_types(), vec!["GlobalSettings", "Material"]);
+    }
+
+    /// `ObjectType: "Constraint"` carries one template per kind
+    /// (`fbx-constraint-grammar.md` §1) — all of them decode, the
+    /// legacy single-template surface stays on the first, and
+    /// `template_named` reaches each by its concrete class name.
+    #[test]
+    fn constraint_class_keeps_one_template_per_kind() {
+        let ik = property_template(
+            "FbxConstraintSingleChainIK",
+            vec![
+                p_record("Active", "bool", "", "", vec![FbxProperty::I32(1)]),
+                p_record("SolverType", "enum", "", "", vec![FbxProperty::I32(0)]),
+                // Doc §3: property names contain spaces; `object`
+                // slots are value-less.
+                p_record("First Joint", "object", "", "", vec![]),
+            ],
+        );
+        let aim = property_template(
+            "FbxConstraintAim",
+            vec![
+                p_record("Active", "bool", "", "", vec![FbxProperty::I32(1)]),
+                p_record("WorldUpType", "enum", "", "", vec![FbxProperty::I32(0)]),
+            ],
+        );
+        let mut ot = object_type("Constraint", 3, Some(ik));
+        ot.children.push(aim);
+        let defs = Definitions::from_root(&root_with_definitions(vec![ot]));
+
+        let c = defs.get("Constraint").expect("Constraint class");
+        assert_eq!(c.templates.len(), 2);
+        assert_eq!(
+            c.template_name.as_deref(),
+            Some("FbxConstraintSingleChainIK")
+        );
+        // First-template compat surface.
+        assert!(defs.template_for("Constraint").is_some());
+        // Named lookups.
+        let ik_tpl = defs
+            .template_named("Constraint", "FbxConstraintSingleChainIK")
+            .expect("IK template");
+        assert!(ik_tpl.as_bool("Active").unwrap_or(false));
+        assert!(ik_tpl.get("First Joint").is_some());
+        let aim_tpl = defs
+            .template_named("Constraint", "FbxConstraintAim")
+            .expect("Aim template");
+        assert_eq!(aim_tpl.as_enum("WorldUpType"), Some(0));
+        assert!(defs
+            .template_named("Constraint", "FbxConstraintParent")
+            .is_none());
     }
 
     #[test]

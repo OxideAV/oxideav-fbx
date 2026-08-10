@@ -69,6 +69,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   attribute table onto a new grid needs exactly the semantics the
   docs don't pin.
 
+- Round 439 — **`Constraint` grammar round-trip** per the freshly
+  staged `docs/3d/fbx/fbx-constraint-grammar.md`. New `constraint`
+  module: decode surfaces every `Objects { Constraint }` element on
+  `Scene3D::extras["fbx:constraints"]` (name, kind display string,
+  inner `Type:` leaf, `MultiLayer`, own `Properties70` verbatim with
+  kind-tagged values, and the doc §3 `OP`-wired target slots
+  resolved to scene node indices), plus the per-kind
+  `PropertyTemplate` bodies on `["fbx:constraint_templates"]`; the
+  encoder re-emits the elements, the free-floating `OP` wiring and
+  the multi-template `ObjectType: "Constraint"` `Definitions` block,
+  closing `decode → encode → decode` in binary **and** ASCII forms.
+  `Definitions` now decodes **every** `PropertyTemplate` per
+  `ObjectType` (`ObjectTypeDefinition::templates` +
+  `Definitions::template_named`) per the doc §1 one-template-per-kind
+  rule — the previous first-template-only read lost every kind after
+  the first; the legacy `template` / `template_name` /
+  `template_for` surfaces stay on the first template.
+  `constraint::template_class_for_kind` implements the doc §1 class
+  naming pattern (`"Single Chain IK"` →
+  `FbxConstraintSingleChainIK`). `MarkerSet` is deliberately **not**
+  implemented: doc §5 establishes there is no such FBX object class
+  (the token only occurs inside MotionBuilder blind-data strings).
+
 - Round 436 — **full node-transform chain composition on decode.**
   The freshly staged `docs/3d/fbx/fbx-node-transform-chain.md` §1
   documents the local-transform product

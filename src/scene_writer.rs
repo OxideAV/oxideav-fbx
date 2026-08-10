@@ -407,6 +407,19 @@ pub fn encode_scene_with_options(scene: &Scene3D, opts: &SceneEncodeOptions) -> 
         connections.children.extend(anim_emit.connections);
     }
 
+    // -- Constraints (round 439) ----------------------------------------
+    // `Constraint` elements + their target OP edges rebuilt from the
+    // `fbx:constraints` extras the decode side surfaces
+    // (`docs/3d/fbx/fbx-constraint-grammar.md` §2–§3); the per-kind
+    // Definitions templates re-emit inside `build_definitions`.
+    let (constraint_objects, constraint_connections) = crate::constraint::build_constraint_objects(
+        scene,
+        |ni| node_ids.get(ni).copied(),
+        || alloc.next(),
+    );
+    objects.children.extend(constraint_objects);
+    connections.children.extend(constraint_connections);
+
     // -- Top-level sections ---------------------------------------------
     let mut root = FbxNode {
         name: String::new(),
@@ -462,7 +475,7 @@ pub fn encode_scene_with_options(scene: &Scene3D, opts: &SceneEncodeOptions) -> 
         properties: Vec::new(),
         children: Vec::new(),
     });
-    root.children.push(build_definitions(&objects));
+    root.children.push(build_definitions(&objects, scene));
     root.children.push(objects);
     root.children.push(connections);
     // `Takes` — the last §7 ordered section, re-rendered from the
@@ -956,7 +969,7 @@ fn build_documents(scene: &Scene3D, alloc: &mut IdAllocator) -> FbxNode {
 /// the top-level `Count: 13`), so the census is `1 + Objects
 /// children`, with the GlobalSettings block emitted first as in the
 /// sample and the remaining classes in first-appearance order.
-fn build_definitions(objects: &FbxNode) -> FbxNode {
+fn build_definitions(objects: &FbxNode, scene: &Scene3D) -> FbxNode {
     let mut children = vec![FbxNode {
         name: "Version".to_string(),
         properties: vec![FbxProperty::I32(100)],
@@ -991,7 +1004,13 @@ fn build_definitions(objects: &FbxNode) -> FbxNode {
         // Properties70 for that class". The fixture stages full
         // template bodies for five classes; the rest stay count-only
         // (a template-less block is also observed — GlobalSettings).
-        if let Some(template) = class_property_template(class) {
+        // `Constraint` is the documented multi-template class
+        // (`fbx-constraint-grammar.md` §1 — one PropertyTemplate per
+        // kind), re-emitted from the round-tripped
+        // `fbx:constraint_templates` extras.
+        if class == "Constraint" {
+            ot_children.extend(crate::constraint::constraint_template_nodes(scene));
+        } else if let Some(template) = class_property_template(class) {
             ot_children.push(template);
         }
         children.push(FbxNode {
