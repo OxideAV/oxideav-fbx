@@ -306,6 +306,18 @@ pub fn build_scene(doc: &FbxDocument) -> Result<Scene3D> {
         scene.add_animation(anim);
     }
 
+    // Raw per-curve key-attribute payloads (`KeyAttrFlags` /
+    // `KeyAttrDataFloat` / `KeyAttrRefCount`) — surfaced verbatim on
+    // `Scene3D::extras["fbx:key_attrs"]`. The bitfield's value
+    // assignment is the GAP-TRACKER's open item, so nothing is
+    // interpreted; see `animation::extract_key_attr_catalogue`.
+    if let Some(catalogue) = crate::animation::extract_key_attr_catalogue(doc) {
+        scene
+            .extras
+            .entry("fbx:key_attrs".to_string())
+            .or_insert(catalogue);
+    }
+
     // `Takes` section (`docs/3d/fbx/fbx-ascii-grammar.md` §7e) — the
     // authoring-tool take catalogue (`Current` active-take name +
     // per-take `FileName` / `LocalTime` / `ReferenceTime` KTime pairs).

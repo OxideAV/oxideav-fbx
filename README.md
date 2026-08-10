@@ -713,8 +713,20 @@ the partial-support edges and the not-yet-implemented surfaces.
   source, so freshly-encoded scenes carry an all-zero id (a captured
   id from `parse_footer` / `fbx:footer_id` is reproduced verbatim).
 - Animation: per-layer compositing weights and `KeyAttrFlags` cubic /
-  step / TCB interpolation modes remain unsupported — linear sampling
-  between keyframes only. (`PreRotation` / `PostRotation` / pivot /
+  step / TCB interpolation modes remain uninterpreted — linear
+  sampling between keyframes only. The raw payloads are no longer
+  dropped, though: every `AnimationCurve` carrying `KeyAttrFlags` /
+  `KeyAttrDataFloat` / `KeyAttrRefCount` contributes one entry to
+  `Scene3D::extras["fbx:key_attrs"]` (stack / target / property /
+  axis join key + the integer arrays verbatim + the data floats as
+  lossless IEEE-754 bit patterns + the curve's `key_count`). Nothing
+  is interpreted because `docs/3d/fbx/GAP-TRACKER.md` records **no
+  value assignment** for the bitfield (the open acquisition item —
+  an export sweep pinning one known mode per curve); the same gap
+  blocks re-emission on encode, since the decode side resamples
+  per-axis curves onto a union grid and stretching an uninterpreted
+  per-key table onto a new grid would require exactly those
+  semantics. (`PreRotation` / `PostRotation` / pivot /
   `RotationOrder` composition **is** applied: channels bound to a
   chain-bearing Model re-compose the doc §1 product per merged
   keyframe, so the rotation channel is `Rpre · R(t) · Rpost⁻¹` and

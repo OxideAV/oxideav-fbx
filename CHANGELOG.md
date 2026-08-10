@@ -50,6 +50,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   end-to-end through the binary decoder (three siblings, one per
   mode, under a non-uniformly-scaled parent).
 
+- Round 439 — **raw `KeyAttrFlags` / `KeyAttrDataFloat` /
+  `KeyAttrRefCount` surfacing.** `docs/3d/fbx/GAP-TRACKER.md` tracks
+  the key-attribute bitfield with **no value assignment recorded**
+  (the admissible route is an export-sweep observation, still
+  pending), so the crate now implements exactly what is pinned and
+  no more: `animation::extract_key_attr_catalogue` walks every
+  `AnimationCurve`, and each curve carrying any of the three
+  sub-records lands verbatim on
+  `Scene3D::extras["fbx:key_attrs"]` — stack / target / property /
+  axis join key (resolved through the `Connections` chain), the
+  `flags` / `ref_count` integer arrays as-is, the data floats as
+  lossless IEEE-754 bit patterns (`data_bits` — NaN payloads can't
+  ride JSON floats), and the curve's `key_count`. No bit is
+  interpreted (sampling stays linear) and encode does not re-emit
+  the records: the decode side resamples per-axis curves onto a
+  union keyframe grid, and stretching an uninterpreted per-key
+  attribute table onto a new grid needs exactly the semantics the
+  docs don't pin.
+
 - Round 436 — **full node-transform chain composition on decode.**
   The freshly staged `docs/3d/fbx/fbx-node-transform-chain.md` §1
   documents the local-transform product

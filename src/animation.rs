@@ -364,6 +364,193 @@ pub fn extract_animations(
     animations
 }
 
+/// Walk every `AnimationCurve` element and surface its raw key
+/// attribute sub-records — `KeyAttrFlags` / `KeyAttrDataFloat` /
+/// `KeyAttrRefCount` — as a JSON catalogue for
+/// `Scene3D::extras["fbx:key_attrs"]`.
+///
+/// Per `docs/3d/fbx/GAP-TRACKER.md` ("`KeyAttrFlags` interpolation /
+/// tangent modes — OPEN"), `KeyAttrFlags` is a packed bitfield
+/// selecting interpolation mode (constant / linear / cubic), tangent
+/// mode (auto / TCB / user / break / clamped) and weighting, with
+/// `KeyAttrDataFloat` and `KeyAttrRefCount` alongside — but **no
+/// value assignment is recorded in the staged docs**, so this crate
+/// deliberately does not interpret a single bit. What it does do is
+/// stop dropping the payload: each curve carrying any of the three
+/// sub-records contributes one catalogue entry with its stack /
+/// target / property / axis join key (resolved through the same
+/// `Connections` chain [`extract_animations`] walks) and the raw
+/// arrays:
+///
+/// - `flags` / `ref_count` — the integer arrays verbatim;
+/// - `data_bits` — `KeyAttrDataFloat` as per-element IEEE-754 bit
+///   patterns (`u32`), the lossless surface for a payload whose
+///   semantics are unpinned (interpreted floats could not represent
+///   a NaN bit pattern in JSON);
+/// - `key_count` — the curve's `KeyTime` length, so a consumer can
+///   check the `ref_count` run-length relationship itself.
+///
+/// Returns `None` when no curve carries key-attribute records (the
+/// synthetic output of this crate's own encoder, for instance).
+/// Re-encode does **not** re-emit these records: the decode side
+/// merges per-axis curves onto a union keyframe grid, and stretching
+/// an uninterpreted per-key attribute table onto a resampled grid
+/// would require exactly the semantics the docs don't pin. See the
+/// README "Notes & limitations".
+pub fn extract_key_attr_catalogue(doc: &FbxDocument) -> Option<serde_json::Value> {
+    let objects = doc.root.child("Objects")?;
+
+    // Element indices for the join-key resolution.
+    let mut stacks: HashMap<i64, String> = HashMap::new();
+    let mut layers: HashMap<i64, ()> = HashMap::new();
+    let mut curve_nodes: HashMap<i64, ()> = HashMap::new();
+    let mut model_names: HashMap<i64, String> = HashMap::new();
+    let mut curve_elements: Vec<(i64, &FbxNode)> = Vec::new();
+    for child in &objects.children {
+        let Some(id) = element_id(child) else {
+            continue;
+        };
+        match child.name.as_str() {
+            "AnimationStack" => {
+                stacks.insert(id, element_name(child).unwrap_or_default());
+            }
+            "AnimationLayer" => {
+                layers.insert(id, ());
+            }
+            "AnimationCurveNode" => {
+                curve_nodes.insert(id, ());
+            }
+            "AnimationCurve" => curve_elements.push((id, child)),
+            "Model" => {
+                model_names.insert(id, element_name(child).unwrap_or_default());
+            }
+            _ => {}
+        }
+    }
+    if curve_elements.is_empty() {
+        return None;
+    }
+
+    let mut curve_to_node: HashMap<i64, (i64, String)> = HashMap::new();
+    let mut node_to_target: HashMap<i64, (i64, String)> = HashMap::new();
+    let mut node_to_layer: HashMap<i64, i64> = HashMap::new();
+    let mut layer_to_stack: HashMap<i64, i64> = HashMap::new();
+    if let Some(conns) = doc.root.child("Connections") {
+        for c in conns.children_named("C") {
+            let kind = c.properties.first().and_then(FbxProperty::as_str);
+            let child_id = c.properties.get(1).and_then(FbxProperty::as_i64);
+            let parent_id = c.properties.get(2).and_then(FbxProperty::as_i64);
+            let prop_name = c.properties.get(3).and_then(FbxProperty::as_str);
+            let (Some(kind), Some(child_id), Some(parent_id)) = (kind, child_id, parent_id) else {
+                continue;
+            };
+            match (kind, prop_name) {
+                ("OP", Some(prop)) => {
+                    if curve_nodes.contains_key(&parent_id) {
+                        curve_to_node.insert(child_id, (parent_id, prop.to_owned()));
+                    } else if curve_nodes.contains_key(&child_id) {
+                        node_to_target.insert(child_id, (parent_id, prop.to_owned()));
+                    }
+                }
+                ("OO", _) => {
+                    if curve_nodes.contains_key(&child_id) && layers.contains_key(&parent_id) {
+                        node_to_layer.insert(child_id, parent_id);
+                    } else if layers.contains_key(&child_id) && stacks.contains_key(&parent_id) {
+                        layer_to_stack.insert(child_id, parent_id);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    let mut entries: Vec<serde_json::Value> = Vec::new();
+    for (curve_id, node) in curve_elements {
+        let flags = int_array(node, "KeyAttrFlags");
+        let ref_count = int_array(node, "KeyAttrRefCount");
+        let data_bits = f32_bits_array(node, "KeyAttrDataFloat");
+        if flags.is_none() && ref_count.is_none() && data_bits.is_none() {
+            continue;
+        }
+        let mut entry = serde_json::Map::new();
+        // Join key: stack name / target element name / target
+        // property / axis tag, each present when the Connections
+        // chain resolves that hop.
+        let wiring = curve_to_node.get(&curve_id);
+        if let Some((cn_id, axis)) = wiring {
+            entry.insert("axis".into(), serde_json::Value::String(axis.clone()));
+            if let Some((target_id, prop)) = node_to_target.get(cn_id) {
+                entry.insert("property".into(), serde_json::Value::String(prop.clone()));
+                if let Some(name) = model_names.get(target_id) {
+                    entry.insert("target".into(), serde_json::Value::String(name.clone()));
+                }
+            }
+            if let Some(stack_id) = node_to_layer.get(cn_id).and_then(|l| layer_to_stack.get(l)) {
+                if let Some(name) = stacks.get(stack_id) {
+                    entry.insert("stack".into(), serde_json::Value::String(name.clone()));
+                }
+            }
+        }
+        let key_count = node
+            .child("KeyTime")
+            .and_then(|n| n.properties.first())
+            .and_then(|p| match p {
+                FbxProperty::I64Array(a) => Some(a.len()),
+                FbxProperty::I32Array(a) => Some(a.len()),
+                _ => None,
+            });
+        if let Some(n) = key_count {
+            entry.insert("key_count".into(), serde_json::Value::from(n));
+        }
+        if let Some(v) = flags {
+            entry.insert("flags".into(), v);
+        }
+        if let Some(v) = data_bits {
+            entry.insert("data_bits".into(), v);
+        }
+        if let Some(v) = ref_count {
+            entry.insert("ref_count".into(), v);
+        }
+        entries.push(serde_json::Value::Object(entry));
+    }
+    if entries.is_empty() {
+        None
+    } else {
+        Some(serde_json::Value::Array(entries))
+    }
+}
+
+/// An integer-array sub-record (`i` / `l` wire variants) as a JSON
+/// array of integers.
+fn int_array(node: &FbxNode, name: &str) -> Option<serde_json::Value> {
+    let arr = match node.child(name)?.properties.first()? {
+        FbxProperty::I32Array(a) => a.iter().map(|v| serde_json::Value::from(*v)).collect(),
+        FbxProperty::I64Array(a) => a.iter().map(|v| serde_json::Value::from(*v)).collect(),
+        _ => return None,
+    };
+    Some(serde_json::Value::Array(arr))
+}
+
+/// An `f`-array sub-record as its per-element IEEE-754 bit patterns
+/// (lossless; see [`extract_key_attr_catalogue`]). An `i`-wire
+/// variant (some producers write the attr data as raw ints already)
+/// surfaces its unsigned reinterpretation so the representation is
+/// uniform.
+fn f32_bits_array(node: &FbxNode, name: &str) -> Option<serde_json::Value> {
+    let arr = match node.child(name)?.properties.first()? {
+        FbxProperty::F32Array(a) => a
+            .iter()
+            .map(|v| serde_json::Value::from(v.to_bits()))
+            .collect(),
+        FbxProperty::I32Array(a) => a
+            .iter()
+            .map(|v| serde_json::Value::from(u32::from_ne_bytes(v.to_ne_bytes())))
+            .collect(),
+        _ => return None,
+    };
+    Some(serde_json::Value::Array(arr))
+}
+
 /// Map an FBX target-property string to a typed
 /// [`AnimationProperty`]. Returns `None` for properties this round
 /// doesn't surface.
