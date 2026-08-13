@@ -451,16 +451,28 @@ fn blend_channel(id: i64) -> Rec {
         .with_prop_string(b"BlendShapeChannel")
 }
 
-/// A `BlendShapeChannel` carrying a static `DeformPercent`
+/// A named `BlendShapeChannel` carrying a static `DeformPercent`
 /// Properties70 record (0..100 wire percentage).
-fn blend_channel_with_percent(id: i64, percent: f64) -> Rec {
+fn named_blend_channel_with_percent(id: i64, name: &[u8], percent: f64) -> Rec {
+    let mut header = name.to_vec();
+    header.extend_from_slice(b"\x00\x01BlendShapeChannel");
     let p = Rec::new("P")
         .with_prop_string(b"DeformPercent")
         .with_prop_string(b"Number")
         .with_prop_string(b"")
         .with_prop_string(b"A")
         .with_prop_f64(percent);
-    blend_channel(id).with_child(Rec::new("Properties70").with_child(p))
+    Rec::new("Deformer")
+        .with_prop_i64(id)
+        .with_prop_string(&header)
+        .with_prop_string(b"BlendShapeChannel")
+        .with_child(Rec::new("Properties70").with_child(p))
+}
+
+/// A `BlendShapeChannel` named "Smile" carrying a static
+/// `DeformPercent` Properties70 record (0..100 wire percentage).
+fn blend_channel_with_percent(id: i64, percent: f64) -> Rec {
+    named_blend_channel_with_percent(id, b"Smile", percent)
 }
 
 fn shape_geometry(id: i64, indexes: &[i32], deltas: &[f64]) -> Rec {
@@ -630,20 +642,7 @@ fn two_blend_deformers_on_one_geometry_keep_document_order() {
         .with_child(Rec::new("Indexes").with_prop_i32_array(&[1]))
         .with_child(Rec::new("Vertices").with_prop_f64_array(&[0.0, 0.0, -0.5]));
     let channel_a = blend_channel_with_percent(700, 10.0);
-    let channel_b = Rec::new("Deformer")
-        .with_prop_i64(701)
-        .with_prop_string(b"Frown\x00\x01BlendShapeChannel")
-        .with_prop_string(b"BlendShapeChannel")
-        .with_child(
-            Rec::new("Properties70").with_child(
-                Rec::new("P")
-                    .with_prop_string(b"DeformPercent")
-                    .with_prop_string(b"Number")
-                    .with_prop_string(b"")
-                    .with_prop_string(b"A")
-                    .with_prop_f64(90.0),
-            ),
-        );
+    let channel_b = named_blend_channel_with_percent(701, b"Frown", 90.0);
     let blend_a = blend_deformer(800);
     let blend_b = Rec::new("Deformer")
         .with_prop_i64(801)
@@ -708,7 +707,7 @@ fn multi_channel_morph_animation_merges_one_strided_sampler() {
         .with_child(Rec::new("Indexes").with_prop_i32_array(&[1]))
         .with_child(Rec::new("Vertices").with_prop_f64_array(&[0.0, 0.0, -0.5]));
     let channel_a = blend_channel_with_percent(700, 25.0);
-    let channel_b = blend_channel_with_percent(701, 50.0);
+    let channel_b = named_blend_channel_with_percent(701, b"Frown", 50.0);
     let blend = blend_deformer(800);
 
     let curve = anim_curve(1000, &[0.0, 1.0], &[0.0, 100.0]);
@@ -772,6 +771,40 @@ fn multi_channel_morph_animation_merges_one_strided_sampler() {
             // t=1: slot 0 animated at 1.0, slot 1 static 0.5.
             assert!((v[2] - 1.0).abs() < 1e-6);
             assert!((v[3] - 0.5).abs() < 1e-6);
+        }
+        other => panic!("expected Scalar, got {other:?}"),
+    }
+
+    // Second generation: the WIRE-authored blend-shape state (static
+    // weights, channel names, strided animation) survives
+    // decode → encode → decode through this crate's own encoder.
+    use oxideav_mesh3d::Mesh3DEncoder;
+    let re_bytes = oxideav_fbx::FbxEncoder::new()
+        .encode(&scene)
+        .expect("re-encode");
+    let mut dec2 = FbxDecoder::new();
+    let scene2 = dec2.decode(&re_bytes).expect("second-generation decode");
+
+    let mesh2 = &scene2.meshes[0];
+    assert_eq!(mesh2.primitives[0].targets.len(), 2);
+    assert!((mesh2.weights[0] - 0.25).abs() < 1e-6);
+    assert!((mesh2.weights[1] - 0.5).abs() < 1e-6);
+    assert_eq!(
+        mesh2.primitives[0].extras["fbx:morph_target_names"],
+        serde_json::json!(["Smile", "Frown"])
+    );
+    let ch2 = scene2.animations[0]
+        .channels
+        .iter()
+        .find(|c| c.target.property == AnimationProperty::MorphWeights)
+        .expect("MorphWeights channel survives generation 2");
+    match &ch2.sampler.values {
+        AnimationValues::Scalar(v) => {
+            assert_eq!(v.len(), 4);
+            assert!((v[0] - 0.0).abs() < 1e-4);
+            assert!((v[1] - 0.5).abs() < 1e-4);
+            assert!((v[2] - 1.0).abs() < 1e-4);
+            assert!((v[3] - 0.5).abs() < 1e-4);
         }
         other => panic!("expected Scalar, got {other:?}"),
     }
