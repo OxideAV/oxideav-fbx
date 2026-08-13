@@ -301,7 +301,12 @@ pub fn build_scene(doc: &FbxDocument) -> Result<Scene3D> {
         &model_nodes,
         &geometry_to_node,
     );
-    let animations = extract_animations(doc, &model_nodes, &deformer_out.channel_targets);
+    let animations = extract_animations(
+        doc,
+        &model_nodes,
+        &deformer_out.channel_targets,
+        &deformer_out.node_morph_statics,
+    );
     for anim in animations {
         scene.add_animation(anim);
     }

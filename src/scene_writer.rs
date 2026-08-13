@@ -375,16 +375,16 @@ pub fn encode_scene_with_options(scene: &Scene3D, opts: &SceneEncodeOptions) -> 
     // the AnimationCurveNode / AnimationCurve records + OO/OP chain the
     // decode path's extract_animations walks. Channels target the Model
     // record for the scene NodeId via the node-id → fbx-id map below;
-    // MorphWeights channels target the node's first BlendShapeChannel
-    // via a DeformPercent OP connection (round 384).
+    // MorphWeights channels target the node's BlendShapeChannels (one
+    // DeformPercent OP connection per morph-target slot).
     if !scene.animations.is_empty() {
         let node_to_fbx =
             |nid: oxideav_mesh3d::NodeId| -> Option<i64> { node_ids.get(nid.0 as usize).copied() };
-        let morph_channel_for = |nid: oxideav_mesh3d::NodeId| -> Option<i64> {
+        let morph_channels_for = |nid: oxideav_mesh3d::NodeId| -> Option<Vec<i64>> {
             morph_channels
                 .iter()
                 .find(|(n, _)| *n == nid)
-                .and_then(|(_, ids)| ids.first().copied())
+                .map(|(_, ids)| ids.clone())
         };
         // A chain-bearing node's channels must be de-composed back to
         // authored Lcl curves (the Model re-gains its pivot records,
@@ -399,7 +399,7 @@ pub fn encode_scene_with_options(scene: &Scene3D, opts: &SceneEncodeOptions) -> 
         let anim_emit = crate::anim_writer::build_animation_objects(
             &scene.animations,
             node_to_fbx,
-            morph_channel_for,
+            morph_channels_for,
             chain_for,
             || alloc.next(),
         );

@@ -126,12 +126,24 @@ clean-room from third-party documentation:
   `Lcl Scaling` (Vec3) and morph-target `DeformPercent` (Scalar)
   channels supported; component curves merged onto a unified linear
   grid; `KeyTime` ticks divided by the well-known FBX KTime constant.
+  **Multi-target morph animation** merges every `BlendShapeChannel`'s
+  `DeformPercent` curve on a node into ONE `MorphWeights` channel
+  strided by the mesh's morph-target count (the `oxideav_mesh3d`
+  sampler contract), union keyframe grid across channels, unanimated
+  slots holding their static rest weight; wire percentages (0..100)
+  scale to mesh3d's 0..1 §3.7.2.2 blend factors.
 - Deformers: `Deformer{Skin}` + `Deformer{Cluster}` →
   `oxideav_mesh3d::Skeleton` + `Skin` (per-corner top-4 joints +
   weights, normalised; inverse-bind = `inverse(TransformLink) * Transform`).
   `Deformer{BlendShape}` + `BlendShapeChannel` + `Geometry{Shape}`
   → `MorphTarget` per channel (sparse `Indexes` deltas expanded to
-  per-corner buffers).
+  per-corner buffers), deformers walked in document order so
+  morph-target slots are deterministic across multiple `BlendShape`
+  deformers on one geometry. Each channel's **static**
+  `DeformPercent` record (0..100) decodes ÷100 into the matching
+  `Mesh::weights` slot (rest blend state), and the channels' authored
+  display names surface in slot order on
+  `Primitive::extras["fbx:morph_target_names"]`.
 - **Materials / Textures / Video**
   — one `oxideav_mesh3d::Material` per FBX `Material` element with
   PBR factors decoded from `Properties70` `P`-records per
@@ -670,7 +682,10 @@ clean-room from third-party documentation:
     decode-side composition reproduces the authored inverse-bind
     matrices exactly); `Deformer{BlendShape}` + `BlendShapeChannel` +
     `Geometry{Shape}` (sparse `Indexes` + `Vertices` + `Normals`
-    deltas) per morph target; one `Pose : "BindPose"` element
+    deltas) per morph target — each channel carrying its static
+    `DeformPercent` record (`Mesh::weights` slot × 100) and its
+    authored name from `fbx:morph_target_names` (fallback
+    `Target{i}`); one `Pose : "BindPose"` element
     (`PoseNode { Node, Matrix }` per posed node) from the
     `fbx:bind_pose` extras.
   - **Lights / Cameras** — one `NodeAttribute` per bound node
@@ -690,10 +705,11 @@ clean-room from third-party documentation:
   - **Animations** — one `AnimationStack` / `AnimationLayer` per
     `Animation` plus per-channel `AnimationCurveNode` + per-axis
     `AnimationCurve` (Translation / Scale split `d|X`/`d|Y`/`d|Z`;
-    Rotation quaternions → XYZ-Euler degrees; MorphWeights → a
-    `DeformPercent` curve OP-connected to the node's
-    `BlendShapeChannel`; `KeyTime` in KTime ticks) with the full
-    OO/OP chain.
+    Rotation quaternions → XYZ-Euler degrees; MorphWeights → one
+    `DeformPercent` curve **per morph-target slot** (0..1 weights
+    × 100 to wire percentages), each OP-connected to the node's
+    matching `BlendShapeChannel`; `KeyTime` in KTime ticks) with the
+    full OO/OP chain.
   - The complete `Scene3D → encode → decode → Scene3D` closure is
     round-trip-tested for positions / normals / multi-UV / vertex
     colours / tangents / binormals / hierarchy / multi-material slot
@@ -747,10 +763,14 @@ the partial-support edges and the not-yet-implemented surfaces.
   banner return a single sniff-failure error. The ASCII writer is
   described under "ASCII writer" above.
 - Encoder lossy edges —
-  `Mesh::weights` static per-target morph weights have no FBX
-  read-back home (the decode side initialises them to `0.0`);
   multi-primitive meshes skip the extras-borne extra-layer
   re-emission (no unambiguous per-primitive concatenation). The
+  `Mesh::weights` gap is closed: static per-target morph weights
+  round-trip through each `BlendShapeChannel`'s `DeformPercent`
+  record (×100 out, ÷100 back). Per-instance node-level weight
+  overrides await an `oxideav-mesh3d` release carrying
+  `Node::weights` (unreleased at time of writing — this crate
+  consumes published sibling versions only). The
   `Definitions` template gap is closed: every class with a staged
   body emits it (see the encoder bullet above) and the count-only
   remainder (`Deformer` / `Pose` / `AnimationCurve`; `NodeAttribute`
@@ -787,7 +807,10 @@ the partial-support edges and the not-yet-implemented surfaces.
   surface as plain LBS buffers (the doc notes this is safe to ignore
   unless the renderer specifically needs it).
 - BlendShape: in-between keyframes are collapsed to the most-recent
-  `Shape` per the doc's `target_shape` simplification.
+  `Shape` per the doc's `target_shape` simplification. The
+  in-between-shape grammar (a channel with several `Shape` targets
+  and their per-shape activation weights) is not pinned by any staged
+  doc, so no interpretation is attempted — a docs acquisition item.
 - Specular workflow — FBX `Specular` / `SpecularFactor` aren't
   surfaced because the glTF metallic-roughness target has no separate
   specular colour channel. The values still round-trip through the

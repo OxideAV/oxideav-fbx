@@ -50,6 +50,13 @@ fn encode_binary(scene: &Scene3D) -> Vec<u8> {
     FbxEncoder::new().encode(scene).expect("binary encode")
 }
 
+fn encode_ascii(scene: &Scene3D) -> Vec<u8> {
+    FbxEncoder::new()
+        .form(FbxOutputForm::Ascii)
+        .encode(scene)
+        .expect("ascii encode")
+}
+
 fn decode(bytes: &[u8]) -> Scene3D {
     FbxDecoder::new().decode(bytes).expect("decode")
 }
@@ -750,13 +757,16 @@ fn morph_target_and_weight_animation_survive_round_trip() {
         tgt.position = Some(pos.clone());
         tgt.normal = Some(nrm.clone());
         prim.targets.push(tgt);
-        mesh.weights.push(0.0);
+        // Static (rest) blend weight — 0..1 mesh3d blend factor,
+        // carried by the channel's DeformPercent record.
+        mesh.weights.push(0.25);
     }
     let mid = scene.add_mesh(mesh);
     let nid = scene.add_node(Node::new().with_name("MorphNode").with_mesh(mid));
     scene.roots.push(nid);
 
-    // MorphWeights animation: DeformPercent ramps 0 → 100.
+    // MorphWeights animation: weight ramps 0 → 1 (the wire curve
+    // carries DeformPercent 0 → 100).
     let mut anim = Animation::new(Some("MorphClip".to_string()));
     anim.channels.push(AnimationChannel {
         target: AnimationTarget {
@@ -765,13 +775,17 @@ fn morph_target_and_weight_animation_survive_round_trip() {
         },
         sampler: AnimationSampler {
             keyframes: vec![0.0, 1.0, 2.0],
-            values: AnimationValues::Scalar(vec![0.0, 50.0, 100.0]),
+            values: AnimationValues::Scalar(vec![0.0, 0.5, 1.0]),
             interpolation: Interpolation::Linear,
         },
     });
     scene.add_animation(anim);
 
     let scene2 = decode(&encode_binary(&scene));
+
+    // Static weight survives via the channel's DeformPercent record.
+    assert_eq!(scene2.meshes[0].weights.len(), 1);
+    assert!((scene2.meshes[0].weights[0] - 0.25).abs() < 1e-6);
 
     // Morph target rebuilt on the primitive.
     let prim = &scene2.meshes[0].primitives[0];
@@ -799,8 +813,8 @@ fn morph_target_and_weight_animation_survive_round_trip() {
     match &ch.sampler.values {
         AnimationValues::Scalar(v) => {
             assert!((v[0] - 0.0).abs() < 1e-4);
-            assert!((v[1] - 50.0).abs() < 1e-4);
-            assert!((v[2] - 100.0).abs() < 1e-4);
+            assert!((v[1] - 0.5).abs() < 1e-4);
+            assert!((v[2] - 1.0).abs() < 1e-4);
         }
         other => panic!("expected Scalar values, got {other:?}"),
     }
@@ -809,6 +823,103 @@ fn morph_target_and_weight_animation_survive_round_trip() {
         scene2.nodes[ch.target.node.0 as usize].name.as_deref(),
         Some("MorphNode")
     );
+}
+
+/// A **multi-target** mesh — two morph targets with distinct static
+/// weights and a strided MorphWeights animation — survives the round
+/// trip: one BlendShapeChannel per target (each with its own
+/// DeformPercent record + curve), re-merged into one strided sampler
+/// on decode. Exercised through both the binary and ASCII forms.
+#[test]
+fn multi_target_morph_statics_and_animation_survive_round_trip() {
+    use oxideav_mesh3d::MorphTarget;
+
+    let mut scene = Scene3D::new();
+    let mut mesh = quad_with_normals_and_uvs("MultiMorph");
+    {
+        let prim = &mut mesh.primitives[0];
+        let mut t0 = MorphTarget::new();
+        let mut pos0 = vec![[0.0f32; 3]; 6];
+        pos0[0] = [0.0, 0.0, 1.5];
+        t0.position = Some(pos0);
+        prim.targets.push(t0);
+        let mut t1 = MorphTarget::new();
+        let mut pos1 = vec![[0.0f32; 3]; 6];
+        pos1[2] = [-0.5, 0.0, 0.0];
+        t1.position = Some(pos1);
+        prim.targets.push(t1);
+        // Authored channel names, re-emitted on the BlendShapeChannel
+        // / Shape elements and re-surfaced on decode.
+        prim.extras.insert(
+            "fbx:morph_target_names".to_string(),
+            serde_json::json!(["Smile", "Frown"]),
+        );
+        mesh.weights.push(0.25);
+        mesh.weights.push(0.75);
+    }
+    let mid = scene.add_mesh(mesh);
+    let nid = scene.add_node(Node::new().with_name("MultiMorphNode").with_mesh(mid));
+    scene.roots.push(nid);
+
+    // Strided sampler: 2 keyframes × 2 targets. Slot 0 ramps 0 → 1,
+    // slot 1 ramps 1 → 0.5.
+    let mut anim = Animation::new(Some("MultiMorphClip".to_string()));
+    anim.channels.push(AnimationChannel {
+        target: AnimationTarget {
+            node: nid,
+            property: AnimationProperty::MorphWeights,
+        },
+        sampler: AnimationSampler {
+            keyframes: vec![0.0, 1.0],
+            values: AnimationValues::Scalar(vec![0.0, 1.0, 1.0, 0.5]),
+            interpolation: Interpolation::Linear,
+        },
+    });
+    scene.add_animation(anim);
+
+    for scene2 in [
+        decode(&encode_binary(&scene)),
+        decode(&encode_ascii(&scene)),
+    ] {
+        // Both targets rebuilt, deltas in slot order.
+        let prim = &scene2.meshes[0].primitives[0];
+        assert_eq!(prim.targets.len(), 2, "two morph targets");
+        let p0 = prim.targets[0].position.as_ref().expect("slot 0 deltas");
+        assert!((p0[0][2] - 1.5).abs() < 1e-6);
+        let p1 = prim.targets[1].position.as_ref().expect("slot 1 deltas");
+        assert!((p1[2][0] + 0.5).abs() < 1e-6);
+
+        // Authored channel names survive per slot.
+        assert_eq!(
+            prim.extras["fbx:morph_target_names"],
+            serde_json::json!(["Smile", "Frown"])
+        );
+
+        // Static weights survive per slot.
+        let w = &scene2.meshes[0].weights;
+        assert_eq!(w.len(), 2);
+        assert!((w[0] - 0.25).abs() < 1e-6);
+        assert!((w[1] - 0.75).abs() < 1e-6);
+
+        // One strided MorphWeights channel with both slots animated.
+        assert_eq!(scene2.animations.len(), 1);
+        let ch = scene2.animations[0]
+            .channels
+            .iter()
+            .find(|c| c.target.property == AnimationProperty::MorphWeights)
+            .expect("MorphWeights channel survives");
+        assert_eq!(ch.sampler.keyframes.len(), 2);
+        match &ch.sampler.values {
+            AnimationValues::Scalar(v) => {
+                assert_eq!(v.len(), 4, "2 keyframes x 2 targets");
+                assert!((v[0] - 0.0).abs() < 1e-4);
+                assert!((v[1] - 1.0).abs() < 1e-4);
+                assert!((v[2] - 1.0).abs() < 1e-4);
+                assert!((v[3] - 0.5).abs() < 1e-4);
+            }
+            other => panic!("expected Scalar values, got {other:?}"),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------

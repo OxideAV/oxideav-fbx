@@ -38,6 +38,18 @@
 //!     - Normals  : f64 array — optional normal-delta
 //! ```
 //!
+//! Each `BlendShapeChannel` becomes one [`oxideav_mesh3d::MorphTarget`]
+//! on the bound mesh's primitive, and the channel's **static**
+//! `DeformPercent` `Properties70` record (0..100) decodes — divided by
+//! [`DEFORM_PERCENT_SCALE`] — into the matching
+//! `oxideav_mesh3d::Mesh::weights` slot, so an authored rest blend
+//! state survives into the typed scene (mesh3d weights are the direct
+//! glTF-style §3.7.2.2 blend factors: `1.0` = fully applied target).
+//! An absent record decodes as `0.0`; the `FbxBlendShapeChannel`
+//! `PropertyTemplate` body is unobserved in the staged docs
+//! (`docs/3d/fbx/fbx-property-templates.md` §5 residual), so no
+//! template default is resolved.
+//!
 //! # Limitations
 //!
 //! - Only one [`oxideav_mesh3d::Primitive`] per [`oxideav_mesh3d::Mesh`]
@@ -63,17 +75,44 @@ use oxideav_mesh3d::{
 };
 
 use crate::binary::{FbxDocument, FbxNode, FbxProperty};
+use crate::properties70::PropertyMap;
+
+/// FBX `DeformPercent` is a percentage (0..100, per the blend-shape
+/// tree above); `oxideav_mesh3d` morph weights are the direct
+/// glTF-style §3.7.2.2 blend factors (`1.0` = fully applied target).
+/// Divide on decode, multiply on encode.
+pub const DEFORM_PERCENT_SCALE: f64 = 100.0;
+
+/// One `BlendShapeChannel`'s animation binding: which scene node's
+/// `MorphWeights` property its `DeformPercent` curves drive, and which
+/// morph-target slot (index into the bound mesh's
+/// `oxideav_mesh3d::Mesh::weights` / per-primitive `targets`) the
+/// channel occupies.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MorphChannelBinding {
+    /// The `MorphWeights` target on the mesh-bearing node.
+    pub target: AnimationTarget,
+    /// The channel's morph-target slot on the bound mesh.
+    pub target_index: usize,
+}
 
 /// Output of [`extract_deformers`] — the bookkeeping the scene
 /// builder needs to wire animation channels to the right
 /// [`AnimationTarget`].
 #[derive(Debug, Default)]
 pub struct DeformerOutput {
-    /// FBX `BlendShapeChannel` element id → `AnimationTarget` for the
-    /// `MorphWeights` property of the owning mesh's node. Empty when
-    /// the file carries no blend-shape deformers, or when the bound
-    /// mesh has no node attachment.
-    pub channel_targets: HashMap<i64, AnimationTarget>,
+    /// FBX `BlendShapeChannel` element id → the channel's
+    /// [`MorphChannelBinding`]. Empty when the file carries no
+    /// blend-shape deformers, or when the bound mesh has no node
+    /// attachment.
+    pub channel_targets: HashMap<i64, MorphChannelBinding>,
+    /// Per mesh-bearing node: the static (rest) morph weights in
+    /// target order — the decoded `DeformPercent` records divided by
+    /// [`DEFORM_PERCENT_SCALE`], mirroring the bound mesh's
+    /// `oxideav_mesh3d::Mesh::weights`. The animation module uses
+    /// these to fill unanimated slots of a multi-target
+    /// `MorphWeights` sampler.
+    pub node_morph_statics: HashMap<NodeId, Vec<f32>>,
 }
 
 /// Top-level entry point — walks every `Deformer` element in the
@@ -94,6 +133,10 @@ pub fn extract_deformers(
     let mut skin_deformers: HashMap<i64, &FbxNode> = HashMap::new();
     let mut cluster_deformers: HashMap<i64, &FbxNode> = HashMap::new();
     let mut blend_deformers: HashMap<i64, &FbxNode> = HashMap::new();
+    // Document order of the BlendShape deformers — morph-target slots
+    // are positional (mesh.weights / prim.targets indices), so the
+    // materialisation below must walk deformers deterministically.
+    let mut blend_order: Vec<i64> = Vec::new();
     let mut blend_channels: HashMap<i64, &FbxNode> = HashMap::new();
     let mut shape_geometries: HashMap<i64, &FbxNode> = HashMap::new();
 
@@ -113,7 +156,9 @@ pub fn extract_deformers(
                             cluster_deformers.insert(id, child);
                         }
                         Some("BlendShape") => {
-                            blend_deformers.insert(id, child);
+                            if blend_deformers.insert(id, child).is_none() {
+                                blend_order.push(id);
+                            }
                         }
                         Some("BlendShapeChannel") => {
                             blend_channels.insert(id, child);
@@ -338,8 +383,13 @@ pub fn extract_deformers(
         }
     }
 
-    // 4) Materialise blend shapes.
-    for (blend_id, geom_id) in &blend_to_geom {
+    // 4) Materialise blend shapes — in document order (`blend_order`),
+    //    since morph-target slots are positional.
+    for blend_id in &blend_order {
+        let geom_id = match blend_to_geom.get(blend_id) {
+            Some(g) => g,
+            None => continue,
+        };
         let mesh_id = match geometry_meshes.get(geom_id) {
             Some(m) => *m,
             None => continue,
@@ -356,8 +406,13 @@ pub fn extract_deformers(
 
         // For every BlendShapeChannel, take the most-recent Shape
         // (matches the doc's `target_shape` simplification) and emit
-        // one MorphTarget on the bound mesh's primitive.
+        // one MorphTarget on the bound mesh's primitive. The channel's
+        // authored display name (object-header prop, split at the
+        // `\x00\x01` class join) is collected per slot for the
+        // `fbx:morph_target_names` extras surface below —
+        // [`oxideav_mesh3d::MorphTarget`] has no name field.
         let n_corners = corner_indices.len();
+        let mut slot_names: Vec<String> = Vec::new();
         for &channel_id in channels {
             let shape_ids = match shapes_of_channel.get(&channel_id) {
                 Some(v) => v,
@@ -427,31 +482,80 @@ pub fn extract_deformers(
                 tgt.normal = Some(norm_buf);
             }
 
+            // The channel's static (rest) weight: its own
+            // `DeformPercent` `Properties70` record, 0..100 on the
+            // wire → 0..1 mesh3d blend factor. Absent → 0.0 (no
+            // template default — the `FbxBlendShapeChannel` body is
+            // a staged-docs residual).
+            let channel_node = blend_channels.get(&channel_id).copied();
+            let static_weight = channel_node
+                .map(PropertyMap::from_element)
+                .and_then(|p| p.as_f64("DeformPercent"))
+                .map_or(0.0f32, |v| (v / DEFORM_PERCENT_SCALE) as f32);
+
             let mesh = &mut scene.meshes[mesh_id.0 as usize];
             if let Some(prim) = mesh.primitives.first_mut() {
                 if prim.positions.len() == n_corners {
+                    // This channel's positional morph-target slot.
+                    let target_index = prim.targets.len();
                     prim.targets.push(tgt);
-                    // Default weight 0.0 — animation overrides at
-                    // runtime.
-                    mesh.weights.push(0.0);
+                    mesh.weights.push(static_weight);
+                    slot_names.push(channel_node.and_then(display_name).unwrap_or_default());
 
                     // Record this BlendShapeChannel's animation target so
-                    // `extract_animations` can wire DeformPercent curves.
+                    // `extract_animations` can wire DeformPercent curves,
+                    // and mirror the static weight per node so unanimated
+                    // slots of a multi-target sampler hold their rest
+                    // value.
                     if let Some(&node_id) = geometry_to_node.get(geom_id) {
                         out.channel_targets.insert(
                             channel_id,
-                            AnimationTarget {
-                                node: node_id,
-                                property: AnimationProperty::MorphWeights,
+                            MorphChannelBinding {
+                                target: AnimationTarget {
+                                    node: node_id,
+                                    property: AnimationProperty::MorphWeights,
+                                },
+                                target_index,
                             },
                         );
+                        out.node_morph_statics
+                            .entry(node_id)
+                            .or_default()
+                            .push(static_weight);
                     }
+                }
+            }
+        }
+
+        // Surface the channels' authored display names, appended in
+        // slot order onto the bound primitive's
+        // `extras["fbx:morph_target_names"]` (append — a geometry may
+        // carry several BlendShape deformers, each contributing
+        // slots).
+        if !slot_names.is_empty() {
+            let mesh = &mut scene.meshes[mesh_id.0 as usize];
+            if let Some(prim) = mesh.primitives.first_mut() {
+                let entry = prim
+                    .extras
+                    .entry("fbx:morph_target_names".to_string())
+                    .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+                if let serde_json::Value::Array(arr) = entry {
+                    arr.extend(slot_names.into_iter().map(serde_json::Value::String));
                 }
             }
         }
     }
 
     out
+}
+
+/// The element's authored display name — the object-header name
+/// property with the trailing `\x00\x01Class` join (binary form)
+/// stripped. ASCII-form names carry the `Class::Name` prefix already
+/// split by the parser into the same wire shape.
+fn display_name(n: &FbxNode) -> Option<String> {
+    let raw = n.properties.get(1)?.as_str()?;
+    Some(raw.split('\u{0}').next().unwrap_or(raw).to_owned())
 }
 
 /// Pull a `Properties70` numeric vector from the cluster's nested

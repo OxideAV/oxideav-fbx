@@ -9,6 +9,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Round 442 — **static `DeformPercent` round-trip
+  (`Mesh::weights`).** Each `BlendShapeChannel`'s static
+  `DeformPercent` `Properties70` record (0..100 wire percentage — the
+  in-tree blend-shape tree note in `crate::deformer`) now decodes,
+  divided by the new `deformer::DEFORM_PERCENT_SCALE`, into the
+  matching `oxideav_mesh3d::Mesh::weights` slot (the direct
+  glTF-style §3.7.2.2 blend factors, `1.0` = fully applied), closing
+  the documented "static per-target morph weights have no FBX
+  read-back home" encoder lossy edge: the encoder emits a
+  `Properties70 { P: "DeformPercent", "Number", "", "A", w×100 }`
+  block on every emitted channel. The typeName/flag shape is
+  provisional — the `FbxBlendShapeChannel` template body is a
+  staged-docs residual (`docs/3d/fbx/fbx-property-templates.md` §5) —
+  and the decode side reads the scalar typeName-agnostically. An
+  absent record still decodes as weight `0.0` (no template default
+  exists to resolve).
+
+- Round 442 — **multi-target morph animation, both directions.**
+  Previously every `DeformPercent` curve on a node clobbered a single
+  one-weight-per-key `MorphWeights` sampler (last channel won), and
+  the encoder emitted one curve wired to the node's **first**
+  `BlendShapeChannel` only. Decode now buckets each curve by its
+  channel's morph-target slot (`deformer::MorphChannelBinding` — the
+  deformer pass records node + slot per channel) and merges every
+  slot onto a union keyframe grid into ONE strided `MorphWeights`
+  channel per node per stack (value-table stride = the mesh's
+  morph-target count, per the `oxideav_mesh3d` sampler contract),
+  with unanimated slots holding their static rest weight and wire
+  percentages scaled ÷100 to blend factors. Encode inverts exactly:
+  one `AnimationCurveNode` + `d|DeformPercent` curve per slot (×100),
+  each OP-connected to the matching emitted channel.
+  `animation::extract_animations` gains the per-node statics
+  parameter; `deformer::DeformerOutput::channel_targets` now maps to
+  `MorphChannelBinding` (was a bare `AnimationTarget`).
+
+- Round 442 — **blend-shape determinism + authored channel names.**
+  `BlendShape` deformers are materialised in **document order**
+  (previously hash-map order — with two deformers on one geometry the
+  morph-target slot assignment was nondeterministic across runs), and
+  each channel's authored display name (object-header name property,
+  class join stripped) surfaces in slot order on
+  `Primitive::extras["fbx:morph_target_names"]`; the encoder re-emits
+  the authored names on the `BlendShapeChannel` / `Shape` elements
+  (fallback `Target{i}`), so names survive decode → encode → decode
+  in binary and ASCII forms. In-between shapes stay collapsed to the
+  most-recent `Shape` connection: the multi-`Shape`-per-channel
+  activation grammar is pinned by no staged doc (acquisition item).
+
 - Round 439 — **`GlobalSettings` axis integers → typed
   `Scene3D::up_axis` / `front_axis`, both directions.** The freshly
   extended `docs/3d/fbx/fbx-node-transform-chain.md` §4a pins the axis

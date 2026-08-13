@@ -41,14 +41,27 @@
 //!   normalises; buffers authored that way (including everything this
 //!   crate's own decoder produces) round-trip exactly, and the decode
 //!   side re-sorts each corner's joints by descending weight.
-//! - `Mesh::weights` (static per-target morph weights) has no FBX
-//!   home the decode side reads back — the decode path initialises
-//!   every target weight to `0.0` (animation overrides at runtime) —
-//!   so non-zero static weights do not survive.
+//!
+//! # Static morph weights
+//!
+//! Each emitted `BlendShapeChannel` carries a `Properties70` block
+//! with the channel's static `DeformPercent` record — the matching
+//! `Mesh::weights` slot × [`DEFORM_PERCENT_SCALE`] (mesh3d 0..1 blend
+//! factors → FBX 0..100 percentages), which the decode side divides
+//! back, closing the static-rest-blend round trip. The record uses
+//! the `"Number"` typeName + `"A"` (animatable) flag — the same shape
+//! this crate's other animatable scalar factors take (see
+//! `crate::properties70::PropertyMap::as_number`); the
+//! `FbxBlendShapeChannel` template body is a staged-docs residual
+//! (`docs/3d/fbx/fbx-property-templates.md` §5), so the exact
+//! producer-written form is provisional pending a staged blend-shape
+//! fixture. Decode is typeName-agnostic (generic scalar read) either
+//! way.
 
 use oxideav_mesh3d::{NodeId, Scene3D};
 
 use crate::binary::{FbxNode, FbxProperty};
+use crate::deformer::DEFORM_PERCENT_SCALE;
 
 /// Output of the deformer emission passes: element records for
 /// `Objects` + connection records for `Connections`.
@@ -82,11 +95,10 @@ pub(crate) fn build_deformer_objects(
         let Some(geom_fbx) = mesh_fbx_id(mesh_id.0 as usize) else {
             continue;
         };
-        let Some(prim) = scene
-            .meshes
-            .get(mesh_id.0 as usize)
-            .and_then(|m| m.primitives.first())
-        else {
+        let Some(mesh) = scene.meshes.get(mesh_id.0 as usize) else {
+            continue;
+        };
+        let Some(prim) = mesh.primitives.first() else {
             continue;
         };
 
@@ -116,19 +128,40 @@ pub(crate) fn build_deformer_objects(
             out.objects
                 .push(deformer_element(blend_fbx, "", "BlendShape"));
             out.connections.push(conn_oo(blend_fbx, geom_fbx));
+            // Authored per-slot channel names round-tripped by the
+            // decode side (empty / absent slots fall back to a
+            // positional `Target{ti}` name).
+            let slot_names: Vec<String> = prim
+                .extras
+                .get("fbx:morph_target_names")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .map(|v| v.as_str().unwrap_or_default().to_owned())
+                        .collect()
+                })
+                .unwrap_or_default();
             let mut channel_ids = Vec::with_capacity(prim.targets.len());
             for (ti, target) in prim.targets.iter().enumerate() {
+                let slot_name = match slot_names.get(ti) {
+                    Some(n) if !n.is_empty() => n.clone(),
+                    _ => format!("Target{ti}"),
+                };
                 let channel_fbx = alloc();
-                out.objects.push(deformer_element(
-                    channel_fbx,
-                    &format!("Target{ti}"),
-                    "BlendShapeChannel",
+                let mut channel = deformer_element(channel_fbx, &slot_name, "BlendShapeChannel");
+                // Static (rest) weight: Mesh::weights slot × 100 →
+                // the channel's DeformPercent record (see the
+                // "Static morph weights" module note).
+                let static_weight = mesh.weights.get(ti).copied().unwrap_or(0.0);
+                channel.children.push(properties70_deform_percent(
+                    f64::from(static_weight) * DEFORM_PERCENT_SCALE,
                 ));
+                out.objects.push(channel);
                 out.connections.push(conn_oo(channel_fbx, blend_fbx));
 
                 let shape_fbx = alloc();
                 out.objects
-                    .push(shape_geometry(shape_fbx, &format!("Target{ti}"), target));
+                    .push(shape_geometry(shape_fbx, &slot_name, target));
                 out.connections.push(conn_oo(shape_fbx, channel_fbx));
                 channel_ids.push(channel_fbx);
             }
@@ -269,6 +302,28 @@ fn shape_geometry(id: i64, name: &str, target: &oxideav_mesh3d::MorphTarget) -> 
             FbxProperty::String(b"Shape".to_vec()),
         ],
         children,
+    }
+}
+
+/// `Properties70 { P: "DeformPercent", "Number", "", "A", <v> }` —
+/// the channel's static weight record (0..100 wire percentage). See
+/// the "Static morph weights" module note for the typeName / flag
+/// choice.
+fn properties70_deform_percent(v: f64) -> FbxNode {
+    FbxNode {
+        name: "Properties70".to_string(),
+        properties: Vec::new(),
+        children: vec![FbxNode {
+            name: "P".to_string(),
+            properties: vec![
+                FbxProperty::String(b"DeformPercent".to_vec()),
+                FbxProperty::String(b"Number".to_vec()),
+                FbxProperty::String(Vec::new()),
+                FbxProperty::String(b"A".to_vec()),
+                FbxProperty::F64(v),
+            ],
+            children: Vec::new(),
+        }],
     }
 }
 

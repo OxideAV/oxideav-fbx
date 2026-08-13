@@ -48,6 +48,12 @@ impl Rec {
         self.num_props += 1;
         self
     }
+    fn with_prop_f64(mut self, v: f64) -> Self {
+        self.props.push(b'D');
+        self.props.extend_from_slice(&v.to_le_bytes());
+        self.num_props += 1;
+        self
+    }
     fn with_prop_f64_array(mut self, arr: &[f64]) -> Self {
         self.props.push(b'd');
         self.props
@@ -445,6 +451,18 @@ fn blend_channel(id: i64) -> Rec {
         .with_prop_string(b"BlendShapeChannel")
 }
 
+/// A `BlendShapeChannel` carrying a static `DeformPercent`
+/// Properties70 record (0..100 wire percentage).
+fn blend_channel_with_percent(id: i64, percent: f64) -> Rec {
+    let p = Rec::new("P")
+        .with_prop_string(b"DeformPercent")
+        .with_prop_string(b"Number")
+        .with_prop_string(b"")
+        .with_prop_string(b"A")
+        .with_prop_f64(percent);
+    blend_channel(id).with_child(Rec::new("Properties70").with_child(p))
+}
+
 fn shape_geometry(id: i64, indexes: &[i32], deltas: &[f64]) -> Rec {
     Rec::new("Geometry")
         .with_prop_i64(id)
@@ -481,6 +499,11 @@ fn blend_shape_emits_morph_target_with_per_corner_deltas() {
     let mesh = &scene.meshes[0];
     assert_eq!(mesh.primitives[0].targets.len(), 1, "one morph target");
     assert_eq!(mesh.weights, vec![0.0]);
+    // The channel's authored display name surfaces per slot.
+    assert_eq!(
+        mesh.primitives[0].extras["fbx:morph_target_names"],
+        serde_json::json!(["Smile"])
+    );
     let tgt = &mesh.primitives[0].targets[0];
     let pos = tgt.position.as_ref().expect("position deltas present");
     assert_eq!(pos.len(), 6, "per-corner deltas (6 corners)");
@@ -542,14 +565,213 @@ fn blend_shape_animation_wires_morph_weight_channel() {
 
     assert_eq!(scene.animations.len(), 1);
     let anim = &scene.animations[0];
-    assert_eq!(anim.channels.len(), 1, "one DeformPercent channel");
+    assert_eq!(anim.channels.len(), 1, "one MorphWeights channel");
     let ch = &anim.channels[0];
     assert_eq!(ch.target.property, AnimationProperty::MorphWeights);
     match &ch.sampler.values {
         AnimationValues::Scalar(v) => {
+            // Wire DeformPercent 0..100 → mesh3d 0..1 blend factors,
+            // one weight per morph target (single target here).
             assert_eq!(v.len(), 2);
             assert_eq!(v[0], 0.0);
-            assert_eq!(v[1], 100.0);
+            assert_eq!(v[1], 1.0);
+        }
+        other => panic!("expected Scalar, got {other:?}"),
+    }
+}
+
+#[test]
+fn blend_channel_static_deform_percent_decodes_into_mesh_weights() {
+    // A channel with `DeformPercent: 25` and no animation — the rest
+    // blend state must land on Mesh::weights as 0.25 (mesh3d 0..1
+    // blend-factor convention).
+    let shape = shape_geometry(600, &[2], &[0.0, 0.0, 0.5]);
+    let channel = blend_channel_with_percent(700, 25.0);
+    let blend = blend_deformer(800);
+
+    let objects = Rec::new("Objects")
+        .with_child(quad_geometry())
+        .with_child(quad_model())
+        .with_child(shape)
+        .with_child(channel)
+        .with_child(blend);
+    let connections = Rec::new("Connections")
+        .with_child(connection(b"OO", 100, 200))
+        .with_child(connection(b"OO", 200, 0))
+        .with_child(connection(b"OO", 800, 100))
+        .with_child(connection(b"OO", 700, 800))
+        .with_child(connection(b"OO", 600, 700));
+
+    let bytes = assemble(7400, vec![objects, connections]);
+    let mut dec = FbxDecoder::new();
+    let scene = dec.decode(&bytes).expect("static-weight fixture decodes");
+
+    let mesh = &scene.meshes[0];
+    assert_eq!(mesh.primitives[0].targets.len(), 1);
+    assert_eq!(mesh.weights.len(), 1);
+    assert!(
+        (mesh.weights[0] - 0.25).abs() < 1e-6,
+        "DeformPercent 25 → weight 0.25, got {}",
+        mesh.weights[0]
+    );
+}
+
+#[test]
+fn two_blend_deformers_on_one_geometry_keep_document_order() {
+    // Two separate BlendShape deformers bound to the same Geometry,
+    // one channel each. Morph-target slots are positional, so the
+    // targets must land in DOCUMENT order (deformer 800 before 801)
+    // — not in hash order — with the static weights + names aligned.
+    let shape_a = shape_geometry(600, &[2], &[0.0, 0.0, 0.5]);
+    let shape_b = Rec::new("Geometry")
+        .with_prop_i64(601)
+        .with_prop_string(b"Frown\x00\x01Shape")
+        .with_prop_string(b"Shape")
+        .with_child(Rec::new("Indexes").with_prop_i32_array(&[1]))
+        .with_child(Rec::new("Vertices").with_prop_f64_array(&[0.0, 0.0, -0.5]));
+    let channel_a = blend_channel_with_percent(700, 10.0);
+    let channel_b = Rec::new("Deformer")
+        .with_prop_i64(701)
+        .with_prop_string(b"Frown\x00\x01BlendShapeChannel")
+        .with_prop_string(b"BlendShapeChannel")
+        .with_child(
+            Rec::new("Properties70").with_child(
+                Rec::new("P")
+                    .with_prop_string(b"DeformPercent")
+                    .with_prop_string(b"Number")
+                    .with_prop_string(b"")
+                    .with_prop_string(b"A")
+                    .with_prop_f64(90.0),
+            ),
+        );
+    let blend_a = blend_deformer(800);
+    let blend_b = Rec::new("Deformer")
+        .with_prop_i64(801)
+        .with_prop_string(b"BlendShapeB\x00\x01Deformer")
+        .with_prop_string(b"BlendShape");
+
+    let objects = Rec::new("Objects")
+        .with_child(quad_geometry())
+        .with_child(quad_model())
+        .with_child(shape_a)
+        .with_child(shape_b)
+        .with_child(channel_a)
+        .with_child(channel_b)
+        .with_child(blend_a)
+        .with_child(blend_b);
+    let connections = Rec::new("Connections")
+        .with_child(connection(b"OO", 100, 200))
+        .with_child(connection(b"OO", 200, 0))
+        .with_child(connection(b"OO", 800, 100)) // BlendShapeA → Geometry
+        .with_child(connection(b"OO", 801, 100)) // BlendShapeB → Geometry
+        .with_child(connection(b"OO", 700, 800))
+        .with_child(connection(b"OO", 701, 801))
+        .with_child(connection(b"OO", 600, 700))
+        .with_child(connection(b"OO", 601, 701));
+
+    let bytes = assemble(7400, vec![objects, connections]);
+    let mut dec = FbxDecoder::new();
+    let scene = dec.decode(&bytes).expect("two-deformer fixture decodes");
+
+    let mesh = &scene.meshes[0];
+    let prim = &mesh.primitives[0];
+    assert_eq!(prim.targets.len(), 2, "one target per deformer");
+    // Slot 0 = deformer 800's channel ("Smile", 10%), slot 1 =
+    // deformer 801's ("Frown", 90%) — document order.
+    assert!((mesh.weights[0] - 0.10).abs() < 1e-6);
+    assert!((mesh.weights[1] - 0.90).abs() < 1e-6);
+    assert_eq!(
+        prim.extras["fbx:morph_target_names"],
+        serde_json::json!(["Smile", "Frown"])
+    );
+    // Delta payloads confirm the slot assignment (v2 vs v1 deltas).
+    let p0 = prim.targets[0].position.as_ref().unwrap();
+    assert_eq!(p0[2], [0.0, 0.0, 0.5]);
+    let p1 = prim.targets[1].position.as_ref().unwrap();
+    assert_eq!(p1[1], [0.0, 0.0, -0.5]);
+}
+
+#[test]
+fn multi_channel_morph_animation_merges_one_strided_sampler() {
+    // Two BlendShapeChannels on one BlendShape deformer:
+    //   slot 0 (id 700): static DeformPercent 25, animated on keys
+    //                    t=0..1 going 0..100;
+    //   slot 1 (id 701): static DeformPercent 50, NOT animated.
+    // Expect Mesh::weights = [0.25, 0.5] and ONE MorphWeights channel
+    // whose Scalar table is strided by 2 (per the mesh3d sampler
+    // contract), the unanimated slot holding its static weight.
+    let shape_a = shape_geometry(600, &[2], &[0.0, 0.0, 0.5]);
+    let shape_b = Rec::new("Geometry")
+        .with_prop_i64(601)
+        .with_prop_string(b"Frown\x00\x01Shape")
+        .with_prop_string(b"Shape")
+        .with_child(Rec::new("Indexes").with_prop_i32_array(&[1]))
+        .with_child(Rec::new("Vertices").with_prop_f64_array(&[0.0, 0.0, -0.5]));
+    let channel_a = blend_channel_with_percent(700, 25.0);
+    let channel_b = blend_channel_with_percent(701, 50.0);
+    let blend = blend_deformer(800);
+
+    let curve = anim_curve(1000, &[0.0, 1.0], &[0.0, 100.0]);
+    let cn = Rec::new("AnimationCurveNode")
+        .with_prop_i64(2000)
+        .with_prop_string(b"DeformPercent\x00\x01AnimCurveNode")
+        .with_prop_string(b"");
+    let layer = anim_layer(3000);
+    let stack = anim_stack(4000);
+
+    let objects = Rec::new("Objects")
+        .with_child(quad_geometry())
+        .with_child(quad_model())
+        .with_child(shape_a)
+        .with_child(shape_b)
+        .with_child(channel_a)
+        .with_child(channel_b)
+        .with_child(blend)
+        .with_child(curve)
+        .with_child(cn)
+        .with_child(layer)
+        .with_child(stack);
+    let connections = Rec::new("Connections")
+        .with_child(connection(b"OO", 100, 200))
+        .with_child(connection(b"OO", 200, 0))
+        .with_child(connection(b"OO", 800, 100))
+        .with_child(connection(b"OO", 700, 800)) // slot 0
+        .with_child(connection(b"OO", 701, 800)) // slot 1
+        .with_child(connection(b"OO", 600, 700))
+        .with_child(connection(b"OO", 601, 701))
+        // Animation drives slot 0's channel only.
+        .with_child(connection_op(b"OP", 1000, 2000, b"d|DeformPercent"))
+        .with_child(connection_op(b"OP", 2000, 700, b"DeformPercent"))
+        .with_child(connection(b"OO", 2000, 3000))
+        .with_child(connection(b"OO", 3000, 4000));
+
+    let bytes = assemble(7400, vec![objects, connections]);
+    let mut dec = FbxDecoder::new();
+    let scene = dec.decode(&bytes).expect("multi-channel fixture decodes");
+
+    // Static weights, in channel connection order.
+    let mesh = &scene.meshes[0];
+    assert_eq!(mesh.primitives[0].targets.len(), 2, "two morph targets");
+    assert_eq!(mesh.weights.len(), 2);
+    assert!((mesh.weights[0] - 0.25).abs() < 1e-6);
+    assert!((mesh.weights[1] - 0.5).abs() < 1e-6);
+
+    // One strided MorphWeights channel.
+    assert_eq!(scene.animations.len(), 1);
+    let anim = &scene.animations[0];
+    assert_eq!(anim.channels.len(), 1, "one merged MorphWeights channel");
+    let ch = &anim.channels[0];
+    assert_eq!(ch.target.property, AnimationProperty::MorphWeights);
+    assert_eq!(ch.sampler.keyframes.len(), 2);
+    match &ch.sampler.values {
+        AnimationValues::Scalar(v) => {
+            assert_eq!(v.len(), 4, "2 keyframes x 2 targets");
+            // t=0: slot 0 animated at 0.0, slot 1 static 0.5.
+            assert!((v[0] - 0.0).abs() < 1e-6);
+            assert!((v[1] - 0.5).abs() < 1e-6);
+            // t=1: slot 0 animated at 1.0, slot 1 static 0.5.
+            assert!((v[2] - 1.0).abs() < 1e-6);
+            assert!((v[3] - 0.5).abs() < 1e-6);
         }
         other => panic!("expected Scalar, got {other:?}"),
     }

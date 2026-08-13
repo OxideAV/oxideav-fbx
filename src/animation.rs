@@ -81,6 +81,7 @@ use oxideav_mesh3d::{
 };
 
 use crate::binary::{FbxDocument, FbxNode, FbxProperty};
+use crate::deformer::{MorphChannelBinding, DEFORM_PERCENT_SCALE};
 use crate::node_transform::TransformChain;
 
 /// FBX KTime constant — number of fixed-point ticks per real-world
@@ -132,10 +133,17 @@ struct RawCurve {
 /// Models referenced by an animation but not present in `model_nodes`
 /// are skipped (with no error — animations on hidden helper bones
 /// that the scene-walker hasn't surfaced are common in the wild).
+///
+/// `deformer_targets` / `node_morph_statics` come from
+/// [`crate::deformer::extract_deformers`]: the former resolves each
+/// `BlendShapeChannel` FBX id to its node + morph-target slot, the
+/// latter supplies the per-node static (rest) weights that fill
+/// unanimated slots of a multi-target `MorphWeights` sampler.
 pub fn extract_animations(
     doc: &FbxDocument,
     model_nodes: &HashMap<i64, NodeId>,
-    deformer_targets: &HashMap<i64, AnimationTarget>,
+    deformer_targets: &HashMap<i64, MorphChannelBinding>,
+    node_morph_statics: &HashMap<NodeId, Vec<f32>>,
 ) -> Vec<Animation> {
     // Index Objects by FBX id for every animation-related element
     // type we touch.
@@ -237,10 +245,16 @@ pub fn extract_animations(
     // belongs to; it's an internal key only — see `prop_tag` /
     // `prop_from_tag`.
     let mut per_stack: HashMap<i64, HashMap<(NodeId, u8), ComponentCurves>> = HashMap::new();
-    // Per-stack accumulator for morph-target (Scalar) animations,
-    // separate from the Vec3/Quat path because they don't fan out
-    // across X/Y/Z components. Keyed by (node_id, property_tag).
-    let mut per_stack_scalar: HashMap<i64, HashMap<(NodeId, u8), RawCurve>> = HashMap::new();
+    // Per-stack accumulator for morph-target (`DeformPercent`)
+    // animations, separate from the Vec3/Quat path because they fan
+    // out across morph-target slots rather than X/Y/Z components:
+    // node → (target slot → raw curve). BTreeMap keeps slot
+    // iteration deterministic.
+    #[allow(clippy::type_complexity)]
+    let mut per_stack_morph: HashMap<
+        i64,
+        HashMap<NodeId, std::collections::BTreeMap<usize, RawCurve>>,
+    > = HashMap::new();
 
     for (curve_id, curve) in &curves {
         let (curve_node_id, axis_tag) = match curve_to_node.get(curve_id) {
@@ -282,14 +296,18 @@ pub fn extract_animations(
 
         // Morph-target (Scalar) — DeformPercent on a BlendShapeChannel
         // sub-deformer. The deformer module pre-resolved the
-        // BlendShapeChannel FBX id to an AnimationTarget on the bound
-        // mesh's owning node; we look that up here.
+        // BlendShapeChannel FBX id to its node + morph-target slot;
+        // we bucket the curve under that slot here so every channel
+        // of a multi-target mesh contributes to one strided
+        // MorphWeights sampler below.
         if target_prop == TARGET_DEFORM_PERCENT && axis_tag == "d|DeformPercent" {
-            if let Some(&target) = deformer_targets.get(target_id) {
-                per_stack_scalar
+            if let Some(binding) = deformer_targets.get(target_id) {
+                per_stack_morph
                     .entry(stack_id)
                     .or_default()
-                    .insert((target.node, prop_tag(target.property)), curve.clone());
+                    .entry(binding.target.node)
+                    .or_default()
+                    .insert(binding.target_index, curve.clone());
             }
         }
     }
@@ -341,19 +359,17 @@ pub fn extract_animations(
                 }
             }
         }
-        if let Some(scalars) = per_stack_scalar.get(stack_id) {
-            for ((node_id, tag), curve) in scalars {
-                anim.channels.push(AnimationChannel {
-                    target: AnimationTarget {
-                        node: *node_id,
-                        property: prop_from_tag(*tag),
-                    },
-                    sampler: AnimationSampler {
-                        keyframes: curve.times_secs.clone(),
-                        values: AnimationValues::Scalar(curve.values.clone()),
-                        interpolation: Interpolation::Linear,
-                    },
-                });
+        if let Some(morphs) = per_stack_morph.get(stack_id) {
+            // Deterministic node order for the emitted channel list.
+            let mut node_ids: Vec<NodeId> = morphs.keys().copied().collect();
+            node_ids.sort_by_key(|n| n.0);
+            for node_id in node_ids {
+                let slot_curves = &morphs[&node_id];
+                if let Some(channel) =
+                    build_morph_channel(node_id, slot_curves, node_morph_statics.get(&node_id))
+                {
+                    anim.channels.push(channel);
+                }
             }
         }
 
@@ -659,6 +675,68 @@ fn build_channel(
         sampler: AnimationSampler {
             keyframes: merged_times,
             values,
+            interpolation: Interpolation::Linear,
+        },
+    })
+}
+
+/// Combine every `DeformPercent` curve targeting one node's
+/// blend-shape channels into a single `MorphWeights`
+/// [`AnimationChannel`], per the [`oxideav_mesh3d`] sampler contract:
+/// the `Scalar` value table is strided by the bound mesh's
+/// morph-target count (one weight per target per keyframe).
+///
+/// FBX writers animate channels independently (each
+/// `BlendShapeChannel` gets its own curve with its own key grid), so
+/// — exactly like [`build_channel`]'s X/Y/Z merge — the union of
+/// keyframe times is taken and every animated slot is linearly
+/// resampled onto it. Slots without a curve hold their **static**
+/// `DeformPercent` value (the same rest weight the deformer module
+/// decoded into `Mesh::weights`). Wire values are 0..100 percentages;
+/// the emitted weights are divided by [`DEFORM_PERCENT_SCALE`] to the
+/// mesh3d §3.7.2.2 blend-factor convention.
+fn build_morph_channel(
+    node: NodeId,
+    slot_curves: &std::collections::BTreeMap<usize, RawCurve>,
+    statics: Option<&Vec<f32>>,
+) -> Option<AnimationChannel> {
+    let statics: &[f32] = statics.map_or(&[], Vec::as_slice);
+    // Stride = the mesh's morph-target count: every static slot plus
+    // any animated slot beyond them (defensive — the deformer module
+    // fills statics for every materialised target).
+    let max_animated = slot_curves.keys().copied().max()?;
+    let n_targets = statics.len().max(max_animated + 1);
+
+    let mut merged_times: Vec<f32> = Vec::new();
+    for c in slot_curves.values() {
+        push_times(&mut merged_times, &c.times_secs);
+    }
+    merged_times.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    merged_times.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
+    if merged_times.is_empty() {
+        return None;
+    }
+
+    let mut values: Vec<f32> = Vec::with_capacity(merged_times.len() * n_targets);
+    for &t in &merged_times {
+        for slot in 0..n_targets {
+            match slot_curves.get(&slot) {
+                Some(curve) => {
+                    values.push((f64::from(sample_linear(curve, t)) / DEFORM_PERCENT_SCALE) as f32)
+                }
+                None => values.push(statics.get(slot).copied().unwrap_or(0.0)),
+            }
+        }
+    }
+
+    Some(AnimationChannel {
+        target: AnimationTarget {
+            node,
+            property: AnimationProperty::MorphWeights,
+        },
+        sampler: AnimationSampler {
+            keyframes: merged_times,
+            values: AnimationValues::Scalar(values),
             interpolation: Interpolation::Linear,
         },
     })

@@ -25,12 +25,16 @@
 //!   of [`crate::animation::euler_xyz_to_quat`], the convention the
 //!   decode path reads) and split into the same three component curves.
 //! - **MorphWeights** ([`oxideav_mesh3d::AnimationValues::Scalar`]) —
-//!   one `AnimationCurveNode` per channel, OP-connected to the target
-//!   node's first `BlendShapeChannel` (emitted by
-//!   [`crate::deformer_writer`]) under the `"DeformPercent"` property
-//!   name, with a single `"d|DeformPercent"` curve carrying the raw
-//!   scalar keyframes (the decode side reads them back verbatim — no
-//!   scaling is applied in either direction).
+//!   the value table is strided by the target node's morph-target
+//!   count (the `oxideav_mesh3d` sampler contract: one weight per
+//!   target per keyframe). One `AnimationCurveNode` + one
+//!   `"d|DeformPercent"` curve is emitted **per morph-target slot**,
+//!   each OP-connected to the node's matching `BlendShapeChannel`
+//!   (emitted by [`crate::deformer_writer`], in target order) under
+//!   the `"DeformPercent"` property name. Weights are the 0..1 mesh3d
+//!   blend factors; the wire curves carry 0..100 `DeformPercent`
+//!   percentages (× [`DEFORM_PERCENT_SCALE`] on the way out, the
+//!   decode side divides back).
 //!
 //! # Time units
 //!
@@ -42,6 +46,7 @@ use oxideav_mesh3d::{Animation, AnimationChannel, AnimationProperty, AnimationVa
 
 use crate::animation::KTIME_TICKS_PER_SECOND;
 use crate::binary::{FbxNode, FbxProperty};
+use crate::deformer::DEFORM_PERCENT_SCALE;
 use crate::node_transform::TransformChain;
 use crate::scene_writer::quat_to_euler_xyz_deg_pub;
 
@@ -58,14 +63,15 @@ pub(crate) struct AnimEmit {
 /// `node_fbx_id(node_id)` resolves a scene [`NodeId`] to the FBX
 /// `Model` element id the [`crate::scene_writer`] assigned (so the
 /// `AnimationCurveNode -> Model` OP connection points at the right
-/// Model record). `morph_channel_id(node_id)` resolves a node to its
-/// first emitted `BlendShapeChannel` element id (the `DeformPercent`
-/// OP target for MorphWeights channels). `alloc` hands out fresh FBX
-/// ids for the animation elements.
+/// Model record). `morph_channel_ids(node_id)` resolves a node to its
+/// emitted `BlendShapeChannel` element ids in morph-target order (the
+/// `DeformPercent` OP targets for MorphWeights channels — one curve
+/// per target slot). `alloc` hands out fresh FBX ids for the
+/// animation elements.
 pub(crate) fn build_animation_objects(
     animations: &[Animation],
     node_fbx_id: impl Fn(NodeId) -> Option<i64>,
-    morph_channel_id: impl Fn(NodeId) -> Option<i64>,
+    morph_channel_ids: impl Fn(NodeId) -> Option<Vec<i64>>,
     node_chain: impl Fn(NodeId) -> Option<TransformChain>,
     mut alloc: impl FnMut() -> i64,
 ) -> AnimEmit {
@@ -102,34 +108,47 @@ pub(crate) fn build_animation_objects(
                 AnimationProperty::Translation => 0usize,
                 AnimationProperty::Rotation => 1,
                 AnimationProperty::Scale => 2,
-                // MorphWeights — a single-curve DeformPercent channel
-                // targeting the node's BlendShapeChannel deformer.
+                // MorphWeights — one DeformPercent curve per
+                // morph-target slot, each targeting the node's
+                // matching BlendShapeChannel deformer.
                 AnimationProperty::MorphWeights => {
-                    let Some(channel_fbx) = morph_channel_id(ch.target.node) else {
+                    let Some(channel_fbxs) = morph_channel_ids(ch.target.node) else {
                         continue;
                     };
                     let AnimationValues::Scalar(vals) = &ch.sampler.values else {
                         continue;
                     };
                     let times = &ch.sampler.keyframes;
-                    if vals.len() != times.len() {
+                    // Per the mesh3d sampler contract the value table
+                    // is strided by the morph-target count; a
+                    // non-integral stride is malformed.
+                    if times.is_empty() || vals.len() % times.len() != 0 {
                         continue;
                     }
-                    let curve_node_id = alloc();
-                    objects.push(element(
-                        "AnimationCurveNode",
-                        curve_node_id,
-                        "DeformPercent",
-                        "",
-                        Vec::new(),
-                    ));
-                    // AnimationCurveNode -> BlendShapeChannel OP.
-                    connections.push(conn_op(curve_node_id, channel_fbx, "DeformPercent"));
-                    // AnimationCurveNode -> AnimationLayer OO.
-                    connections.push(conn_oo(curve_node_id, layer_id));
-                    let curve_id = alloc();
-                    objects.push(build_curve(curve_id, times, vals));
-                    connections.push(conn_op(curve_id, curve_node_id, "d|DeformPercent"));
+                    let stride = vals.len() / times.len();
+                    for (slot, channel_fbx) in channel_fbxs.into_iter().enumerate().take(stride) {
+                        // 0..1 weights → 0..100 DeformPercent wire values.
+                        let slot_vals: Vec<f32> = (0..times.len())
+                            .map(|k| {
+                                (f64::from(vals[k * stride + slot]) * DEFORM_PERCENT_SCALE) as f32
+                            })
+                            .collect();
+                        let curve_node_id = alloc();
+                        objects.push(element(
+                            "AnimationCurveNode",
+                            curve_node_id,
+                            "DeformPercent",
+                            "",
+                            Vec::new(),
+                        ));
+                        // AnimationCurveNode -> BlendShapeChannel OP.
+                        connections.push(conn_op(curve_node_id, channel_fbx, "DeformPercent"));
+                        // AnimationCurveNode -> AnimationLayer OO.
+                        connections.push(conn_oo(curve_node_id, layer_id));
+                        let curve_id = alloc();
+                        objects.push(build_curve(curve_id, times, &slot_vals));
+                        connections.push(conn_op(curve_id, curve_node_id, "d|DeformPercent"));
+                    }
                     continue;
                 }
             };
