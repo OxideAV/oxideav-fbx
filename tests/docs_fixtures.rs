@@ -285,6 +285,21 @@ fn all_fixtures_decode_the_pinned_axis_convention() {
         let scene = decode(&bytes);
         assert_eq!(scene.up_axis, Axis::PosY, "{name}: up axis");
         assert_eq!(scene.front_axis, Axis::PosZ, "{name}: front axis");
+        // §4a structural fact on real bytes: the triple is mutually
+        // distinct and exhausts {0,1,2} — CoordAxis is the remaining
+        // (right) axis, X = 0 on every Maya-lineage fixture — so the
+        // coherence guard must stay silent.
+        assert_eq!(
+            scene.extras.get("fbx:coord_axis").and_then(|v| v.as_i64()),
+            Some(0),
+            "{name}: coord axis is the remaining index"
+        );
+        assert!(
+            !scene
+                .extras
+                .contains_key("fbx:axis_convention_inconsistent"),
+            "{name}: coherent triple raises no marker"
+        );
     }
 }
 

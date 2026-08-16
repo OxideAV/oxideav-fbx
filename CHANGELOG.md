@@ -26,6 +26,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Round 446 — **§4a axis-triple coherence guard.** The freshly
+  ratified `docs/3d/fbx/fbx-node-transform-chain.md` §4a pins, from
+  staged bytes, that the `GlobalSettings` axis triple declares three
+  *distinct* axes exhausting `{0, 1, 2}` (`UpAxis` / `FrontAxis` /
+  `CoordAxis` = "the remaining (right) axis"). Decode now enforces
+  that structural fact instead of typing incoherent claims:
+  `UpAxis == FrontAxis` leaves both `Scene3D::up_axis` /
+  `front_axis` at their defaults with
+  `extras["fbx:axis_convention_inconsistent"] = "up_front_equal"`
+  (raw ints stay on extras as before), and a `CoordAxis` colliding
+  with a self-consistent up/front pair keeps up/front typed but
+  surfaces `"coord_axis_collision"`. The docs-fixture sweep now also
+  asserts, per fixture, `CoordAxis == 0` (the remaining index on the
+  Maya-lineage `1 / 2 / 0` triple) and that the guard stays silent
+  on all seven staged files.
+
 - Round 446 — **oxideav-mesh3d 0.0.5 texture-reference surface
   adopted (`TextureRef::uv_set` join + typed
   `TextureRef::transform`), both directions.** The `Texture`

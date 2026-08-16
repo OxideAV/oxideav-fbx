@@ -70,7 +70,14 @@
 //! viewer"* — so a Maya export decodes as `front_axis = PosZ`. Axis
 //! ints outside the documented `{0, 1, 2}` table (or a sign outside
 //! `{+1, −1}`) leave the scene fields at the [`Scene3D::new`]
-//! defaults; the raw ints always stay on `Scene3D::extras`.
+//! defaults; the raw ints always stay on `Scene3D::extras`. The §4a
+//! structural fact — the triple declares three *distinct* axes
+//! exhausting `{0, 1, 2}` — is enforced as a coherence guard:
+//! `UpAxis == FrontAxis` leaves both typed fields at their defaults
+//! with `extras["fbx:axis_convention_inconsistent"] =
+//! "up_front_equal"`, and a `CoordAxis` colliding with a
+//! self-consistent up/front pair keeps up/front typed but surfaces
+//! `"coord_axis_collision"`.
 //!
 //! # No coordinate-system / unit-scale auto-conversion
 //!
@@ -191,11 +198,47 @@ pub fn extract_global_settings(doc: &FbxDocument, scene: &mut Scene3D) -> usize 
     // ints; an absent `*Sign` record defaults to `+1`, the only
     // observed value). Out-of-table values leave the `Scene3D::new`
     // defaults — the raw ints are already on `extras` above.
-    if let Some(axis) = typed_axis(&props, "UpAxis", "UpAxisSign") {
-        scene.up_axis = axis;
-    }
-    if let Some(axis) = typed_axis(&props, "FrontAxis", "FrontAxisSign") {
-        scene.front_axis = axis;
+    //
+    // §4a's structural fact — the triple declares three *distinct*
+    // axes exhausting `{0, 1, 2}` (up / front / "the remaining
+    // (right) axis") — is enforced as a coherence guard: a file
+    // claiming `UpAxis == FrontAxis` is geometrically incoherent, so
+    // neither typed field is set and
+    // `extras["fbx:axis_convention_inconsistent"] = "up_front_equal"`
+    // marks the raw-only fallback. A `CoordAxis` colliding with a
+    // self-consistent up/front pair still types up/front (they alone
+    // determine the frame) but surfaces the
+    // `"coord_axis_collision"` marker.
+    let in_table = |name: &str| {
+        props
+            .as_i32(name)
+            .map(i64::from)
+            .filter(|v| (0..=2).contains(v))
+    };
+    let (up_i, front_i, coord_i) = (
+        in_table("UpAxis"),
+        in_table("FrontAxis"),
+        in_table("CoordAxis"),
+    );
+    let up_front_clash = matches!((up_i, front_i), (Some(a), Some(b)) if a == b);
+    if up_front_clash {
+        extras.insert(
+            "fbx:axis_convention_inconsistent".to_string(),
+            Value::String("up_front_equal".to_string()),
+        );
+    } else {
+        if let Some(axis) = typed_axis(&props, "UpAxis", "UpAxisSign") {
+            scene.up_axis = axis;
+        }
+        if let Some(axis) = typed_axis(&props, "FrontAxis", "FrontAxisSign") {
+            scene.front_axis = axis;
+        }
+        if coord_i.is_some() && (coord_i == up_i || coord_i == front_i) {
+            extras.insert(
+                "fbx:axis_convention_inconsistent".to_string(),
+                Value::String("coord_axis_collision".to_string()),
+            );
+        }
     }
 
     // Merge into the scene's extras (preserves any prior entry).
@@ -745,6 +788,74 @@ mod tests {
         assert_eq!(scene.up_axis, Axis::PosX);
         // FrontAxis absent entirely → mesh3d default untouched.
         assert_eq!(scene.front_axis, Axis::NegZ);
+    }
+
+    /// §4a coherence guard: `UpAxis == FrontAxis` is geometrically
+    /// incoherent (the triple declares three *distinct* axes), so
+    /// neither typed field is set and the marker surfaces.
+    #[test]
+    fn equal_up_and_front_axes_stay_untyped_with_marker() {
+        let doc = doc_with_globals(vec![
+            p("UpAxis", "int", vec![FbxProperty::I32(1)]),
+            p("FrontAxis", "int", vec![FbxProperty::I32(1)]),
+        ]);
+        let mut scene = Scene3D::new();
+        extract_global_settings(&doc, &mut scene);
+        // Both typed fields keep the Scene3D::new defaults.
+        assert_eq!(scene.up_axis, Axis::PosY);
+        assert_eq!(scene.front_axis, Axis::NegZ);
+        assert_eq!(
+            scene
+                .extras
+                .get("fbx:axis_convention_inconsistent")
+                .and_then(|v| v.as_str()),
+            Some("up_front_equal")
+        );
+        // Raw ints still ride on extras for the consumer.
+        assert_eq!(
+            scene.extras.get("fbx:front_axis").and_then(|v| v.as_i64()),
+            Some(1)
+        );
+    }
+
+    /// A `CoordAxis` colliding with a self-consistent up/front pair
+    /// still types up/front (they alone determine the frame) but
+    /// surfaces the collision marker.
+    #[test]
+    fn coord_axis_collision_keeps_up_front_typed_with_marker() {
+        let doc = doc_with_globals(vec![
+            p("UpAxis", "int", vec![FbxProperty::I32(1)]),
+            p("FrontAxis", "int", vec![FbxProperty::I32(2)]),
+            p("CoordAxis", "int", vec![FbxProperty::I32(2)]),
+        ]);
+        let mut scene = Scene3D::new();
+        extract_global_settings(&doc, &mut scene);
+        assert_eq!(scene.up_axis, Axis::PosY);
+        assert_eq!(scene.front_axis, Axis::PosZ);
+        assert_eq!(
+            scene
+                .extras
+                .get("fbx:axis_convention_inconsistent")
+                .and_then(|v| v.as_str()),
+            Some("coord_axis_collision")
+        );
+    }
+
+    /// The coherent Maya triple raises no marker.
+    #[test]
+    fn coherent_axis_triple_raises_no_marker() {
+        let doc = doc_with_globals(vec![
+            p("UpAxis", "int", vec![FbxProperty::I32(1)]),
+            p("FrontAxis", "int", vec![FbxProperty::I32(2)]),
+            p("CoordAxis", "int", vec![FbxProperty::I32(0)]),
+        ]);
+        let mut scene = Scene3D::new();
+        extract_global_settings(&doc, &mut scene);
+        assert!(!scene
+            .extras
+            .contains_key("fbx:axis_convention_inconsistent"));
+        assert_eq!(scene.up_axis, Axis::PosY);
+        assert_eq!(scene.front_axis, Axis::PosZ);
     }
 
     /// Out-of-table ints leave the typed fields at their defaults;

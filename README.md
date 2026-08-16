@@ -285,7 +285,15 @@ clean-room from third-party documentation:
   = the remaining index, `OriginalUpAxis` = the `−1` not-recorded
   sentinel) while round-tripped `fbx:*_axis*` extras re-emit verbatim.
   Out-of-table ints stay honest: raw on `extras`, typed fields at the
-  `Scene3D::new` defaults.
+  `Scene3D::new` defaults. The §4a structural fact — the triple
+  declares three *distinct* axes exhausting `{0, 1, 2}` — is enforced
+  as a coherence guard: `UpAxis == FrontAxis` leaves both typed
+  fields at their defaults with
+  `extras["fbx:axis_convention_inconsistent"] = "up_front_equal"`;
+  a `CoordAxis` colliding with a self-consistent up/front pair keeps
+  up/front typed and surfaces `"coord_axis_collision"`. The guard is
+  pinned silent on all seven staged fixtures (whose triples are the
+  coherent Maya `1 / 2 / 0`).
 - **`Definitions` / `PropertyTemplate` decoding + template-default
   resolution** — the top-level `Definitions` section (per
   `docs/3d/fbx/fbx-ascii-grammar.md` §7b: *"`Count` at the top is the
