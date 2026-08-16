@@ -190,12 +190,29 @@ pub fn encode_scene_with_options(scene: &Scene3D, opts: &SceneEncodeOptions) -> 
     // same label the geometry's `LayerElementUV` `Name` leaf carries
     // (the join the decode side's `resolve_uv_set_index` reads).
     let mut mesh_of_material: Vec<Option<usize>> = vec![None; scene.materials.len()];
+    let note_material = |mat_idx: usize, mi: usize, map: &mut Vec<Option<usize>>| {
+        if let Some(slot) = map.get_mut(mat_idx) {
+            if slot.is_none() {
+                *slot = Some(mi);
+            }
+        }
+    };
     for (mi, mesh) in scene.meshes.iter().enumerate() {
         for prim in &mesh.primitives {
             if let Some(mid) = prim.material {
-                if let Some(slot) = mesh_of_material.get_mut(mid.0 as usize) {
-                    if slot.is_none() {
-                        *slot = Some(mi);
+                note_material(mid.0 as usize, mi, &mut mesh_of_material);
+            }
+            // Multi-material primitives: every slot-table entry draws
+            // this mesh too (`fbx:material_slots`, MaterialId.0 per
+            // slot in connection order).
+            if let Some(slots) = prim
+                .extras
+                .get("fbx:material_slots")
+                .and_then(|v| v.as_array())
+            {
+                for v in slots {
+                    if let Some(id) = v.as_u64() {
+                        note_material(id as usize, mi, &mut mesh_of_material);
                     }
                 }
             }

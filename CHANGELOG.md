@@ -111,6 +111,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   node-level weight overrides await an `oxideav-mesh3d` release
   carrying `Node::weights`").
 
+- Round 446 — **texture-video fixture re-encode closure.** The
+  staged fixture's `UVSet` join + `UVChannel_1` / `UVChannel_3`
+  channel labels survive a full `decode → encode → decode` cycle in
+  binary and ASCII forms (docs-fixture test, skip-cleanly-when-
+  absent); the encoder's UVSet-label resolution also walks the
+  multi-material `fbx:material_slots` table so non-slot-0 materials'
+  textures name their channels too.
+
 - Round 446 — **UV-set names surfaced
   (`Primitive::extras["fbx:uv_set_names"]`).** Each resolved
   `LayerElementUV`'s authored `Name` leaf (the fixture-observed

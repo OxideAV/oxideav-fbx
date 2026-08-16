@@ -417,3 +417,46 @@ fn texture_video_fixture_uvset_joins_to_channel_zero() {
         "no placement records authored on the fixture texture"
     );
 }
+
+/// The fixture's `UVSet` join + channel labels survive a full
+/// `decode → encode → decode` cycle in both output forms: the
+/// encoder re-emits the authored `LayerElementUV` `Name` leaves from
+/// `fbx:uv_set_names` and a matching `UVSet` KString on the
+/// `Texture` element, and the second decode re-joins them.
+#[test]
+fn texture_video_fixture_uvset_survives_re_encode() {
+    use oxideav_fbx::{FbxEncoder, FbxOutputForm};
+    use oxideav_mesh3d::Mesh3DEncoder;
+
+    let Some(bytes) = fixture("texture-video-ascii-v7500.fbx") else {
+        return;
+    };
+    let scene = decode(&bytes);
+
+    for form in [FbxOutputForm::Binary, FbxOutputForm::Ascii] {
+        let out = FbxEncoder::new()
+            .form(form)
+            .encode(&scene)
+            .expect("re-encode");
+        let scene2 = decode(&out);
+        let prim = scene2
+            .meshes
+            .iter()
+            .flat_map(|m| m.primitives.iter())
+            .find(|p| p.uvs.len() == 2)
+            .expect("both UV channels survive re-encode");
+        let names: Vec<&str> = prim.extras["fbx:uv_set_names"]
+            .as_array()
+            .expect("labels re-emitted")
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert_eq!(names, ["UVChannel_1", "UVChannel_3"]);
+        let texref = scene2
+            .materials
+            .iter()
+            .find_map(|m| m.base_color_texture)
+            .expect("binding survives");
+        assert_eq!(texref.uv_set, 0, "UVSet label re-joined after re-encode");
+    }
+}
