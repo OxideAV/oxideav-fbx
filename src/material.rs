@@ -81,7 +81,7 @@
 use std::collections::HashMap;
 
 use oxideav_mesh3d::{
-    AlphaMode, Material, MaterialId, MeshId, NodeId, Scene3D, Texture, TextureId,
+    AlphaMode, Material, MaterialId, MeshId, NodeId, Scene3D, Texture, TextureId, TextureTransform,
 };
 
 use crate::binary::{FbxDocument, FbxNode, FbxProperty};
@@ -140,6 +140,10 @@ pub fn extract_materials(
     let mut video_of_texture: HashMap<i64, i64> = HashMap::new();
     let mut texture_bindings: Vec<(i64, i64, String)> = Vec::new(); // (texture_id, material_id, prop)
     let mut model_to_materials: HashMap<i64, Vec<i64>> = HashMap::new();
+    // Reverse edge (material -> models) so the texture-binding pass
+    // can join a Texture element's `UVSet` label against the UV-set
+    // names of the meshes the material is assigned to.
+    let mut models_of_material: HashMap<i64, Vec<i64>> = HashMap::new();
 
     if let Some(conns) = doc.root.child("Connections") {
         for c in conns.children_named("C") {
@@ -160,6 +164,10 @@ pub fn extract_materials(
                             .entry(parent_id)
                             .or_default()
                             .push(child_id);
+                        models_of_material
+                            .entry(child_id)
+                            .or_default()
+                            .push(parent_id);
                     }
                 }
                 "OP" if fbx_textures.contains_key(&child_id)
@@ -185,7 +193,11 @@ pub fn extract_materials(
     //    self-contained FBX file decodes without an external file
     //    resolver. Keep an `fbx_id -> TextureId` map for the OP-binding
     //    walk in step 5.
+    let definitions = Definitions::from_root(&doc.root);
+    let texture_template = definitions.template_for("Texture");
     let mut texture_lookup: HashMap<i64, TextureId> = HashMap::new();
+    let mut texture_props: HashMap<i64, TextureProps> = HashMap::new();
+    let mut texture_raw_records = serde_json::Map::new();
     // Sort by FBX id so the materialisation order is deterministic
     // across HashMap-iteration-order variations between Rust releases.
     let mut texture_ids: Vec<i64> = fbx_textures.keys().copied().collect();
@@ -226,6 +238,27 @@ pub fn extract_materials(
         };
         let tex_id = scene.add_texture(tex);
         texture_lookup.insert(tid, tex_id);
+
+        // Decode the element's `Properties70` per the staged
+        // `FbxFileTexture` template (`docs/3d/fbx/fbx-property-templates.md`
+        // §3.1): the effective `UVSet` label, the typed 2D placement
+        // transform when representable, and the raw untypable records
+        // (surfaced on `Scene3D::extras["fbx:texture_records"]`, keyed
+        // by the scene texture index, for lossless re-encode).
+        let props = decode_texture_props(tex_node, texture_template);
+        if !props.raw.is_empty() {
+            texture_raw_records.insert(
+                tex_id.0.to_string(),
+                serde_json::Value::Object(props.raw.clone()),
+            );
+        }
+        texture_props.insert(tid, props);
+    }
+    if !texture_raw_records.is_empty() {
+        scene
+            .extras
+            .entry("fbx:texture_records".to_string())
+            .or_insert(serde_json::Value::Object(texture_raw_records));
     }
 
     // 4) Materialise Material elements. The `Properties70` `P`-record
@@ -248,7 +281,6 @@ pub fn extract_materials(
     //    property set" for the class), so exporter-omitted defaults
     //    (e.g. the FbxSurfaceLambert template's `DiffuseFactor = 1`)
     //    decode the same as explicitly-written records.
-    let definitions = Definitions::from_root(&doc.root);
     let material_template = definitions.template_for("Material");
     let mut material_lookup: HashMap<i64, MaterialId> = HashMap::new();
     let mut material_ids: Vec<i64> = fbx_materials.keys().copied().collect();
@@ -277,11 +309,35 @@ pub fn extract_materials(
             Some(&m) => m,
             None => continue,
         };
+        // Base reference, then the typed per-reference surfaces the
+        // texture's `Properties70` provide: the `UVSet` KString joins
+        // against the bound meshes' `fbx:uv_set_names` (recorded by
+        // `crate::geometry` from each `LayerElementUV` `Name` leaf) to
+        // pick the `TextureRef::uv_set` channel index, and the typed
+        // placement transform (when representable) rides on
+        // `TextureRef::transform`. Resolved before the material is
+        // mutably borrowed (the UV-name join reads the scene's meshes).
+        let mut texref = oxideav_mesh3d::TextureRef::new(tex_id);
+        if let Some(props) = texture_props.get(texture_fid) {
+            if let Some(uv_name) = props.uv_set_name.as_deref() {
+                if let Some(idx) = resolve_uv_set_index(
+                    uv_name,
+                    *material_fid,
+                    &models_of_material,
+                    model_to_mesh,
+                    scene,
+                ) {
+                    texref = texref.with_uv_set(idx);
+                }
+            }
+            if let Some(t) = props.transform {
+                texref = texref.with_transform(t);
+            }
+        }
         let mat = match scene.materials.get_mut(mat_id.0 as usize) {
             Some(m) => m,
             None => continue,
         };
-        let texref = oxideav_mesh3d::TextureRef::new(tex_id);
         match prop.as_str() {
             // Base-colour aliases. Maya / 3ds-Max / standard FBX-2014
             // exporters each carry one of these OP-connection property
@@ -391,6 +447,167 @@ fn element_name(node: &FbxNode) -> Option<String> {
     } else {
         std::str::from_utf8(raw).ok().map(str::to_owned)
     }
+}
+
+/// The per-`Texture`-element `Properties70` surface consumed by the
+/// binding pass, decoded once per element against the staged
+/// `FbxFileTexture` template (`docs/3d/fbx/fbx-property-templates.md`
+/// §3.1).
+struct TextureProps {
+    /// Effective `UVSet` KString (own record overlaying the
+    /// template's `"default"`), joined against the bound meshes'
+    /// `fbx:uv_set_names` to select [`oxideav_mesh3d::TextureRef::uv_set`].
+    uv_set_name: Option<String>,
+    /// Typed 2D placement transform, when the authored
+    /// `Translation` / `Rotation` / `Scaling` records are
+    /// representable on [`TextureTransform`] (see
+    /// [`decode_texture_props`] for the exact conditions).
+    transform: Option<TextureTransform>,
+    /// Raw untypable authored records, re-emitted verbatim by the
+    /// encoder via `Scene3D::extras["fbx:texture_records"]`.
+    raw: serde_json::Map<String, serde_json::Value>,
+}
+
+/// Decode one `Texture` element's `Properties70` block per the
+/// `docs/3d/fbx/fbx-property-templates.md` §3.1 `FbxFileTexture`
+/// record set.
+///
+/// Typed-transform rules: the §3.1 template's placement defaults are
+/// the identity (`Translation` / `Rotation` `(0,0,0)`, `Scaling`
+/// `(1,1,1)`), so *authored-vs-absent* equals own-record presence —
+/// which mirrors [`TextureTransform`]'s `None` = "no transform
+/// declared" contract exactly. An authored placement lands on the
+/// typed surface only when it is purely two-dimensional and
+/// pivot-free:
+///
+/// - `Translation` third component `0` (→ `offset`, literal),
+/// - `Rotation` first two components `0` (the in-plane rotation is
+///   the third component; FBX angles are degrees — the convention
+///   every staged rotation record uses, cf.
+///   `docs/3d/fbx/fbx-node-transform-chain.md` §3 — converted to
+///   radians),
+/// - `Scaling` third component `1` (→ `scale`, literal),
+/// - `TextureRotationPivot` / `TextureScalingPivot` zero (their
+///   composition order with the placement TRS is pinned by no staged
+///   doc),
+/// - `UVSwap` false (no typed home; its interaction with the TRS is
+///   likewise unpinned).
+///
+/// Everything else — non-zero pivots, out-of-plane components,
+/// `UVSwap`, and the enum-typed `WrapModeU` / `WrapModeV` (whose
+/// value table beyond the observed default `0` is a staged-docs gap)
+/// plus `UseMipMap` — surfaces raw so re-encode is lossless.
+fn decode_texture_props(node: &FbxNode, template: Option<&PropertyMap>) -> TextureProps {
+    let own = PropertyMap::from_element(node);
+    let resolved = match template {
+        Some(t) => own.with_template_defaults(t),
+        None => own.clone(),
+    };
+    let uv_set_name = resolved.as_str("UVSet").map(str::to_owned);
+
+    let translation = own.as_vec3("Translation");
+    let rotation = own.as_vec3("Rotation");
+    let scaling = own.as_vec3("Scaling");
+    let rot_pivot = own.as_vec3("TextureRotationPivot");
+    let scale_pivot = own.as_vec3("TextureScalingPivot");
+    let uv_swap = own.as_bool("UVSwap");
+
+    let planar = translation.map_or(true, |t| t[2] == 0.0)
+        && rotation.map_or(true, |r| r[0] == 0.0 && r[1] == 0.0)
+        && scaling.map_or(true, |s| s[2] == 1.0)
+        && rot_pivot.map_or(true, |p| p == [0.0; 3])
+        && scale_pivot.map_or(true, |p| p == [0.0; 3])
+        && uv_swap != Some(true);
+    let authored = translation.is_some() || rotation.is_some() || scaling.is_some();
+    let transform = if authored && planar {
+        let mut t = TextureTransform::IDENTITY;
+        if let Some(tr) = translation {
+            t.offset = [tr[0] as f32, tr[1] as f32];
+        }
+        if let Some(r) = rotation {
+            t.rotation = (r[2] as f32).to_radians();
+        }
+        if let Some(s) = scaling {
+            t.scale = [s[0] as f32, s[1] as f32];
+        }
+        Some(t)
+    } else {
+        None
+    };
+
+    let mut raw = serde_json::Map::new();
+    if let Some(v) = own.as_i32("WrapModeU") {
+        raw.insert("wrap_mode_u".to_string(), v.into());
+    }
+    if let Some(v) = own.as_i32("WrapModeV") {
+        raw.insert("wrap_mode_v".to_string(), v.into());
+    }
+    if let Some(v) = uv_swap {
+        raw.insert("uv_swap".to_string(), v.into());
+    }
+    if let Some(v) = own.as_bool("UseMipMap") {
+        raw.insert("use_mip_map".to_string(), v.into());
+    }
+    if transform.is_none() {
+        for (key, val) in [
+            ("translation", translation),
+            ("rotation", rotation),
+            ("scaling", scaling),
+            ("rotation_pivot", rot_pivot),
+            ("scaling_pivot", scale_pivot),
+        ] {
+            if let Some(v) = val {
+                raw.insert(
+                    key.to_string(),
+                    serde_json::Value::Array(vec![v[0].into(), v[1].into(), v[2].into()]),
+                );
+            }
+        }
+    }
+
+    TextureProps {
+        uv_set_name,
+        transform,
+        raw,
+    }
+}
+
+/// Join a `Texture` element's `UVSet` label against the UV-set names
+/// of the meshes the owning material is assigned to
+/// (`Primitive::extras["fbx:uv_set_names"]`, one entry per
+/// `Primitive::uvs` channel in document order). Returns the first
+/// matching channel index; `None` when no bound mesh carries the
+/// label (the reference then keeps the default channel 0).
+fn resolve_uv_set_index(
+    uv_name: &str,
+    material_fid: i64,
+    models_of_material: &HashMap<i64, Vec<i64>>,
+    model_to_mesh: &HashMap<i64, MeshId>,
+    scene: &Scene3D,
+) -> Option<u32> {
+    for model_fid in models_of_material.get(&material_fid)? {
+        let Some(mesh_id) = model_to_mesh.get(model_fid) else {
+            continue;
+        };
+        let Some(mesh) = scene.meshes.get(mesh_id.0 as usize) else {
+            continue;
+        };
+        for prim in &mesh.primitives {
+            let Some(names) = prim
+                .extras
+                .get("fbx:uv_set_names")
+                .and_then(|v| v.as_array())
+            else {
+                continue;
+            };
+            if let Some(pos) = names.iter().position(|n| n.as_str() == Some(uv_name)) {
+                if pos < prim.uvs.len() {
+                    return Some(pos as u32);
+                }
+            }
+        }
+    }
+    None
 }
 
 /// Decode the FBX `Material`'s `Properties70` `P`-record block per

@@ -161,7 +161,36 @@ clean-room from third-party documentation:
   aliases) into typed `base_color_texture` / `normal_texture` /
   `emissive_texture` / `metallic_roughness_texture` /
   `occlusion_texture` slots; `Material -> Model` OO records set
-  `Primitive::material` on the bound mesh.
+  `Primitive::material` on the bound mesh. Each `Texture` element's
+  `Properties70` is resolved against the staged `FbxFileTexture`
+  template (`docs/3d/fbx/fbx-property-templates.md` §3.1), and the
+  typed reference surfaces land both ways:
+  - **`UVSet` → `TextureRef::uv_set`** — the effective `UVSet`
+    KString joins against the bound meshes'
+    `Primitive::extras["fbx:uv_set_names"]` channel labels (recorded
+    from each `LayerElementUV` `Name` leaf in channel order) to pick
+    the typed UV-channel index; the fixture's
+    `UVSet = "UVChannel_1"` resolves to channel 0. The encoder emits
+    the matching `UVSet` record + `Name` leaves (authored labels
+    verbatim, `map{k+1}` synthesized for unnamed channels), closing
+    the round trip for non-zero sets.
+  - **`Translation` / `Rotation` / `Scaling` →
+    `TextureRef::transform`** (typed `KHR_texture_transform`-style
+    placement), literal reading: offset = translation x/y, rotation
+    = the third component degrees → radians, scale = scaling x/y.
+    Template defaults are the identity, so authored-vs-absent equals
+    own-record presence (`None` = "no transform declared"; an
+    authored identity stays `Some(IDENTITY)`). Typed only when the
+    placement is purely 2D and pivot-free; non-zero
+    `TextureRotationPivot` / `TextureScalingPivot` (composition
+    order unstaged) or `UVSwap` keep the placement raw-only.
+  - **Raw untypable records** (`WrapModeU` / `WrapModeV` — the
+    wrap-enum value table beyond the observed default `0` is a
+    staged-docs gap, so the typed `Sampler` keeps its default
+    repeat / filters-undefined state — plus `UVSwap`, `UseMipMap`,
+    pivots, and unrepresentable placements) round-trip verbatim via
+    `Scene3D::extras["fbx:texture_records"]` (keyed by scene texture
+    index).
 - **Vertex colours** — every `LayerElementColor` sub-record
   on a `Geometry` element is surfaced as a separate per-corner RGBA
   buffer on `Primitive::colors` (one slot per FBX colour set, the
@@ -672,7 +701,14 @@ clean-room from third-party documentation:
   - **Materials / Textures** — `DiffuseColor` / `Opacity` /
     `EmissiveColor` / `ReflectionFactor` P-records; `Texture`
     (+ backing `Video.Content` R-blob for embedded bytes) with the
-    `Texture -> Material(prop_name)` OP connection. Multi-material
+    `Texture -> Material(prop_name)` OP connection, plus the §3.1
+    reference records: `UVSet` naming the referenced UV channel,
+    `Translation` / `Rotation` / `Scaling` `Vector` records from a
+    typed `TextureRef::transform` (radians → degrees), and the
+    `fbx:texture_records` raw set verbatim. One `Texture` element
+    per `TextureId` (first-referencing slot wins when several slots
+    share a texture with divergent per-reference settings — a
+    documented lossy edge). Multi-material
     meshes re-emit the `LayerElementMaterial` `ByPolygon` per-face
     slot table + slot-ordered `Material -> Model` OO connections from
     the `fbx:face_material_slots` / `fbx:material_slots` extras.
@@ -683,7 +719,10 @@ clean-room from third-party documentation:
     matrices exactly); `Deformer{BlendShape}` + `BlendShapeChannel` +
     `Geometry{Shape}` (sparse `Indexes` + `Vertices` + `Normals`
     deltas) per morph target — each channel carrying its static
-    `DeformPercent` record (`Mesh::weights` slot × 100) and its
+    `DeformPercent` record (the owning node's *effective* blend
+    state × 100: `Scene3D::effective_morph_weights`' node > mesh
+    §3.7.4 precedence, so a `Node::weights` per-instance override
+    lands on that node's own emitted channels) and its
     authored name from `fbx:morph_target_names` (fallback
     `Target{i}`); one `Pose : "BindPose"` element
     (`PoseNode { Node, Matrix }` per posed node) from the
@@ -767,10 +806,15 @@ the partial-support edges and the not-yet-implemented surfaces.
   re-emission (no unambiguous per-primitive concatenation). The
   `Mesh::weights` gap is closed: static per-target morph weights
   round-trip through each `BlendShapeChannel`'s `DeformPercent`
-  record (×100 out, ÷100 back). Per-instance node-level weight
-  overrides await an `oxideav-mesh3d` release carrying
-  `Node::weights` (unreleased at time of writing — this crate
-  consumes published sibling versions only). The
+  record (×100 out, ÷100 back), and a `Node::weights` per-instance
+  override (mesh3d 0.0.5) is what the owning node's channels emit —
+  FBX's only static-weight home is geometry-level, so the re-decoded
+  value returns on `Mesh::weights` with the effective node > mesh
+  chain preserved exactly (a mesh *shared* by nodes with divergent
+  overrides keeps the per-node emission granularity, but FBX cannot
+  express two blend states on one shared geometry). A texture shared
+  by several material slots emits one `Texture` element carrying the
+  first reference's `UVSet` / placement records. The
   `Definitions` template gap is closed: every class with a staged
   body emits it (see the encoder bullet above) and the count-only
   remainder (`Deformer` / `Pose` / `AnimationCurve`; `NodeAttribute`

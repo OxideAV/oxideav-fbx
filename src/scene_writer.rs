@@ -185,37 +185,59 @@ pub fn encode_scene_with_options(scene: &Scene3D, opts: &SceneEncodeOptions) -> 
     // the external URI lands on `RelativeFilename` / `FileName`. The
     // `Texture -> Material(prop_name)` OP connection wires the texture
     // back into the typed PBR slot the decode path reads (§7).
-    let emit_texture =
-        |tex_idx: usize, objs: &mut FbxNode, conns: &mut FbxNode, emitted: &mut [bool]| {
-            if emitted[tex_idx] {
-                return;
+    // Material index → first mesh drawing it, so the emitted `UVSet`
+    // KString can name the UV channel the reference samples with the
+    // same label the geometry's `LayerElementUV` `Name` leaf carries
+    // (the join the decode side's `resolve_uv_set_index` reads).
+    let mut mesh_of_material: Vec<Option<usize>> = vec![None; scene.materials.len()];
+    for (mi, mesh) in scene.meshes.iter().enumerate() {
+        for prim in &mesh.primitives {
+            if let Some(mid) = prim.material {
+                if let Some(slot) = mesh_of_material.get_mut(mid.0 as usize) {
+                    if slot.is_none() {
+                        *slot = Some(mi);
+                    }
+                }
             }
-            emitted[tex_idx] = true;
-            let tex = &scene.textures[tex_idx];
-            let (tex_node, video_node) =
-                build_texture(tex, texture_ids[tex_idx], video_ids[tex_idx]);
-            objs.children.push(tex_node);
-            if let Some(vnode) = video_node {
-                objs.children.push(vnode);
-                // Video -> Texture OO (backing media).
-                conns
-                    .children
-                    .push(connection_oo(video_ids[tex_idx], texture_ids[tex_idx]));
-            }
-        };
+        }
+    }
     let mut texture_emitted = vec![false; scene.textures.len()];
     for (xi, mat) in scene.materials.iter().enumerate() {
-        for (slot, prop_name) in material_texture_slots(mat) {
-            let tex_idx = slot.0 as usize;
+        for (texref, prop_name) in material_texture_slots(mat) {
+            let tex_idx = texref.texture.0 as usize;
             if tex_idx >= scene.textures.len() {
                 continue;
             }
-            emit_texture(
-                tex_idx,
-                &mut objects,
-                &mut connections,
-                &mut texture_emitted,
-            );
+            // First-binding-wins per Texture element: the element is
+            // deduplicated per `TextureId`, so a texture shared by
+            // several slots carries the first reference's UVSet /
+            // transform records (divergent per-slot transforms on one
+            // shared texture are a documented lossy edge).
+            if !texture_emitted[tex_idx] {
+                texture_emitted[tex_idx] = true;
+                let tex = &scene.textures[tex_idx];
+                let uv_label = uv_set_label(scene, mesh_of_material[xi], &texref);
+                let raw_records = scene
+                    .extras
+                    .get("fbx:texture_records")
+                    .and_then(|v| v.get(tex_idx.to_string()));
+                let (tex_node, video_node) = build_texture(
+                    tex,
+                    texture_ids[tex_idx],
+                    video_ids[tex_idx],
+                    &texref,
+                    uv_label.as_deref(),
+                    raw_records,
+                );
+                objects.children.push(tex_node);
+                if let Some(vnode) = video_node {
+                    objects.children.push(vnode);
+                    // Video -> Texture OO (backing media).
+                    connections
+                        .children
+                        .push(connection_oo(video_ids[tex_idx], texture_ids[tex_idx]));
+                }
+            }
             // Texture -> Material(prop_name) OP connection.
             connections.children.push(connection_op(
                 texture_ids[tex_idx],
@@ -1915,9 +1937,22 @@ fn build_geometry(mesh: &Mesh, id: i64, opts: &SceneEncodeOptions) -> FbxNode {
         children.push(layer_element_vec3("LayerElementNormal", "Normals", normals));
     }
     if opts.emit_uvs {
+        // Authored channel labels round-trip via
+        // `Primitive::extras["fbx:uv_set_names"]` (one entry per UV
+        // set, recorded by the decode side from each `LayerElementUV`
+        // `Name` leaf); unnamed channels get the synthesized
+        // `map{k+1}` fallback inside `layer_element_uv`.
+        let uv_names = mesh
+            .primitives
+            .first()
+            .and_then(|p| p.extras.get("fbx:uv_set_names"))
+            .and_then(|v| v.as_array());
         for (k, data) in uv_sets.into_iter().enumerate() {
             if uv_valid[k] && !data.is_empty() {
-                children.push(layer_element_uv(k, data));
+                let name = uv_names
+                    .and_then(|names| names.get(k))
+                    .and_then(|v| v.as_str());
+                children.push(layer_element_uv(k, name, data));
             }
         }
     }
@@ -2249,14 +2284,21 @@ fn layer_element_vec3(layer_name: &str, data_name: &str, data: Vec<f64>) -> FbxN
 /// `LayerElementUV` — same mapping shape as the vec3 layer but the
 /// data record is named `UV`. `index` is the layer's `TypedIndex`
 /// integer (the §6-point-4 sub-discriminator distinguishing multiple
-/// UV channels on one `Geometry`).
-fn layer_element_uv(index: usize, data: Vec<f64>) -> FbxNode {
+/// UV channels on one `Geometry`). `name` is the channel's authored
+/// label (round-tripped from `Primitive::extras["fbx:uv_set_names"]`);
+/// `None` / empty falls back to the synthesized `map{index+1}` so the
+/// `Texture` element's `UVSet` join always has a label to match.
+fn layer_element_uv(index: usize, name: Option<&str>, data: Vec<f64>) -> FbxNode {
+    let label = match name {
+        Some(n) if !n.is_empty() => n.to_owned(),
+        _ => format!("map{}", index + 1),
+    };
     FbxNode {
         name: "LayerElementUV".to_string(),
         properties: vec![FbxProperty::I32(index as i32)],
         children: vec![
             leaf_i32("Version", 101),
-            leaf_string("Name", &format!("map{}", index + 1)),
+            leaf_string("Name", &label),
             leaf_string("MappingInformationType", "ByPolygonVertex"),
             leaf_string("ReferenceInformationType", "Direct"),
             FbxNode {
@@ -2815,22 +2857,22 @@ fn material_slot_table(prim: &Primitive, n_materials: usize) -> Vec<usize> {
 /// `NormalMap` → normal, `EmissiveColor` → emission,
 /// `Maya|TEX_metallic_map` → metallic-roughness, `AmbientOcclusion` →
 /// occlusion).
-fn material_texture_slots(mat: &Material) -> Vec<(oxideav_mesh3d::TextureId, &'static str)> {
+fn material_texture_slots(mat: &Material) -> Vec<(oxideav_mesh3d::TextureRef, &'static str)> {
     let mut slots = Vec::new();
-    if let Some(t) = &mat.base_color_texture {
-        slots.push((t.texture, "DiffuseColor"));
+    if let Some(t) = mat.base_color_texture {
+        slots.push((t, "DiffuseColor"));
     }
-    if let Some(t) = &mat.normal_texture {
-        slots.push((t.texture, "NormalMap"));
+    if let Some(t) = mat.normal_texture {
+        slots.push((t, "NormalMap"));
     }
-    if let Some(t) = &mat.emissive_texture {
-        slots.push((t.texture, "EmissiveColor"));
+    if let Some(t) = mat.emissive_texture {
+        slots.push((t, "EmissiveColor"));
     }
-    if let Some(t) = &mat.metallic_roughness_texture {
-        slots.push((t.texture, "Maya|TEX_metallic_map"));
+    if let Some(t) = mat.metallic_roughness_texture {
+        slots.push((t, "Maya|TEX_metallic_map"));
     }
-    if let Some(t) = &mat.occlusion_texture {
-        slots.push((t.texture, "AmbientOcclusion"));
+    if let Some(t) = mat.occlusion_texture {
+        slots.push((t, "AmbientOcclusion"));
     }
     slots
 }
@@ -2845,13 +2887,143 @@ fn material_texture_slots(mat: &Material) -> Vec<(oxideav_mesh3d::TextureId, &'s
 /// self-contained-FBX shape the decode path prefers). Embedded
 /// already-decoded pixel buffers (no encoded bytes) fall back to an
 /// empty `RelativeFilename` so the texture element still round-trips.
+/// The `UVSet` KString label to emit for `texref`'s effective UV set:
+/// the bound mesh's authored channel label
+/// (`Primitive::extras["fbx:uv_set_names"]`) when present and
+/// non-empty, else the same synthesized `map{k+1}` fallback
+/// [`layer_element_uv`] names the channel with, so the decode-side
+/// join resolves either way. `None` (emit no record) for the default
+/// channel 0 on a mesh without authored labels — the decode side
+/// defaults to channel 0.
+fn uv_set_label(
+    scene: &Scene3D,
+    mesh_idx: Option<usize>,
+    texref: &oxideav_mesh3d::TextureRef,
+) -> Option<String> {
+    let k = texref.effective_uv_set() as usize;
+    let names = mesh_idx
+        .and_then(|mi| scene.meshes.get(mi))
+        .and_then(|m| m.primitives.first())
+        .and_then(|p| p.extras.get("fbx:uv_set_names"))
+        .and_then(|v| v.as_array());
+    if let Some(names) = names {
+        if let Some(n) = names.get(k).and_then(|v| v.as_str()) {
+            if !n.is_empty() {
+                return Some(n.to_owned());
+            }
+        }
+        return Some(format!("map{}", k + 1));
+    }
+    if k != 0 {
+        Some(format!("map{}", k + 1))
+    } else {
+        None
+    }
+}
+
+/// `P: "<name>", "Vector", "", "A", x, y, z` — the animatable
+/// `Vector` triple shape the staged `FbxFileTexture` template
+/// (`docs/3d/fbx/fbx-property-templates.md` §3.1) uses for the
+/// texture placement records (`Translation` / `Rotation` / `Scaling`).
+fn p_vector(name: &str, v: [f64; 3]) -> FbxNode {
+    FbxNode {
+        name: "P".to_string(),
+        properties: vec![
+            FbxProperty::String(name.as_bytes().to_vec()),
+            FbxProperty::String(b"Vector".to_vec()),
+            FbxProperty::String(Vec::new()),
+            FbxProperty::String(b"A".to_vec()),
+            FbxProperty::F64(v[0]),
+            FbxProperty::F64(v[1]),
+            FbxProperty::F64(v[2]),
+        ],
+        children: Vec::new(),
+    }
+}
+
+/// Read a `[x, y, z]` JSON array out of one `fbx:texture_records`
+/// raw-record entry.
+fn raw_vec3(raw: &serde_json::Value, key: &str) -> Option<[f64; 3]> {
+    let arr = raw.get(key)?.as_array()?;
+    Some([
+        arr.first()?.as_f64()?,
+        arr.get(1)?.as_f64()?,
+        arr.get(2)?.as_f64()?,
+    ])
+}
+
 fn build_texture(
     tex: &oxideav_mesh3d::Texture,
     tex_id: i64,
     video_id: i64,
+    texref: &oxideav_mesh3d::TextureRef,
+    uv_label: Option<&str>,
+    raw_records: Option<&serde_json::Value>,
 ) -> (FbxNode, Option<FbxNode>) {
     let name = tex.name.clone().unwrap_or_default();
     let mut tex_children: Vec<FbxNode> = vec![leaf_i32("Version", 202)];
+
+    // Properties70 — the `FbxFileTexture` records this crate types
+    // (`docs/3d/fbx/fbx-property-templates.md` §3.1): the `UVSet`
+    // channel label, the typed placement transform (offset → degrees
+    // → `Translation`/`Rotation`/`Scaling` `Vector` records, the
+    // inverse of the decode-side literal reading), and the raw
+    // untypable records round-tripped verbatim from
+    // `Scene3D::extras["fbx:texture_records"]`.
+    let mut p_records: Vec<FbxNode> = Vec::new();
+    if let Some(label) = uv_label {
+        p_records.push(p_kstring("UVSet", label));
+    }
+    if let Some(t) = &texref.transform {
+        p_records.push(p_vector(
+            "Translation",
+            [f64::from(t.offset[0]), f64::from(t.offset[1]), 0.0],
+        ));
+        p_records.push(p_vector(
+            "Rotation",
+            [0.0, 0.0, f64::from(t.rotation).to_degrees()],
+        ));
+        p_records.push(p_vector(
+            "Scaling",
+            [f64::from(t.scale[0]), f64::from(t.scale[1]), 1.0],
+        ));
+    }
+    if let Some(raw) = raw_records {
+        if let Some(v) = raw.get("wrap_mode_u").and_then(|v| v.as_i64()) {
+            p_records.push(p_enum("WrapModeU", v as i32));
+        }
+        if let Some(v) = raw.get("wrap_mode_v").and_then(|v| v.as_i64()) {
+            p_records.push(p_enum("WrapModeV", v as i32));
+        }
+        if let Some(v) = raw.get("uv_swap").and_then(|v| v.as_bool()) {
+            p_records.push(p_bool("UVSwap", v));
+        }
+        if let Some(v) = raw.get("use_mip_map").and_then(|v| v.as_bool()) {
+            p_records.push(p_bool("UseMipMap", v));
+        }
+        if let Some(v) = raw_vec3(raw, "translation") {
+            p_records.push(p_vector("Translation", v));
+        }
+        if let Some(v) = raw_vec3(raw, "rotation") {
+            p_records.push(p_vector("Rotation", v));
+        }
+        if let Some(v) = raw_vec3(raw, "scaling") {
+            p_records.push(p_vector("Scaling", v));
+        }
+        if let Some(v) = raw_vec3(raw, "rotation_pivot") {
+            p_records.push(p_vector3d("TextureRotationPivot", v));
+        }
+        if let Some(v) = raw_vec3(raw, "scaling_pivot") {
+            p_records.push(p_vector3d("TextureScalingPivot", v));
+        }
+    }
+    if !p_records.is_empty() {
+        tex_children.push(FbxNode {
+            name: "Properties70".to_string(),
+            properties: Vec::new(),
+            children: p_records,
+        });
+    }
 
     let (uri, embedded): (String, Option<Vec<u8>>) = match &tex.image {
         oxideav_mesh3d::ImageData::External { uri, .. } => (uri.clone(), None),

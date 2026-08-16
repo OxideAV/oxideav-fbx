@@ -26,6 +26,75 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Round 446 — **oxideav-mesh3d 0.0.5 texture-reference surface
+  adopted (`TextureRef::uv_set` join + typed
+  `TextureRef::transform`), both directions.** The `Texture`
+  element's `Properties70` is now decoded against the staged
+  `FbxFileTexture` template (`docs/3d/fbx/fbx-property-templates.md`
+  §3.1):
+  - **`UVSet` → `TextureRef::uv_set`.** The effective `UVSet`
+    KString (own record overlaying the template's `"default"`) joins
+    against the bound meshes' `fbx:uv_set_names` channel labels to
+    select the typed UV-channel index — the staged texture-video
+    fixture's `UVSet = "UVChannel_1"` resolves to channel 0
+    (pinned test-side against the fixture bytes). Unmatched labels
+    keep the default channel 0. The encoder emits the inverse: a
+    `P: "UVSet", "KString"` record naming the referenced channel
+    with the same label the emitted `LayerElementUV` `Name` leaf
+    carries (authored labels re-emitted from `fbx:uv_set_names`,
+    unnamed channels synthesize `map{k+1}` on both records so the
+    join closes), so a non-zero `uv_set` survives
+    decode → encode → decode in binary and ASCII forms.
+  - **`Translation` / `Rotation` / `Scaling` → typed
+    `TextureRef::transform`** (the mesh3d `KHR_texture_transform`
+    surface), literal reading: `offset` = the authored translation's
+    first two components, `rotation` = the third rotation component
+    in degrees (the convention every staged FBX rotation record
+    uses) converted to radians, `scale` = the first two scaling
+    components. The §3.1 template defaults are the identity
+    placement, so *authored-vs-absent equals own-record presence* —
+    matching mesh3d's `None` = "no transform declared" contract
+    exactly, and an authored identity round-trips as
+    `Some(IDENTITY)`. The typed attach happens only when the
+    placement is purely 2D and pivot-free (`Translation.z == 0`,
+    `Rotation.x/y == 0`, `Scaling.z == 1`, zero
+    `TextureRotationPivot` / `TextureScalingPivot`, `UVSwap`
+    false) — the pivot composition order and the `UVSwap`
+    interaction are pinned by no staged doc, so those placements
+    stay raw-only rather than mis-typed. The encoder re-derives the
+    three `Vector` records from a typed transform (radians →
+    degrees).
+  - **Raw untypable records round-trip** on
+    `Scene3D::extras["fbx:texture_records"]` (keyed by scene texture
+    index): `WrapModeU` / `WrapModeV` (the wrap-enum value table
+    beyond the observed default `0` is a staged-docs gap — the
+    typed `Sampler` deliberately keeps its default repeat/undefined
+    state rather than guess), `UVSwap`, `UseMipMap`, non-zero
+    pivots, and any placement triple the typed transform could not
+    carry — all re-emitted verbatim onto the `Texture` element's
+    `Properties70` on encode, in binary and ASCII forms. FBX
+    declares no min/mag filter records at all, which mesh3d 0.0.5's
+    `Option`-shaped `Sampler` filters now model exactly (`None` =
+    undefined; previously an absent filter silently became an
+    explicit trilinear on the mesh3d side).
+
+- Round 446 — **`Node::weights` per-instance morph overrides
+  (mesh3d 0.0.5) adopted on encode.** Each emitted
+  `BlendShapeChannel`'s static `DeformPercent` record now carries
+  the owning node's *effective* blend state
+  (`Scene3D::effective_morph_weights`, the static node > mesh half
+  of the §3.7.4 precedence chain) instead of the shared
+  `Mesh::weights` rest state — the deformer tree is emitted per
+  node, which is exactly the granularity the override needs, so two
+  nodes sharing intent but carrying divergent static blend states
+  emit their own values. FBX stores blend weights at geometry level
+  only (the `BlendShapeChannel` hangs off the `Geometry`'s
+  `BlendShape` deformer), so on re-decode the value comes back on
+  `Mesh::weights` with the effective chain preserved exactly; this
+  closes the round-442 documented lossy edge ("per-instance
+  node-level weight overrides await an `oxideav-mesh3d` release
+  carrying `Node::weights`").
+
 - Round 446 — **UV-set names surfaced
   (`Primitive::extras["fbx:uv_set_names"]`).** Each resolved
   `LayerElementUV`'s authored `Name` leaf (the fixture-observed

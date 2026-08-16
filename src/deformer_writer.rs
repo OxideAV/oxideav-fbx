@@ -149,10 +149,22 @@ pub(crate) fn build_deformer_objects(
                 };
                 let channel_fbx = alloc();
                 let mut channel = deformer_element(channel_fbx, &slot_name, "BlendShapeChannel");
-                // Static (rest) weight: Mesh::weights slot × 100 →
-                // the channel's DeformPercent record (see the
-                // "Static morph weights" module note).
-                let static_weight = mesh.weights.get(ti).copied().unwrap_or(0.0);
+                // Static (rest) weight: the node's *effective* blend
+                // state × 100 → the channel's DeformPercent record
+                // (see the "Static morph weights" module note).
+                // `Scene3D::effective_morph_weights` resolves the
+                // static half of the §3.7.4 node > mesh precedence
+                // chain, so a `Node::weights` per-instance override
+                // lands on this node's own emitted channels (the
+                // deformer tree is emitted per node, which is exactly
+                // the granularity the override needs); nodes without
+                // an override keep the shared `Mesh::weights` rest
+                // state.
+                let static_weight = scene
+                    .effective_morph_weights(NodeId(ni as u32))
+                    .and_then(|w| w.get(ti))
+                    .copied()
+                    .unwrap_or_else(|| mesh.weights.get(ti).copied().unwrap_or(0.0));
                 channel.children.push(properties70_deform_percent(
                     f64::from(static_weight) * DEFORM_PERCENT_SCALE,
                 ));

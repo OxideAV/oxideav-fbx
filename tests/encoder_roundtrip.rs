@@ -1946,3 +1946,191 @@ fn typed_axis_convention_round_trips() {
     assert_eq!(props2.as_i32("OriginalUpAxis"), Some(1));
     assert_eq!(props2.as_i32("CoordAxis"), None);
 }
+
+/// A `Node::weights` per-instance morph override (mesh3d 0.0.5's
+/// static node > mesh precedence, §3.7.4) lands on the emitted
+/// channels' `DeformPercent` records: the deformer tree is emitted
+/// per node, so the node's *effective* blend state — not the shared
+/// `Mesh::weights` rest state — is what the wire carries. FBX stores
+/// blend weights at geometry level only, so the re-decoded value
+/// comes back on `Mesh::weights` with the effective chain unchanged.
+#[test]
+fn node_morph_weight_override_lands_on_deform_percent() {
+    use oxideav_mesh3d::MorphTarget;
+
+    let mut scene = Scene3D::new();
+    let mut mesh = quad_with_normals_and_uvs("Morphed");
+    {
+        let prim = &mut mesh.primitives[0];
+        for k in 0..2 {
+            let mut tgt = MorphTarget::new();
+            let mut pos = vec![[0.0f32; 3]; 6];
+            pos[k] = [0.0, 0.0, 1.0 + k as f32];
+            tgt.position = Some(pos);
+            prim.targets.push(tgt);
+        }
+        mesh.weights.push(0.25);
+        mesh.weights.push(0.5);
+    }
+    let mid = scene.add_mesh(mesh);
+    let nid = scene.add_node(
+        Node::new()
+            .with_name("MorphNode")
+            .with_mesh(mid)
+            .with_weights([0.75f32, 0.1]),
+    );
+    scene.roots.push(nid);
+    assert_eq!(
+        scene.effective_morph_weights(nid),
+        Some(&[0.75f32, 0.1][..]),
+        "authored precedence: node override beats mesh default"
+    );
+
+    for (form, bytes) in [
+        ("binary", encode_binary(&scene)),
+        ("ascii", encode_ascii(&scene)),
+    ] {
+        let scene2 = decode(&bytes);
+        // The override is what the DeformPercent records carried.
+        let w = &scene2.meshes[0].weights;
+        assert_eq!(w.len(), 2, "{form}: two channels");
+        assert!((w[0] - 0.75).abs() < 1e-6, "{form}: slot 0 = override");
+        assert!((w[1] - 0.1).abs() < 1e-6, "{form}: slot 1 = override");
+        // FBX's only static-weight home is geometry-level, so the
+        // re-decoded node carries no separate override — but the
+        // effective blend state is preserved exactly.
+        let nid2 = scene2
+            .nodes
+            .iter()
+            .position(|n| n.name.as_deref() == Some("MorphNode"))
+            .expect("node survives");
+        let nid2 = oxideav_mesh3d::NodeId(nid2 as u32);
+        assert!(scene2.nodes[nid2.0 as usize].weights.is_empty());
+        let eff = scene2
+            .effective_morph_weights(nid2)
+            .expect("effective weights resolve");
+        assert!((eff[0] - 0.75).abs() < 1e-6, "{form}: effective slot 0");
+        assert!((eff[1] - 0.1).abs() < 1e-6, "{form}: effective slot 1");
+    }
+}
+
+/// A mesh whose node carries NO override keeps emitting the shared
+/// `Mesh::weights` rest state (the effective chain's mesh half).
+#[test]
+fn mesh_default_weights_still_emit_without_override() {
+    use oxideav_mesh3d::MorphTarget;
+
+    let mut scene = Scene3D::new();
+    let mut mesh = quad_with_normals_and_uvs("Morphed");
+    {
+        let prim = &mut mesh.primitives[0];
+        let mut tgt = MorphTarget::new();
+        tgt.position = Some(vec![[0.0, 0.0, 1.0]; 6]);
+        prim.targets.push(tgt);
+        mesh.weights.push(0.4);
+    }
+    let mid = scene.add_mesh(mesh);
+    let nid = scene.add_node(Node::new().with_mesh(mid));
+    scene.roots.push(nid);
+
+    let scene2 = decode(&encode_binary(&scene));
+    assert!((scene2.meshes[0].weights[0] - 0.4).abs() < 1e-6);
+}
+
+/// `TextureRef::uv_set` + the typed `TextureRef::transform`
+/// (mesh3d 0.0.5's `KHR_texture_transform` surface) survive the
+/// round trip: the encoder emits the `UVSet` KString naming the
+/// referenced UV channel (matching the emitted `LayerElementUV`
+/// `Name` leaf) and the `Translation` / `Rotation` / `Scaling`
+/// placement `Vector` records (radians → degrees), and the decode
+/// side joins / re-types them.
+#[test]
+fn texture_transform_and_uv_set_survive_round_trip() {
+    use oxideav_mesh3d::{Texture, TextureRef, TextureTransform};
+
+    let mut scene = Scene3D::new();
+    let tid = scene.add_texture(Texture::from_uri("textures/wood.png"));
+    let plain_tid = scene.add_texture(Texture::from_uri("textures/flat.png"));
+    let transform = TextureTransform::IDENTITY
+        .with_offset([0.25, 0.5])
+        .with_rotation(std::f32::consts::FRAC_PI_2)
+        .with_scale([2.0, 3.0]);
+    let mat = {
+        let mut m = Material::new().with_name("Wood");
+        m.base_color_texture = Some(
+            TextureRef::new(tid)
+                .with_uv_set(1)
+                .with_transform(transform),
+        );
+        // Second slot: no transform declared — must stay `None`.
+        m.normal_texture = Some(TextureRef::new(plain_tid));
+        scene.add_material(m)
+    };
+
+    let mut mesh = quad_with_normals_and_uvs("Quad");
+    // Second UV channel so uv_set = 1 has a home.
+    let second: Vec<[f32; 2]> = mesh.primitives[0].uvs[0]
+        .iter()
+        .map(|uv| [uv[0] * 0.5, uv[1] * 0.5])
+        .collect();
+    mesh.primitives[0].uvs.push(second);
+    mesh.primitives[0].material = Some(mat);
+    let mid = scene.add_mesh(mesh);
+    let nid = scene.add_node(Node::new().with_mesh(mid));
+    scene.roots.push(nid);
+
+    for (form, bytes) in [
+        ("binary", encode_binary(&scene)),
+        ("ascii", encode_ascii(&scene)),
+    ] {
+        let scene2 = decode(&bytes);
+        let mat2 = scene2
+            .materials
+            .iter()
+            .find(|m| m.name.as_deref() == Some("Wood"))
+            .expect("material survives");
+        let texref = mat2.base_color_texture.expect("base colour binding");
+        assert_eq!(texref.uv_set, 1, "{form}: UVSet label re-joined to 1");
+        let t = texref.transform.expect("typed transform survives");
+        assert!((t.offset[0] - 0.25).abs() < 1e-6, "{form}: offset u");
+        assert!((t.offset[1] - 0.5).abs() < 1e-6, "{form}: offset v");
+        assert!(
+            (t.rotation - std::f32::consts::FRAC_PI_2).abs() < 1e-5,
+            "{form}: rotation rad->deg->rad, got {}",
+            t.rotation
+        );
+        assert!((t.scale[0] - 2.0).abs() < 1e-6, "{form}: scale u");
+        assert!((t.scale[1] - 3.0).abs() < 1e-6, "{form}: scale v");
+        assert_eq!(t.uv_set, None, "{form}: no texCoord override");
+        // The undeclared slot stays undeclared.
+        let plain = mat2.normal_texture.expect("normal binding");
+        assert_eq!(plain.transform, None, "{form}: None stays None");
+        assert_eq!(plain.uv_set, 0);
+    }
+}
+
+/// An authored identity transform survives as `Some(IDENTITY)` —
+/// the encoder writes explicit default-valued placement records, so
+/// authored-vs-absent is preserved across the round trip.
+#[test]
+fn authored_identity_texture_transform_survives() {
+    use oxideav_mesh3d::{Texture, TextureRef, TextureTransform};
+
+    let mut scene = Scene3D::new();
+    let tid = scene.add_texture(Texture::from_uri("t.png"));
+    let mat = {
+        let mut m = Material::new().with_name("M");
+        m.base_color_texture =
+            Some(TextureRef::new(tid).with_transform(TextureTransform::IDENTITY));
+        scene.add_material(m)
+    };
+    let mut mesh = quad_with_normals_and_uvs("Quad");
+    mesh.primitives[0].material = Some(mat);
+    let mid = scene.add_mesh(mesh);
+    let nid = scene.add_node(Node::new().with_mesh(mid));
+    scene.roots.push(nid);
+
+    let scene2 = decode(&encode_binary(&scene));
+    let texref = scene2.materials[0].base_color_texture.expect("binding");
+    assert_eq!(texref.transform, Some(TextureTransform::IDENTITY));
+}
