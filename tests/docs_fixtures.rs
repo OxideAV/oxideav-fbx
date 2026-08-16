@@ -360,3 +360,45 @@ fn skin_anim_key_attr_catalogue_surfaces_from_real_bytes() {
     // And the animation itself still decodes.
     assert!(!scene.animations.is_empty());
 }
+
+/// `texture-video-ascii-v7500.fbx`: the `Texture` element's authored
+/// `UVSet = "UVChannel_1"` KString joins against the geometry's
+/// `LayerElementUV` `Name` leaves (`"UVChannel_1"` at channel 0,
+/// `"UVChannel_3"` at channel 1) onto the typed
+/// `TextureRef::uv_set = 0`, the channel labels surface on
+/// `Primitive::extras["fbx:uv_set_names"]`, and — the texture
+/// authoring no placement records — the typed transform stays `None`.
+#[test]
+fn texture_video_fixture_uvset_joins_to_channel_zero() {
+    let Some(bytes) = fixture("texture-video-ascii-v7500.fbx") else {
+        return;
+    };
+    let scene = decode(&bytes);
+
+    // Channel labels in document order.
+    let prim = scene
+        .meshes
+        .iter()
+        .flat_map(|m| m.primitives.iter())
+        .find(|p| p.uvs.len() == 2)
+        .expect("the box mesh carries two UV channels");
+    let names: Vec<&str> = prim.extras["fbx:uv_set_names"]
+        .as_array()
+        .expect("fbx:uv_set_names")
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["UVChannel_1", "UVChannel_3"]);
+
+    // The DiffuseColor-bound texture samples channel 0 by label.
+    let texref = scene
+        .materials
+        .iter()
+        .find_map(|m| m.base_color_texture)
+        .expect("DiffuseColor binding");
+    assert_eq!(texref.uv_set, 0, "UVSet = UVChannel_1 -> channel 0");
+    assert_eq!(
+        texref.transform, None,
+        "no placement records authored on the fixture texture"
+    );
+}

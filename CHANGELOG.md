@@ -7,7 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Round 446 — **integer-narrowed ASCII arrays no longer drop layer
+  payloads.** The ASCII front-end's `Key: *N { a: … }` typed-array
+  bodies carry no element type, so an all-integer-valued *float*
+  payload narrows to `I32Array` on parse — and the geometry pullers
+  (`Vertices`, the vec2/vec3/vec4 LayerElement pullers, the scalar
+  `TangentsW` / `BinormalsW` puller) only accepted `d` / `f` arrays,
+  silently dropping the layer (or erroring on `Vertices`). The staged
+  `texture-video-ascii-v7500.fbx` fixture demonstrates the real-world
+  shape: its first `UV` array is literally `1,0,0,0,…` (all corner
+  UVs on the unit square), so the box's **primary UV channel was
+  silently dropped** while the fractional second channel survived.
+  All float-consuming geometry reads now widen `i` / `l` arrays via a
+  shared `float_array` helper; the fixture's box mesh decodes with
+  both UV channels.
+
 ### Added
+
+- Round 446 — **UV-set names surfaced
+  (`Primitive::extras["fbx:uv_set_names"]`).** Each resolved
+  `LayerElementUV`'s authored `Name` leaf (the fixture-observed
+  channel label, e.g. `"UVChannel_1"` / `"UVChannel_3"` in the staged
+  texture-video fixture) is recorded in channel order, one entry per
+  surfaced `Primitive::uvs` set, so a `Texture` element's `UVSet`
+  KString can join back to a channel index and the encoder can
+  re-emit the authored labels.
 
 - Round 442 — **static `DeformPercent` round-trip
   (`Mesh::weights`).** Each `BlendShapeChannel`'s static

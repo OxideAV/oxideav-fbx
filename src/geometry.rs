@@ -191,6 +191,15 @@ pub fn extract_geometry_mesh_with_corners(
     // (rounds-of-180s) — only the data sub-record name and float
     // arity differ (`UV` is a `d` array of 2-component pairs,
     // optional `UVIndex` indirection).
+    // Each resolved layer's authored `Name` leaf (the fixture-observed
+    // UV-set label, e.g. `Name: "UVChannel_1"` in
+    // `docs/3d/fbx/fixtures/texture-video-ascii-v7500.fbx`) is recorded
+    // in parallel on `Primitive::extras["fbx:uv_set_names"]` — one
+    // entry per surfaced `Primitive::uvs` set, in the same order — so
+    // the material walk can join a `Texture` element's `UVSet` KString
+    // (the FbxFileTexture P-record) back to a UV-channel index, and
+    // the encoder can re-emit the authored labels.
+    let mut uv_set_names: Vec<Value> = Vec::new();
     for layer in geom.children_named("LayerElementUV") {
         if let Some(uvs) = pull_layer_vec2(
             layer,
@@ -199,8 +208,13 @@ pub fn extract_geometry_mesh_with_corners(
             triangles.corner_indices.len(),
             &triangles,
         )? {
+            uv_set_names.push(Value::String(layer_name(layer).unwrap_or_default()));
             prim.uvs.push(uvs);
         }
+    }
+    if !uv_set_names.is_empty() {
+        prim.extras
+            .insert("fbx:uv_set_names".to_string(), Value::Array(uv_set_names));
     }
 
     // Vertex colours — every `LayerElementColor` in document order.
@@ -505,29 +519,37 @@ fn read_vertices(geom: &FbxNode) -> Result<Vec<f64>> {
     let v = geom
         .child("Vertices")
         .ok_or_else(|| Error::invalid("FBX Geometry: missing required `Vertices` sub-record"))?;
-    match v.properties.first() {
-        Some(FbxProperty::F64Array(arr)) => {
+    match float_array(v.properties.first()) {
+        Some(arr) => {
             if arr.len() % 3 != 0 {
                 return Err(Error::invalid(format!(
                     "FBX Geometry: Vertices length {} not a multiple of 3",
                     arr.len()
                 )));
             }
-            Ok(arr.clone())
+            Ok(arr)
         }
-        Some(FbxProperty::F32Array(arr)) => {
-            // Tolerated: some exporters emit `f` instead of `d`.
-            if arr.len() % 3 != 0 {
-                return Err(Error::invalid(format!(
-                    "FBX Geometry: Vertices length {} not a multiple of 3",
-                    arr.len()
-                )));
-            }
-            Ok(arr.iter().map(|&v| v as f64).collect())
-        }
-        _ => Err(Error::invalid(
-            "FBX Geometry: Vertices property is not a d/f array",
+        None => Err(Error::invalid(
+            "FBX Geometry: Vertices property is not a numeric array",
         )),
+    }
+}
+
+/// Widen a typed-array property to `Vec<f64>`.
+///
+/// Accepts the canonical `d` / tolerated `f` forms **and** the
+/// integer array variants: the ASCII front-end's `Key: *N { a: … }`
+/// bodies carry no element type, so an all-integer-valued float
+/// payload (the staged texture-video fixture's first `UV` array is
+/// literally `1,0,0,0,…`) narrows to `I32Array` / `I64Array` on
+/// parse and must widen back here rather than be dropped.
+fn float_array(prop: Option<&FbxProperty>) -> Option<Vec<f64>> {
+    match prop? {
+        FbxProperty::F64Array(a) => Some(a.clone()),
+        FbxProperty::F32Array(a) => Some(a.iter().map(|&v| f64::from(v)).collect()),
+        FbxProperty::I32Array(a) => Some(a.iter().map(|&v| f64::from(v)).collect()),
+        FbxProperty::I64Array(a) => Some(a.iter().map(|&v| v as f64).collect()),
+        _ => None,
     }
 }
 
@@ -643,6 +665,19 @@ fn layer_typed_index(layer: &FbxNode) -> Option<i64> {
     layer.properties.first().and_then(FbxProperty::as_i64)
 }
 
+/// Read a `LayerElement*` record's `Name` string leaf (the authored
+/// channel label, e.g. the staged texture-video fixture's
+/// `Name: "UVChannel_1"`). `None` when the leaf is absent or not a
+/// string.
+fn layer_name(layer: &FbxNode) -> Option<String> {
+    layer
+        .child("Name")?
+        .properties
+        .first()
+        .and_then(FbxProperty::as_str)
+        .map(str::to_owned)
+}
+
 /// Generic 3-component `LayerElement*` puller (Normals, Tangents,
 /// Bitangents). Returns `Some(per_corner_buf)` when the mapping mode
 /// is something we know how to flatten, `None` otherwise.
@@ -669,10 +704,9 @@ fn pull_layer_vec3(
         Some(n) => n,
         None => return Ok(None),
     };
-    let raw = match data_node.properties.first() {
-        Some(FbxProperty::F64Array(a)) => a.clone(),
-        Some(FbxProperty::F32Array(a)) => a.iter().map(|&v| v as f64).collect(),
-        _ => return Ok(None),
+    let raw = match float_array(data_node.properties.first()) {
+        Some(a) => a,
+        None => return Ok(None),
     };
     if raw.len() % 3 != 0 {
         return Err(Error::invalid(format!(
@@ -838,10 +872,9 @@ fn pull_layer_scalar(
         Some(n) => n,
         None => return Ok(None),
     };
-    let scalars: Vec<f32> = match data_node.properties.first() {
-        Some(FbxProperty::F64Array(a)) => a.iter().map(|&v| v as f32).collect(),
-        Some(FbxProperty::F32Array(a)) => a.clone(),
-        _ => return Ok(None),
+    let scalars: Vec<f32> = match float_array(data_node.properties.first()) {
+        Some(a) => a.iter().map(|&v| v as f32).collect(),
+        None => return Ok(None),
     };
     let index_arr: Option<Vec<i32>> = layer.child(index_name).and_then(|n| {
         n.properties.first().and_then(|p| match p {
@@ -915,10 +948,9 @@ fn pull_layer_vec2(
         Some(n) => n,
         None => return Ok(None),
     };
-    let raw = match data_node.properties.first() {
-        Some(FbxProperty::F64Array(a)) => a.clone(),
-        Some(FbxProperty::F32Array(a)) => a.iter().map(|&v| v as f64).collect(),
-        _ => return Ok(None),
+    let raw = match float_array(data_node.properties.first()) {
+        Some(a) => a,
+        None => return Ok(None),
     };
     if raw.len() % 2 != 0 {
         return Err(Error::invalid(format!(
@@ -989,10 +1021,9 @@ fn pull_layer_vec4(
         Some(n) => n,
         None => return Ok(None),
     };
-    let raw = match data_node.properties.first() {
-        Some(FbxProperty::F64Array(a)) => a.clone(),
-        Some(FbxProperty::F32Array(a)) => a.iter().map(|&v| v as f64).collect(),
-        _ => return Ok(None),
+    let raw = match float_array(data_node.properties.first()) {
+        Some(a) => a,
+        None => return Ok(None),
     };
     if raw.len() % 4 != 0 {
         return Err(Error::invalid(format!(
