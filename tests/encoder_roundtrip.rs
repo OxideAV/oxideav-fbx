@@ -2134,3 +2134,51 @@ fn authored_identity_texture_transform_survives() {
     let texref = scene2.materials[0].base_color_texture.expect("binding");
     assert_eq!(texref.transform, Some(TextureTransform::IDENTITY));
 }
+
+/// A morphed mesh **shared by two nodes** emits ONE `BlendShape`
+/// deformer on the shared `Geometry` (FBX hangs the deformer off the
+/// geometry, not the node) — previously each node emitted its own
+/// deformer, doubling the morph-target set on re-decode. The first
+/// node's effective static weights are what the wire carries (FBX
+/// cannot express two blend states on one shared geometry).
+#[test]
+fn shared_morphed_mesh_emits_one_blend_deformer() {
+    use oxideav_mesh3d::MorphTarget;
+
+    let mut scene = Scene3D::new();
+    let mut mesh = quad_with_normals_and_uvs("Shared");
+    {
+        let prim = &mut mesh.primitives[0];
+        let mut tgt = MorphTarget::new();
+        tgt.position = Some(vec![[0.0, 0.0, 2.0]; 6]);
+        prim.targets.push(tgt);
+        mesh.weights.push(0.25);
+    }
+    let mid = scene.add_mesh(mesh);
+    let na = scene.add_node(
+        Node::new()
+            .with_name("A")
+            .with_mesh(mid)
+            .with_weights([0.9f32]),
+    );
+    let nb = scene.add_node(Node::new().with_name("B").with_mesh(mid));
+    scene.roots.push(na);
+    scene.roots.push(nb);
+
+    let scene2 = decode(&encode_binary(&scene));
+
+    // Still exactly one mesh with exactly ONE morph target.
+    assert_eq!(scene2.meshes.len(), 1, "one shared geometry");
+    let prim = &scene2.meshes[0].primitives[0];
+    assert_eq!(
+        prim.targets.len(),
+        1,
+        "one BlendShape deformer on the shared geometry — targets must not double"
+    );
+    // First-emitting node's effective weights carried the wire.
+    assert_eq!(scene2.meshes[0].weights.len(), 1);
+    assert!((scene2.meshes[0].weights[0] - 0.9).abs() < 1e-6);
+    // Both nodes still reference the shared mesh.
+    let with_mesh = scene2.nodes.iter().filter(|n| n.mesh.is_some()).count();
+    assert_eq!(with_mesh, 2, "both instances keep the mesh");
+}

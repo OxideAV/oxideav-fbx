@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Round 446 — **shared morphed meshes no longer double their morph
+  targets through re-encode.** FBX hangs the `BlendShape` deformer
+  (and its channels) off the `Geometry` element, but the encoder
+  emitted one deformer per *node* with the mesh — so a mesh shared
+  by two nodes received two deformers on one geometry, and the
+  re-decoded mesh carried every morph target twice. The deformer
+  writer now emits one `BlendShape` per geometry (first node with
+  the mesh emits; later nodes bind their animation to the same
+  channel ids). Consequence, documented: with divergent per-node
+  `Node::weights` overrides on ONE shared geometry, the first node's
+  effective weights are what the wire carries — FBX cannot express
+  two blend states on one shared geometry.
+
 - Round 446 — **integer-narrowed ASCII arrays no longer drop layer
   payloads.** The ASCII front-end's `Key: *N { a: … }` typed-array
   bodies carry no element type, so an all-integer-valued *float*

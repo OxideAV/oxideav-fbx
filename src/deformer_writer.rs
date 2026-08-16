@@ -89,6 +89,18 @@ pub(crate) fn build_deformer_objects(
     mut alloc: impl FnMut() -> i64,
 ) -> DeformerEmit {
     let mut out = DeformerEmit::default();
+    // One `BlendShape` deformer per *geometry*: FBX hangs the
+    // deformer (and its channels) off the `Geometry` element, so a
+    // mesh shared by several nodes must not receive one deformer per
+    // node — that would double the morph-target set on re-decode.
+    // The first node with the mesh emits; later nodes reuse the same
+    // channel ids (their `morph_channels` entry still binds their
+    // own animation curves). Consequence: with divergent per-node
+    // static overrides on ONE shared geometry, the first node's
+    // effective weights are what the wire carries — FBX cannot
+    // express two blend states on one shared geometry.
+    let mut mesh_channels: std::collections::HashMap<usize, Vec<i64>> =
+        std::collections::HashMap::new();
 
     for (ni, node) in scene.nodes.iter().enumerate() {
         let Some(mesh_id) = node.mesh else { continue };
@@ -124,6 +136,12 @@ pub(crate) fn build_deformer_objects(
 
         // ---- Blend shapes ---------------------------------------------
         if !prim.targets.is_empty() {
+            if let Some(ids) = mesh_channels.get(&(mesh_id.0 as usize)) {
+                // Geometry already carries its deformer — bind this
+                // node's animation to the existing channels.
+                out.morph_channels.push((NodeId(ni as u32), ids.clone()));
+                continue;
+            }
             let blend_fbx = alloc();
             out.objects
                 .push(deformer_element(blend_fbx, "", "BlendShape"));
@@ -177,6 +195,7 @@ pub(crate) fn build_deformer_objects(
                 out.connections.push(conn_oo(shape_fbx, channel_fbx));
                 channel_ids.push(channel_fbx);
             }
+            mesh_channels.insert(mesh_id.0 as usize, channel_ids.clone());
             out.morph_channels.push((NodeId(ni as u32), channel_ids));
         }
     }
