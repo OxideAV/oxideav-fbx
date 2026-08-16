@@ -188,9 +188,14 @@ clean-room from third-party documentation:
     wrap-enum value table beyond the observed default `0` is a
     staged-docs gap, so the typed `Sampler` keeps its default
     repeat / filters-undefined state — plus `UVSwap`, `UseMipMap`,
-    pivots, and unrepresentable placements) round-trip verbatim via
+    `TextureTypeUse` / `CurrentMappingType` /
+    `CurrentTextureBlendMode` / `PremultiplyAlpha` / `UseMaterial` /
+    `Texture alpha`, pivots, and unrepresentable placements)
+    round-trip verbatim via
     `Scene3D::extras["fbx:texture_records"]` (keyed by scene texture
-    index).
+    index). The staged fixture's authored
+    `CurrentTextureBlendMode = 0` / `UseMaterial = 1` records are
+    pinned test-side.
 - **Vertex colours** — every `LayerElementColor` sub-record
   on a `Geometry` element is surfaced as a separate per-corner RGBA
   buffer on `Primitive::colors` (one slot per FBX colour set, the

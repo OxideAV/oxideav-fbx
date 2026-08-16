@@ -3018,6 +3018,26 @@ fn build_texture(
         if let Some(v) = raw.get("use_mip_map").and_then(|v| v.as_bool()) {
             p_records.push(p_bool("UseMipMap", v));
         }
+        for (key, name) in [
+            ("texture_type_use", "TextureTypeUse"),
+            ("current_mapping_type", "CurrentMappingType"),
+            ("current_texture_blend_mode", "CurrentTextureBlendMode"),
+        ] {
+            if let Some(v) = raw.get(key).and_then(|v| v.as_i64()) {
+                p_records.push(p_enum(name, v as i32));
+            }
+        }
+        for (key, name) in [
+            ("premultiply_alpha", "PremultiplyAlpha"),
+            ("use_material", "UseMaterial"),
+        ] {
+            if let Some(v) = raw.get(key).and_then(|v| v.as_bool()) {
+                p_records.push(p_bool(name, v));
+            }
+        }
+        if let Some(v) = raw.get("texture_alpha").and_then(|v| v.as_f64()) {
+            p_records.push(p_number("Texture alpha", v));
+        }
         if let Some(v) = raw_vec3(raw, "translation") {
             p_records.push(p_vector("Translation", v));
         }

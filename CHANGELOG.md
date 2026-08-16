@@ -85,10 +85,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     index): `WrapModeU` / `WrapModeV` (the wrap-enum value table
     beyond the observed default `0` is a staged-docs gap — the
     typed `Sampler` deliberately keeps its default repeat/undefined
-    state rather than guess), `UVSwap`, `UseMipMap`, non-zero
-    pivots, and any placement triple the typed transform could not
-    carry — all re-emitted verbatim onto the `Texture` element's
-    `Properties70` on encode, in binary and ASCII forms. FBX
+    state rather than guess), `UVSwap`, `UseMipMap`, the remaining
+    §3.1 authored scalars (`TextureTypeUse` / `CurrentMappingType` /
+    `CurrentTextureBlendMode` / `PremultiplyAlpha` / `UseMaterial` /
+    `Texture alpha` — the staged fixture authors
+    `CurrentTextureBlendMode = 0`, differing from the template
+    default `1`, and `UseMaterial = 1`; both pinned test-side),
+    non-zero pivots, and any placement triple the typed transform
+    could not carry — all re-emitted verbatim onto the `Texture`
+    element's `Properties70` on encode, in binary and ASCII forms. FBX
     declares no min/mag filter records at all, which mesh3d 0.0.5's
     `Option`-shaped `Sampler` filters now model exactly (`None` =
     undefined; previously an absent filter silently became an

@@ -416,6 +416,16 @@ fn texture_video_fixture_uvset_joins_to_channel_zero() {
         texref.transform, None,
         "no placement records authored on the fixture texture"
     );
+
+    // The fixture texture's remaining authored §3.1 records surface
+    // raw for lossless re-encode: `CurrentTextureBlendMode = 0`
+    // (differing from the template default `1`) and
+    // `UseMaterial = 1`.
+    let rec = scene.extras["fbx:texture_records"]
+        .get(texref.texture.0.to_string())
+        .expect("raw records for the bound texture");
+    assert_eq!(rec["current_texture_blend_mode"].as_i64(), Some(0));
+    assert_eq!(rec["use_material"].as_bool(), Some(true));
 }
 
 /// The fixture's `UVSet` join + channel labels survive a full

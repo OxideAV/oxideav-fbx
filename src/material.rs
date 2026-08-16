@@ -548,6 +548,29 @@ fn decode_texture_props(node: &FbxNode, template: Option<&PropertyMap>) -> Textu
     if let Some(v) = own.as_bool("UseMipMap") {
         raw.insert("use_mip_map".to_string(), v.into());
     }
+    // The remaining §3.1 authored scalars, kept for lossless
+    // re-encode (the staged texture-video fixture's Texture element
+    // authors `CurrentTextureBlendMode = 0` — differing from the
+    // template default `1` — and `UseMaterial = 1`).
+    for name in [
+        "TextureTypeUse",
+        "CurrentMappingType",
+        "CurrentTextureBlendMode",
+    ] {
+        if let Some(v) = own.as_i32(name) {
+            raw.insert(snake_key(name), v.into());
+        }
+    }
+    for name in ["PremultiplyAlpha", "UseMaterial"] {
+        if let Some(v) = own.as_bool(name) {
+            raw.insert(snake_key(name), v.into());
+        }
+    }
+    if let Some(v) = own.as_f64("Texture alpha") {
+        if let Some(n) = serde_json::Number::from_f64(v) {
+            raw.insert("texture_alpha".to_string(), serde_json::Value::Number(n));
+        }
+    }
     if transform.is_none() {
         for (key, val) in [
             ("translation", translation),
@@ -570,6 +593,29 @@ fn decode_texture_props(node: &FbxNode, template: Option<&PropertyMap>) -> Textu
         transform,
         raw,
     }
+}
+
+/// `CamelCase` FBX record name → `snake_case` raw-record key (the
+/// same convention the `fbx:*` extras keys use; no prefix — the keys
+/// live inside the per-texture `fbx:texture_records` object).
+fn snake_key(p_record_name: &str) -> String {
+    let mut out = String::new();
+    let mut prev_lower = false;
+    for ch in p_record_name.chars() {
+        if ch.is_ascii_uppercase() {
+            if prev_lower {
+                out.push('_');
+            }
+            for lo in ch.to_lowercase() {
+                out.push(lo);
+            }
+            prev_lower = false;
+        } else {
+            out.push(ch);
+            prev_lower = ch.is_ascii_lowercase() || ch.is_ascii_digit();
+        }
+    }
+    out
 }
 
 /// Join a `Texture` element's `UVSet` label against the UV-set names
