@@ -251,6 +251,13 @@ pub mod lights_cameras;
 pub mod material;
 pub mod node_attribute;
 pub mod node_transform;
+/// B-spline / NURBS evaluation + tessellation engine (Cox–de Boor
+/// basis, rational curves + tensor-product surfaces, tessellators
+/// emitting [`oxideav_mesh3d::Primitive`]s). The decode-side join
+/// from FBX `Geometry` records is gated on the wire payload grammar
+/// being staged — `docs/3d/fbx/fbx-binary-properties70.md` §6 point 3
+/// enumerates only the subtype names.
+pub mod nurbs;
 pub mod pose;
 pub mod properties70;
 pub mod scene;
@@ -276,6 +283,7 @@ pub use binary::{
 };
 pub use decoder::{is_binary_fbx, FbxDecoder};
 pub use encoder::{FbxEncoder, FbxOutputForm};
+pub use nurbs::{NurbsCurve, NurbsForm, NurbsSurface, TessellationOptions};
 pub use scene_writer::{encode_scene, encode_scene_with_options, SceneEncodeOptions};
 pub use writer::{write_document, write_document_with_options, WriterOptions};
 

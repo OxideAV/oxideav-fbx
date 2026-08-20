@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Round 449 — **B-spline / NURBS evaluation + tessellation engine**
+  (`nurbs` module). Validated typed model for rational B-spline
+  curves and tensor-product surfaces (`NurbsCurve` / `NurbsSurface`,
+  open / closed / periodic forms), evaluation via the Cox–de Boor
+  recursion with the `0/0 := 0` repeated-knot convention, first
+  derivatives (rational quotient rule), analytic surface normals with
+  a degenerate-pole nudge, and tessellators emitting
+  `oxideav_mesh3d::Primitive`s at a configurable resolution
+  (`TessellationOptions`; surfaces → indexed `Triangles` with
+  positions / normals / parameter UVs, open curves → `LineStrip`,
+  periodic curves → seamless `LineLoop`). Construction validates
+  everything (finite values, knot monotonicity + counts, strictly
+  positive weights, periodic knot-shift consistency, non-degenerate
+  domain) so evaluation is total, and tessellation resolutions are
+  capped (`MAX_TESSELLATION_VERTICES`) against hostile-resolution
+  memory bombs. Pinned against analytic ground truth: rational
+  quadratic quarter/full circles, clamped cubic midpoint, bilinear
+  plane + its exact normal, finite-difference derivative checks,
+  periodic seam `C^1` continuity, full-multiplicity interior-knot
+  totality. The decode-side join from FBX `Geometry` records
+  (subtypes `"NurbsCurve"` / `"NurbsSurface"` / `"TrimNurbsSurface"`
+  / `"Boundary"` / `"Line"`) remains gated on the wire payload
+  grammar being staged — `docs/3d/fbx/fbx-binary-properties70.md` §6
+  point 3 enumerates only the subtype names, and no staged fixture
+  carries such a geometry; `geometry_kind` keeps surfacing the
+  discriminator until then.
+
 ### Fixed
 
 - Round 446 — **shared morphed meshes no longer double their morph
