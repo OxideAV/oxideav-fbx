@@ -580,7 +580,34 @@ clean-room from third-party documentation:
   the `"fbx:node_attribute_kind"` key. The per-subtype control-point
   / knot-vector grammar that a real curve / surface evaluation would
   need is absent from the staged docs (only the subtype *names* are
-  enumerated), so tessellation is a follow-up round.
+  enumerated), so the decode-side join is a follow-up gated on that
+  grammar being staged — the evaluation engine itself is in place
+  (next bullet).
+- **B-spline / NURBS evaluation + tessellation engine** (`nurbs`
+  module) — the format-independent half of NURBS support, implemented
+  from the textbook definition of the B-spline basis (Cox–de Boor
+  recursion, `0/0 := 0` repeated-knot convention, rational
+  homogeneous-coordinate extension). Validated typed models
+  `NurbsCurve` / `NurbsSurface` (open / closed / periodic forms —
+  periodic wraps the control polygon with `C^{p-1}` continuity and
+  validates the knot vector's constant-period shifts), point
+  evaluation, first derivatives via the rational quotient rule,
+  analytic surface normals with a degenerate-pole nudge (a collapsed
+  pole row re-derives the limit normal a small step into the
+  domain), and tessellators emitting `oxideav_mesh3d::Primitive`s at
+  a configurable resolution (`TessellationOptions`): surfaces →
+  indexed `Triangles` with positions / outward analytic normals /
+  normalized-parameter UVs, open curves → `LineStrip`, periodic
+  curves → seamless `LineLoop`. Construction validates everything
+  (finiteness, knot monotonicity + exact counts, strictly positive
+  weights, non-degenerate domain), making evaluation total, and
+  resolutions are capped (`MAX_TESSELLATION_VERTICES`) against
+  hostile-resolution memory bombs. Pinned against analytic ground
+  truth: rational quadratic quarter / full circles, a cylinder and a
+  full sphere of revolution exactly on their quadrics through the
+  tessellator, tensor-linear-precision polynomial patches,
+  watertight periodic seams, finite-difference derivative checks,
+  and fixed-seed generative totality sweeps.
 - **NodeAttribute `"LimbNode"` / `"Null"` discriminator** —
   the remaining well-known `NodeAttribute` subtype discriminators
   documented in `docs/3d/fbx/fbx-binary-properties70.md` §6 that
@@ -887,6 +914,18 @@ the partial-support edges and the not-yet-implemented surfaces.
   per-corner attribute buffers (positions / normals / UVs / skin /
   morph) into N parts is the consumer's job — the slot table + the
   per-corner index buffer are the only inputs that decision needs.
+- **NURBS wire decode** — the `nurbs` module carries the complete
+  evaluation + tessellation engine, but the FBX wire payload grammar
+  for the non-`Mesh` geometry subtypes (`"NurbsCurve"` /
+  `"NurbsSurface"` / `"TrimNurbsSurface"` / `"Boundary"` / `"Line"`)
+  is a staged-docs gap: `docs/3d/fbx/fbx-binary-properties70.md` §6
+  point 3 enumerates only the subtype *names*, and no staged fixture
+  contains such a geometry, so the record names + layouts for knot
+  vectors, control points, orders, forms and weights cannot be pinned
+  from staged bytes. Until that grammar lands, the scene walker
+  surfaces the subtype discriminator on
+  `Node::extras["fbx:geometry_kind"]` and the payload rides the
+  `FbxDocument` untyped.
 - Coordinate-system / unit-scale **auto-conversion** —
   `GlobalSettings` is *decoded* (see "GlobalSettings"
   above) so the file's authored axis convention + unit factor land

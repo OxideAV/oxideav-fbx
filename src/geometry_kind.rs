@@ -37,8 +37,13 @@
 //! - The control-point / knot-vector payloads of the NURBS / Line
 //!   geometries — the staged docs enumerate the subtype *names* (§6
 //!   point 3) but not the per-subtype `P`-record / sub-record grammar
-//!   that would feed a real curve / surface evaluation. Tessellating
-//!   them is a follow-up round gated on that grammar being staged.
+//!   that would feed a real curve / surface evaluation. The
+//!   evaluation + tessellation engine itself now exists
+//!   ([`crate::nurbs`] — validated rational B-spline curves /
+//!   tensor-product surfaces with tessellators emitting
+//!   [`oxideav_mesh3d::Primitive`]s), so the *only* remaining gate on
+//!   first-class NURBS meshes is that wire payload grammar being
+//!   staged; the decode-side join is the follow-up.
 //! - `"Mesh"` (typed in [`crate::geometry`]) and `"Shape"` (typed in
 //!   [`crate::deformer`]) are deliberately excluded so the surfacing
 //!   passes never double-claim a geometry that already has a typed
