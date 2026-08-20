@@ -477,3 +477,238 @@ fn generative_surface_sweep_is_total() {
         assert!(idx.iter().all(|&i| (i as usize) < 36));
     }
 }
+
+// ---------------------------------------------------------------------
+// Adversarial constructor sweep: arbitrary (frequently invalid)
+// arguments must produce Ok or Err — never a panic — and anything
+// that constructs must evaluate and tessellate finitely. Two input
+// populations: pure hostile soup (random shapes + special values,
+// exercising every validator) and near-valid candidates with one
+// targeted corruption (or none — proving the Ok path runs too).
+// ---------------------------------------------------------------------
+
+/// A "malicious" scalar: mostly ordinary values, sprinkled with the
+/// special values a hostile caller would feed (NaN, infinities,
+/// subnormals, huge magnitudes, exact zero).
+fn hostile_f64(rng: &mut Lcg) -> f64 {
+    match rng.range(0, 9) {
+        0 => f64::NAN,
+        1 => f64::INFINITY,
+        2 => f64::NEG_INFINITY,
+        3 => 0.0,
+        4 => -0.0,
+        5 => f64::MIN_POSITIVE / 2.0, // subnormal
+        6 => 1e300,
+        7 => -1e300,
+        _ => rng.f64() * 200.0 - 100.0,
+    }
+}
+
+fn hostile_points(rng: &mut Lcg, count: usize) -> Vec<[f64; 3]> {
+    (0..count)
+        .map(|_| [hostile_f64(rng), hostile_f64(rng), hostile_f64(rng)])
+        .collect()
+}
+
+/// Corruption menu applied to an otherwise-valid argument set.
+/// `0` = leave valid.
+fn corrupt(
+    rng: &mut Lcg,
+    points: &mut [[f64; 3]],
+    weights: &mut Option<Vec<f64>>,
+    knots: &mut Vec<f64>,
+) {
+    match rng.range(0, 5) {
+        0 => {}
+        1 => {
+            let i = rng.range(0, knots.len() - 1);
+            knots[i] = f64::NAN;
+        }
+        2 => {
+            let w = weights.get_or_insert_with(|| vec![1.0; points.len()]);
+            let i = rng.range(0, w.len() - 1);
+            w[i] = -1.0;
+        }
+        3 => {
+            knots.pop();
+        }
+        4 => {
+            // Force a decreasing pair.
+            let i = rng.range(0, knots.len() - 2);
+            knots[i] = knots[i + 1] + 1.0;
+        }
+        _ => {
+            let i = rng.range(0, points.len() - 1);
+            points[i][rng.range(0, 2)] = f64::INFINITY;
+        }
+    }
+}
+
+/// Exercise a constructed curve end-to-end; every output must be
+/// finite (construction validated the inputs, so evaluation is total).
+fn check_constructed_curve(c: &NurbsCurve, iter: usize) {
+    let (lo, hi) = c.domain();
+    for t in [lo, hi, (lo + hi) / 2.0, lo - 1.0, hi + 1.0] {
+        let p = c.evaluate(t);
+        let d = c.derivative(t);
+        assert!(
+            p.iter().chain(&d).all(|v| v.is_finite()),
+            "iter {iter}: constructed curve produced non-finite output"
+        );
+    }
+    let prim = c.tessellate(4).expect("in-cap resolution");
+    assert!(prim
+        .positions
+        .iter()
+        .all(|p| p.iter().all(|v| v.is_finite())));
+}
+
+#[test]
+fn adversarial_constructor_sweep_never_panics() {
+    let mut rng = Lcg(0x0449_beef);
+    let forms = [NurbsForm::Open, NurbsForm::Closed, NurbsForm::Periodic];
+    let mut constructed = 0usize;
+    let mut rejected = 0usize;
+    for iter in 0..600 {
+        let (degree, points, weights, knots, form) = if rng.range(0, 1) == 0 {
+            // Population A: pure hostile soup.
+            let degree = rng.range(0, 5);
+            let n_pts = rng.range(0, 8);
+            let points = hostile_points(&mut rng, n_pts);
+            let weights = match rng.range(0, 2) {
+                0 => None,
+                _ => Some(
+                    (0..rng.range(0, 8))
+                        .map(|_| hostile_f64(&mut rng))
+                        .collect(),
+                ),
+            };
+            let mut knots: Vec<f64> = (0..rng.range(0, 16))
+                .map(|_| hostile_f64(&mut rng))
+                .collect();
+            if rng.range(0, 1) == 1 {
+                knots.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            }
+            (degree, points, weights, knots, forms[rng.range(0, 2)])
+        } else {
+            // Population B: near-valid with one targeted corruption
+            // (or none).
+            let degree = rng.range(1, 3);
+            let n = rng.range(degree + 1, degree + 5);
+            let mut points = random_points(&mut rng, n);
+            let mut weights = random_weights(&mut rng, n);
+            let clamp = rng.f64() < 0.5;
+            let mut knots = random_knots(&mut rng, degree, n, clamp);
+            corrupt(&mut rng, &mut points, &mut weights, &mut knots);
+            (degree, points, weights, knots, NurbsForm::Open)
+        };
+        match NurbsCurve::new(degree, points, weights, knots, form) {
+            Err(_) => rejected += 1,
+            Ok(c) => {
+                constructed += 1;
+                check_constructed_curve(&c, iter);
+            }
+        }
+    }
+    // The sweep must exercise BOTH branches.
+    assert!(constructed > 0, "sweep never constructed a valid curve");
+    assert!(rejected > 0, "sweep never rejected anything");
+}
+
+#[test]
+fn adversarial_surface_constructor_sweep_never_panics() {
+    let mut rng = Lcg(0x0449_face);
+    let forms = [NurbsForm::Open, NurbsForm::Closed, NurbsForm::Periodic];
+    let mut constructed = 0usize;
+    let mut rejected = 0usize;
+    for iter in 0..400 {
+        let (du, dv, nu, nv, points, weights, ku, kv, fu, fv) = if rng.range(0, 1) == 0 {
+            // Population A: hostile soup, sometimes lying about the
+            // grid product.
+            let du = rng.range(0, 4);
+            let dv = rng.range(0, 4);
+            let nu = rng.range(0, 6);
+            let nv = rng.range(0, 6);
+            let count = if rng.range(0, 3) == 0 {
+                rng.range(0, 36)
+            } else {
+                nu * nv
+            };
+            let points = hostile_points(&mut rng, count);
+            let weights = match rng.range(0, 2) {
+                0 => None,
+                _ => Some(
+                    (0..rng.range(0, 36))
+                        .map(|_| hostile_f64(&mut rng))
+                        .collect(),
+                ),
+            };
+            let ku: Vec<f64> = (0..rng.range(0, 14))
+                .map(|_| hostile_f64(&mut rng))
+                .collect();
+            let kv: Vec<f64> = (0..rng.range(0, 14))
+                .map(|_| hostile_f64(&mut rng))
+                .collect();
+            let fu = forms[rng.range(0, 2)];
+            let fv = forms[rng.range(0, 2)];
+            (du, dv, nu, nv, points, weights, ku, kv, fu, fv)
+        } else {
+            // Population B: near-valid grid with one corruption (or
+            // none) applied to the u-direction arguments.
+            let du = rng.range(1, 3);
+            let dv = rng.range(1, 3);
+            let nu = rng.range(du + 1, du + 4);
+            let nv = rng.range(dv + 1, dv + 4);
+            let mut points = random_points(&mut rng, nu * nv);
+            let mut weights = random_weights(&mut rng, nu * nv);
+            let clamp_u = rng.f64() < 0.5;
+            let clamp_v = rng.f64() < 0.5;
+            let mut ku = random_knots(&mut rng, du, nu, clamp_u);
+            let kv = random_knots(&mut rng, dv, nv, clamp_v);
+            corrupt(&mut rng, &mut points, &mut weights, &mut ku);
+            (
+                du,
+                dv,
+                nu,
+                nv,
+                points,
+                weights,
+                ku,
+                kv,
+                NurbsForm::Open,
+                NurbsForm::Open,
+            )
+        };
+        match NurbsSurface::new(du, dv, nu, nv, points, weights, ku, kv, fu, fv) {
+            Err(_) => rejected += 1,
+            Ok(s) => {
+                constructed += 1;
+                let (ulo, uhi) = s.domain_u();
+                let (vlo, vhi) = s.domain_v();
+                for (u, v) in [
+                    (ulo, vlo),
+                    (uhi, vhi),
+                    ((ulo + uhi) / 2.0, (vlo + vhi) / 2.0),
+                    (ulo - 3.0, vhi + 3.0),
+                ] {
+                    let (p, su, sv) = s.derivatives(u, v);
+                    let nrm = s.normal(u, v);
+                    assert!(
+                        p.iter()
+                            .chain(&su)
+                            .chain(&sv)
+                            .chain(&nrm)
+                            .all(|c| c.is_finite()),
+                        "iter {iter}: constructed surface produced non-finite output"
+                    );
+                }
+                let prim = s
+                    .tessellate(&TessellationOptions::uniform(3))
+                    .expect("in-cap resolution");
+                assert_eq!(prim.positions.len(), 16);
+            }
+        }
+    }
+    assert!(constructed > 0, "sweep never constructed a valid surface");
+    assert!(rejected > 0, "sweep never rejected anything");
+}
