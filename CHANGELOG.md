@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Round 452 — **mesh3d 0.0.6 typed morph surfaces adopted.**
+  `BlendShapeChannel` display names now decode onto the typed
+  `Mesh::target_names` (pushed exactly when a target is, so
+  `Scene3D::validate`'s length rule holds across several
+  `BlendShape` deformers on one geometry) instead of the
+  `Primitive::extras["fbx:morph_target_names"]` side-channel, which
+  the decoder no longer writes; the encoder reads
+  `Mesh::target_names` first and keeps the extras key as a fallback
+  for callers still authoring it. The merged `DeformPercent` →
+  `MorphWeights` channel is built through
+  `AnimationSampler::morph_weights` + `AnimationChannel::new`, and
+  the encoder recovers per-key weight vectors through
+  `morph_weight_stride` / `morph_weight_frames` — which also fixes a
+  `CubicSpline` `MorphWeights` sampler emitting a 3×-mis-strided
+  table: its centre values are now the `DeformPercent` keys. Typed
+  texture transforms and `Node::weights` overrides were already
+  adopted (rounds 44x); `MorphTarget::inbetweens` stays empty in
+  both directions — the FBX in-between station grammar is pinned by
+  no staged doc. Five round-trip pins (`tests/morph_typed_surfaces.rs`)
+  cover both wire forms with `validate()` green before and after.
+
 ### Added
 
 - Round 449 — **B-spline / NURBS evaluation + tessellation engine**

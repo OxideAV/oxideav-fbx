@@ -142,8 +142,13 @@ clean-room from third-party documentation:
   deformers on one geometry. Each channel's **static**
   `DeformPercent` record (0..100) decodes ÷100 into the matching
   `Mesh::weights` slot (rest blend state), and the channels' authored
-  display names surface in slot order on
-  `Primitive::extras["fbx:morph_target_names"]`.
+  display names land in slot order on the typed `Mesh::target_names`
+  (`find_target("Smile")` → weight-slot index). The merged
+  `MorphWeights` channel is built through
+  `AnimationSampler::morph_weights` (the typed synthesis path), so
+  `morph_weight_frames()` reads the per-key weight vectors back
+  losslessly. `MorphTarget::inbetweens` stays empty — see the
+  in-between note under "Notes & limitations".
 - **Materials / Textures / Video**
   — one `oxideav_mesh3d::Material` per FBX `Material` element with
   PBR factors decoded from `Properties70` `P`-records per
@@ -763,8 +768,12 @@ clean-room from third-party documentation:
     state × 100: `Scene3D::effective_morph_weights`' node > mesh
     §3.7.4 precedence, so a `Node::weights` per-instance override
     lands on that node's own emitted channels) and its
-    authored name from `fbx:morph_target_names` (fallback
-    `Target{i}`); one `Pose : "BindPose"` element
+    authored name from `Mesh::target_names` (the pre-0.0.6
+    `fbx:morph_target_names` extras key as a fallback, then
+    `Target{i}`); a `MorphWeights` sampler's per-key vectors come
+    from `morph_weight_frames()`, so a `CubicSpline` sampler emits
+    its centre values as the `DeformPercent` keys (tangent triples
+    have no FBX curve-key home); one `Pose : "BindPose"` element
     (`PoseNode { Node, Matrix }` per posed node) from the
     `fbx:bind_pose` extras.
   - **Lights / Cameras** — one `NodeAttribute` per bound node
@@ -890,11 +899,15 @@ the partial-support edges and the not-yet-implemented surfaces.
 - Skin: `SKINNING_METHOD_DUAL_QUATERNION` / `BLENDED_DQ_LINEAR`
   surface as plain LBS buffers (the doc notes this is safe to ignore
   unless the renderer specifically needs it).
-- BlendShape: in-between keyframes are collapsed to the most-recent
-  `Shape` per the doc's `target_shape` simplification. The
-  in-between-shape grammar (a channel with several `Shape` targets
-  and their per-shape activation weights) is not pinned by any staged
-  doc, so no interpretation is attempted — a docs acquisition item.
+- BlendShape: in-between shapes are collapsed to the most-recent
+  `Shape` per channel, and `MorphTarget::inbetweens` (mesh3d 0.0.6)
+  is left empty in both directions. The in-between-shape grammar (a
+  channel with several `Shape` targets and the station-weight table
+  that would give each its `Inbetween::weight`) is pinned by no
+  staged doc — `docs/3d/fbx/fbx-binary-properties70.md` §6 only
+  names the `"Shape"` subtype and `fbx-property-templates.md` §4.1
+  leaves the `FbxBlendShapeChannel` body unobserved — so no
+  interpretation is attempted: a docs acquisition item.
 - Specular workflow — FBX `Specular` / `SpecularFactor` aren't
   surfaced because the glTF metallic-roughness target has no separate
   specular colour channel. The values still round-trip through the
