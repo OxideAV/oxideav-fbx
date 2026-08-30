@@ -848,15 +848,12 @@ fn multi_target_morph_statics_and_animation_survive_round_trip() {
         pos1[2] = [-0.5, 0.0, 0.0];
         t1.position = Some(pos1);
         prim.targets.push(t1);
-        // Authored channel names, re-emitted on the BlendShapeChannel
-        // / Shape elements and re-surfaced on decode.
-        prim.extras.insert(
-            "fbx:morph_target_names".to_string(),
-            serde_json::json!(["Smile", "Frown"]),
-        );
         mesh.weights.push(0.25);
         mesh.weights.push(0.75);
     }
+    // Authored channel names (typed), re-emitted on the
+    // BlendShapeChannel / Shape elements and re-surfaced on decode.
+    let mesh = mesh.with_target_names(["Smile", "Frown"]);
     let mid = scene.add_mesh(mesh);
     let nid = scene.add_node(Node::new().with_name("MultiMorphNode").with_mesh(mid));
     scene.roots.push(nid);
@@ -889,11 +886,12 @@ fn multi_target_morph_statics_and_animation_survive_round_trip() {
         let p1 = prim.targets[1].position.as_ref().expect("slot 1 deltas");
         assert!((p1[2][0] + 0.5).abs() < 1e-6);
 
-        // Authored channel names survive per slot.
+        // Authored channel names survive per slot on the typed field.
         assert_eq!(
-            prim.extras["fbx:morph_target_names"],
-            serde_json::json!(["Smile", "Frown"])
+            scene2.meshes[0].target_names,
+            vec!["Smile".to_string(), "Frown".to_string()]
         );
+        assert_eq!(scene2.meshes[0].find_target("Frown"), Some(1));
 
         // Static weights survive per slot.
         let w = &scene2.meshes[0].weights;

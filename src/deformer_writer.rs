@@ -147,18 +147,24 @@ pub(crate) fn build_deformer_objects(
                 .push(deformer_element(blend_fbx, "", "BlendShape"));
             out.connections.push(conn_oo(blend_fbx, geom_fbx));
             // Authored per-slot channel names round-tripped by the
-            // decode side (empty / absent slots fall back to a
-            // positional `Target{ti}` name).
-            let slot_names: Vec<String> = prim
-                .extras
-                .get("fbx:morph_target_names")
-                .and_then(|v| v.as_array())
-                .map(|arr| {
-                    arr.iter()
-                        .map(|v| v.as_str().unwrap_or_default().to_owned())
-                        .collect()
-                })
-                .unwrap_or_default();
+            // decode side: the typed `Mesh::target_names` first, the
+            // pre-0.0.6 `Primitive::extras["fbx:morph_target_names"]`
+            // side-channel as a fallback for callers still authoring
+            // it (empty / absent slots fall back to a positional
+            // `Target{ti}` name).
+            let slot_names: Vec<String> = if !mesh.target_names.is_empty() {
+                mesh.target_names.clone()
+            } else {
+                prim.extras
+                    .get("fbx:morph_target_names")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .map(|v| v.as_str().unwrap_or_default().to_owned())
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            };
             let mut channel_ids = Vec::with_capacity(prim.targets.len());
             for (ti, target) in prim.targets.iter().enumerate() {
                 let slot_name = match slot_names.get(ti) {

@@ -513,8 +513,15 @@ fn blend_shape_emits_morph_target_with_per_corner_deltas() {
     assert_eq!(mesh.weights, vec![0.0]);
     // The channel's authored display name surfaces per slot.
     assert_eq!(
-        mesh.primitives[0].extras["fbx:morph_target_names"],
-        serde_json::json!(["Smile"])
+        mesh.target_names,
+        vec!["Smile".to_string()],
+        "typed Mesh::target_names carries the channel name"
+    );
+    assert!(
+        !mesh.primitives[0]
+            .extras
+            .contains_key("fbx:morph_target_names"),
+        "no extras side-channel once the typed field exists"
     );
     let tgt = &mesh.primitives[0].targets[0];
     let pos = tgt.position.as_ref().expect("position deltas present");
@@ -680,8 +687,8 @@ fn two_blend_deformers_on_one_geometry_keep_document_order() {
     assert!((mesh.weights[0] - 0.10).abs() < 1e-6);
     assert!((mesh.weights[1] - 0.90).abs() < 1e-6);
     assert_eq!(
-        prim.extras["fbx:morph_target_names"],
-        serde_json::json!(["Smile", "Frown"])
+        mesh.target_names,
+        vec!["Smile".to_string(), "Frown".to_string()]
     );
     // Delta payloads confirm the slot assignment (v2 vs v1 deltas).
     let p0 = prim.targets[0].position.as_ref().unwrap();
@@ -790,8 +797,8 @@ fn multi_channel_morph_animation_merges_one_strided_sampler() {
     assert!((mesh2.weights[0] - 0.25).abs() < 1e-6);
     assert!((mesh2.weights[1] - 0.5).abs() < 1e-6);
     assert_eq!(
-        mesh2.primitives[0].extras["fbx:morph_target_names"],
-        serde_json::json!(["Smile", "Frown"])
+        mesh2.target_names,
+        vec!["Smile".to_string(), "Frown".to_string()]
     );
     let ch2 = scene2.animations[0]
         .channels

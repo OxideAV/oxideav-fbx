@@ -717,29 +717,30 @@ fn build_morph_channel(
         return None;
     }
 
-    let mut values: Vec<f32> = Vec::with_capacity(merged_times.len() * n_targets);
-    for &t in &merged_times {
-        for slot in 0..n_targets {
-            match slot_curves.get(&slot) {
-                Some(curve) => {
-                    values.push((f64::from(sample_linear(curve, t)) / DEFORM_PERCENT_SCALE) as f32)
-                }
-                None => values.push(statics.get(slot).copied().unwrap_or(0.0)),
-            }
-        }
-    }
-
-    Some(AnimationChannel {
-        target: AnimationTarget {
-            node,
-            property: AnimationProperty::MorphWeights,
-        },
-        sampler: AnimationSampler {
-            keyframes: merged_times,
-            values: AnimationValues::Scalar(values),
-            interpolation: Interpolation::Linear,
-        },
-    })
+    // One full weight vector per merged keyframe — the typed
+    // `AnimationSampler::morph_weights` synthesis path flattens them
+    // row-major into the strided `Scalar` table; it returns `None`
+    // only for a grid `validate` would reject (empty / non-increasing
+    // times, ragged frames), which the merge above rules out.
+    let frames: Vec<Vec<f32>> = merged_times
+        .iter()
+        .map(|&t| {
+            (0..n_targets)
+                .map(|slot| match slot_curves.get(&slot) {
+                    Some(curve) => {
+                        (f64::from(sample_linear(curve, t)) / DEFORM_PERCENT_SCALE) as f32
+                    }
+                    None => statics.get(slot).copied().unwrap_or(0.0),
+                })
+                .collect()
+        })
+        .collect();
+    let sampler = AnimationSampler::morph_weights(merged_times, frames, Interpolation::Linear)?;
+    Some(AnimationChannel::new(
+        node,
+        AnimationProperty::MorphWeights,
+        sampler,
+    ))
 }
 
 /// Build the coupled channel set for a node whose transform chain

@@ -60,11 +60,13 @@
 //!   the **top 4 weights** per vertex (the
 //!   [`oxideav_mesh3d::Primitive::weights`] / `joints` slots are
 //!   `[f32; 4]` / `[u16; 4]`).
-//! - In-between blend keyframes are ignored — the doc explicitly
-//!   notes most callers use the convenience `target_shape` (last
-//!   keyframe) field instead, and we follow the same simplification:
-//!   one [`oxideav_mesh3d::MorphTarget`] per `BlendShapeChannel`,
-//!   sourced from the most recent `Shape` connection.
+//! - In-between shapes (`MorphTarget::inbetweens`) are not decoded:
+//!   the multi-`Shape`-per-channel activation grammar (the station
+//!   weight table that would give each extra `Shape` its
+//!   `Inbetween::weight`) is pinned by no staged doc, so one
+//!   [`oxideav_mesh3d::MorphTarget`] is emitted per
+//!   `BlendShapeChannel`, sourced from the most recent `Shape`
+//!   connection, with `inbetweens` empty.
 //! - Skinning method (`SKINNING_METHOD_*`) is not surfaced; we always
 //!   produce LBS-compatible weight buffers.
 
@@ -405,11 +407,11 @@ pub fn extract_deformers(
         };
 
         // For every BlendShapeChannel, take the most-recent Shape
-        // (matches the doc's `target_shape` simplification) and emit
-        // one MorphTarget on the bound mesh's primitive. The channel's
-        // authored display name (object-header prop, split at the
-        // `\x00\x01` class join) is collected per slot for the
-        // `fbx:morph_target_names` extras surface below —
+        // (in-between stations are a staged-docs gap — module note)
+        // and emit one MorphTarget on the bound mesh's primitive. The
+        // channel's authored display name (object-header prop, split
+        // at the `\x00\x01` class join) is collected per slot for the
+        // typed `Mesh::target_names` surface below —
         // [`oxideav_mesh3d::MorphTarget`] has no name field.
         let n_corners = corner_indices.len();
         let mut slot_names: Vec<String> = Vec::new();
@@ -528,21 +530,15 @@ pub fn extract_deformers(
         }
 
         // Surface the channels' authored display names, appended in
-        // slot order onto the bound primitive's
-        // `extras["fbx:morph_target_names"]` (append — a geometry may
-        // carry several BlendShape deformers, each contributing
-        // slots).
+        // slot order onto the bound mesh's typed
+        // `Mesh::target_names` (append — a geometry may carry several
+        // BlendShape deformers, each contributing slots; names are
+        // pushed exactly when a target is, so the mesh3d validate
+        // length rule holds).
         if !slot_names.is_empty() {
-            let mesh = &mut scene.meshes[mesh_id.0 as usize];
-            if let Some(prim) = mesh.primitives.first_mut() {
-                let entry = prim
-                    .extras
-                    .entry("fbx:morph_target_names".to_string())
-                    .or_insert_with(|| serde_json::Value::Array(Vec::new()));
-                if let serde_json::Value::Array(arr) = entry {
-                    arr.extend(slot_names.into_iter().map(serde_json::Value::String));
-                }
-            }
+            scene.meshes[mesh_id.0 as usize]
+                .target_names
+                .extend(slot_names);
         }
     }
 

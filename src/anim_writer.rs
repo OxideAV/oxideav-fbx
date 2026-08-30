@@ -115,23 +115,25 @@ pub(crate) fn build_animation_objects(
                     let Some(channel_fbxs) = morph_channel_ids(ch.target.node) else {
                         continue;
                     };
-                    let AnimationValues::Scalar(vals) = &ch.sampler.values else {
-                        continue;
-                    };
                     let times = &ch.sampler.keyframes;
                     // Per the mesh3d sampler contract the value table
-                    // is strided by the morph-target count; a
-                    // non-integral stride is malformed.
-                    if times.is_empty() || vals.len() % times.len() != 0 {
+                    // is strided by the morph-target count; the typed
+                    // read-back rejects a malformed table (`None`) and
+                    // yields the authored *value* vector per keyframe
+                    // for every interpolation — a CubicSpline sampler's
+                    // tangent triples are not FBX curve keys, so its
+                    // centre values are what the wire carries.
+                    let Some(stride) = ch.sampler.morph_weight_stride() else {
                         continue;
-                    }
-                    let stride = vals.len() / times.len();
+                    };
+                    let Some(frames) = ch.sampler.morph_weight_frames() else {
+                        continue;
+                    };
                     for (slot, channel_fbx) in channel_fbxs.into_iter().enumerate().take(stride) {
                         // 0..1 weights → 0..100 DeformPercent wire values.
-                        let slot_vals: Vec<f32> = (0..times.len())
-                            .map(|k| {
-                                (f64::from(vals[k * stride + slot]) * DEFORM_PERCENT_SCALE) as f32
-                            })
+                        let slot_vals: Vec<f32> = frames
+                            .iter()
+                            .map(|frame| (f64::from(frame[slot]) * DEFORM_PERCENT_SCALE) as f32)
                             .collect();
                         let curve_node_id = alloc();
                         objects.push(element(
