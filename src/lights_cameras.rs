@@ -112,6 +112,12 @@ pub fn extract_lights_and_cameras(
     // 1) Index every NodeAttribute element by id.
     let mut light_attrs: HashMap<i64, &FbxNode> = HashMap::new();
     let mut camera_attrs: HashMap<i64, &FbxNode> = HashMap::new();
+    // Document order of the attribute elements: `LightId` /
+    // `CameraId` are assigned in this order so a decode is
+    // deterministic (and so the encoder, which emits attributes in
+    // id order, round-trips the ids unchanged).
+    let mut light_order: Vec<i64> = Vec::new();
+    let mut camera_order: Vec<i64> = Vec::new();
     if let Some(objects) = doc.root.child("Objects") {
         for child in &objects.children {
             if child.name != "NodeAttribute" {
@@ -122,11 +128,11 @@ pub fn extract_lights_and_cameras(
                 None => continue,
             };
             match subtype_string(child).as_deref() {
-                Some("Light") => {
-                    light_attrs.insert(id, child);
+                Some("Light") if light_attrs.insert(id, child).is_none() => {
+                    light_order.push(id);
                 }
-                Some("Camera") => {
-                    camera_attrs.insert(id, child);
+                Some("Camera") if camera_attrs.insert(id, child).is_none() => {
+                    camera_order.push(id);
                 }
                 _ => {}
             }
@@ -162,8 +168,9 @@ pub fn extract_lights_and_cameras(
 
     // 3) Decode each bound NodeAttribute and attach to the Model's
     //    scene-graph Node.
-    for (&attr_id, &model_fid) in &light_owner {
-        let Some(node) = light_attrs.get(&attr_id) else {
+    for attr_id in light_order {
+        let (Some(&model_fid), Some(node)) = (light_owner.get(&attr_id), light_attrs.get(&attr_id))
+        else {
             continue;
         };
         let (light, kind_tag, extras) = decode_light(node);
@@ -181,8 +188,10 @@ pub fn extract_lights_and_cameras(
             }
         }
     }
-    for (&attr_id, &model_fid) in &camera_owner {
-        let Some(node) = camera_attrs.get(&attr_id) else {
+    for attr_id in camera_order {
+        let (Some(&model_fid), Some(node)) =
+            (camera_owner.get(&attr_id), camera_attrs.get(&attr_id))
+        else {
             continue;
         };
         let (camera, extras) = decode_camera(node);

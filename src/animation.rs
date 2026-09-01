@@ -148,6 +148,10 @@ pub fn extract_animations(
     // Index Objects by FBX id for every animation-related element
     // type we touch.
     let mut stacks: HashMap<i64, String> = HashMap::new();
+    // Document order of the stacks — the emitted `Animation` list
+    // follows it, so a decode is deterministic (a hash-map walk
+    // would reorder stacks from one run to the next).
+    let mut stack_order: Vec<i64> = Vec::new();
     let mut layers: HashMap<i64, String> = HashMap::new();
     let mut curve_nodes: HashMap<i64, String> = HashMap::new();
     let mut curves: HashMap<i64, RawCurve> = HashMap::new();
@@ -157,7 +161,12 @@ pub fn extract_animations(
             match child.name.as_str() {
                 "AnimationStack" => {
                     if let Some(id) = element_id(child) {
-                        stacks.insert(id, element_name(child).unwrap_or_default());
+                        if stacks
+                            .insert(id, element_name(child).unwrap_or_default())
+                            .is_none()
+                        {
+                            stack_order.push(id);
+                        }
                     }
                 }
                 "AnimationLayer" => {
@@ -323,7 +332,8 @@ pub fn extract_animations(
 
     // Materialise one Animation per stack.
     let mut animations: Vec<Animation> = Vec::new();
-    for (stack_id, name) in stacks.iter() {
+    for stack_id in &stack_order {
+        let name = &stacks[stack_id];
         let mut anim = Animation::new(if name.is_empty() {
             None
         } else {
@@ -339,6 +349,12 @@ pub fn extract_animations(
                     grouped.entry(*node_id).or_default()[usize::from(*tag)] = Some(comps);
                 }
             }
+            // Channel order is deterministic: ascending target node
+            // id, T / R / S within a node (the writer's emission
+            // order, so decode → encode → decode is a fixed point).
+            let mut grouped: Vec<(NodeId, [Option<&ComponentCurves>; 3])> =
+                grouped.into_iter().collect();
+            grouped.sort_by_key(|(n, _)| n.0);
             for (node_id, [t_c, r_c, s_c]) in grouped {
                 match node_chains.get(&node_id) {
                     Some(chain) if chain.has_extensions() => {

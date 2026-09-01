@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `tests/fixed_point.rs` — decode → encode → decode **fixed-point
+  harness** over the whole staged fixture corpus (binary + ASCII
+  output forms): a per-feature typed-scene fingerprint diff (parity
+  law: nothing the reader surfaced is dropped or degraded by one
+  writer pass; fixed-point law: the writer converges after one pass)
+  plus a wire-record census (every semantic record path in the
+  fixture reappears in the re-encode). Open gaps are enumerated in
+  one burn-down list the laws consult.
+
+### Fixed
+
+- Decode determinism: `Animation` channel order and `LightId` /
+  `CameraId` assignment followed hash-map iteration, so two decodes
+  of the same bytes could bind channels / attributes to different
+  indices. Both now follow document order.
+
 ## [0.0.3](https://github.com/OxideAV/oxideav-fbx/compare/v0.0.2...v0.0.3) - 2026-08-30
 
 ### Other
