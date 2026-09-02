@@ -503,7 +503,10 @@ fn census_ignored(path: &str) -> bool {
         "FBXHeaderExtension/OtherFlags",
         "FBXHeaderExtension/EncryptionType",
     ];
-    PREFIXES.iter().any(|p| path.starts_with(p))
+    // `NormalsW` is a producer-optional companion array (the fourth
+    // component of a 3-vector normal layer) with no typed home and no
+    // documented semantics; the normals themselves are the feature.
+    PREFIXES.iter().any(|p| path.starts_with(p)) || path.ends_with("/LayerElementNormal/NormalsW")
 }
 
 struct Outcome {
@@ -591,11 +594,6 @@ fn known_gap(form: FbxOutputForm, kind: &str, key: &str) -> bool {
         // objects this crate has no typed home for (`CollectionExclusive`
         // display layers) are dropped, and their template block with them
         "scene.extras[fbx:property_templates]",
-        // geometry: shared vertices / polygons / edges / smoothing
-        "mesh[*].prim[*].extras[fbx:edges]",
-        "mesh[*].prim[*].extras[fbx:edge_smoothing]",
-        "mesh[*].prim[*].extras[fbx:shared_positions]",
-        "mesh[*].prim[*].extras[fbx:material_mapping]",
     ];
     let census: &[&str] = &[
         "FBXHeaderExtension/SceneInfo",

@@ -508,6 +508,64 @@ pub fn extract_geometry_mesh_with_corners(
                 .collect(),
         ),
     );
+    // The raw `PolygonVertexIndex` array verbatim (negative closing
+    // corners included) and the element's own `Properties70` records
+    // (`BBoxMin` / `BBoxMax` / `Color`, …), so the writer can re-emit
+    // the original control-point table + polygon structure (n-gons,
+    // shared vertices, the `Edges` domain) instead of a disconnected
+    // triangle list — see `scene_writer::build_geometry`.
+    prim.extras.insert(
+        "fbx:polygon_vertex_index".to_string(),
+        Value::Array(
+            polygon_indices
+                .iter()
+                .map(|&v| Value::Number(serde_json::Number::from(v)))
+                .collect(),
+        ),
+    );
+    // Data-less layer shells — a `LayerElement*` with the mapping /
+    // reference leaves but no data array at all (the staged
+    // box-binary-v7400.fbx carries a `ByVertice` / `Direct`
+    // `LayerElementUV` with no `UV` array) — decode to nothing typed;
+    // they ride on `fbx:empty_layers` so the writer re-emits the
+    // shell (and the `Layer` binding entry naming it).
+    let empty_layers: Vec<Value> = geom
+        .children
+        .iter()
+        .filter(|c| c.name.starts_with("LayerElement"))
+        .filter(|c| {
+            !c.children.iter().any(|leaf| {
+                leaf.properties.iter().any(|p| {
+                    matches!(
+                        p,
+                        FbxProperty::F64Array(_)
+                            | FbxProperty::F32Array(_)
+                            | FbxProperty::I32Array(_)
+                            | FbxProperty::I64Array(_)
+                    )
+                })
+            })
+        })
+        .map(|c| {
+            serde_json::json!({
+                "type": c.name,
+                "typed_index": c.properties.first().and_then(FbxProperty::as_i64).unwrap_or(0),
+                "leaves": crate::properties70::leaves_json(c, &[]),
+            })
+        })
+        .collect();
+    if !empty_layers.is_empty() {
+        prim.extras
+            .insert("fbx:empty_layers".to_string(), Value::Array(empty_layers));
+    }
+    // Present whenever the element carries a `Properties70` block —
+    // Blender geometries write an *empty* one — so the writer can
+    // re-emit the block as the producer did.
+    if geom.child("Properties70").is_some() {
+        let records = crate::properties70::own_records_json(geom);
+        prim.extras
+            .insert("fbx:geometry_records".to_string(), Value::Array(records));
+    }
     let mut mesh = Mesh::new(name);
     mesh.primitives.push(prim);
     Ok((mesh, triangles.corner_indices))
@@ -595,7 +653,7 @@ pub(crate) struct Triangulation {
 /// Fan-triangulate the `PolygonVertexIndex` array. Decodes the
 /// negative end-of-polygon marker per Gessler's writeup:
 /// `vertex_idx = !signed_idx` when the value is negative.
-fn triangulate(pvi: &[i32]) -> Result<Triangulation> {
+pub(crate) fn triangulate(pvi: &[i32]) -> Result<Triangulation> {
     let mut corner_indices = Vec::new();
     let mut corner_pvi_index = Vec::new();
     let mut tri_polygon_index = Vec::new();

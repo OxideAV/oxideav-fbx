@@ -73,6 +73,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   samples identically from it — all 90 of the skin-anim fixture's
   curves — and falls back to the union-grid curve only for an edited
   channel.
+- Welded geometry: the decoder surfaces the raw `PolygonVertexIndex`
+  (`fbx:polygon_vertex_index`), the element's `Properties70`
+  (`fbx:geometry_records`) and data-less layer shells
+  (`fbx:empty_layers`); the writer re-emits the **original
+  control-point table and n-gon polygon structure** whenever the
+  per-corner buffers still agree with them (de-fanning every
+  attribute layer back to polygon corners), the `Edges` domain +
+  `ByEdge` / `ByPolygon` smoothing from the decoded pairs, the
+  material layer in its source mapping (`AllSame` / `ByPolygon`),
+  `IndexToDirect` UV pools, `GeometryVersion`, and the `Layer`
+  binding blocks — with cluster / blend-shape `Indexes` remapped to
+  control points. An edited mesh falls back to the expanded
+  triangle-list form.
 - Textures referenced by no material (the staged fixture's orphan
   embedded texture) are emitted too; `Texture` elements follow
   texture-index order so ids survive a round trip.

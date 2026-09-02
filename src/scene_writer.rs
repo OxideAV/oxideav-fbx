@@ -72,6 +72,8 @@
 //!   index topology is not preserved — mesh3d's decode side already
 //!   produces per-corner buffers, so this is symmetric).
 
+use serde_json::Value;
+
 use oxideav_mesh3d::{AlphaMode, Indices, Material, Mesh, Node, Primitive, Scene3D, Transform};
 
 use crate::binary::{FbxDocument, FbxNode, FbxProperty};
@@ -174,9 +176,14 @@ pub fn encode_scene_with_options(scene: &Scene3D, opts: &SceneEncodeOptions) -> 
     };
 
     // -- Geometry records (one per mesh) --------------------------------
+    // A welded geometry (original control points + polygons) also
+    // yields its corner → control-point map, which the deformer
+    // writer needs for cluster / shape `Indexes`.
+    let mut corner_maps: Vec<Option<Vec<u32>>> = Vec::with_capacity(scene.meshes.len());
     for (mi, mesh) in scene.meshes.iter().enumerate() {
         let geom = build_geometry(mesh, mesh_ids[mi], opts);
-        objects.children.push(geom);
+        objects.children.push(geom.node);
+        corner_maps.push(geom.corner_to_vertex);
     }
 
     // -- Material records (one per material) ----------------------------
@@ -433,6 +440,7 @@ pub fn encode_scene_with_options(scene: &Scene3D, opts: &SceneEncodeOptions) -> 
     let deformer_emit = crate::deformer_writer::build_deformer_objects(
         scene,
         |mi| mesh_ids.get(mi).copied(),
+        |mi| corner_maps.get(mi).and_then(|m| m.as_deref()),
         |ni| node_ids.get(ni).copied(),
         || alloc.next(),
     );
@@ -2059,7 +2067,547 @@ fn build_bind_pose(entries: Vec<(i64, Vec<f64>)>, id: i64) -> FbxNode {
 /// encoded geometrically; other topologies are skipped for the vertex
 /// table (their positions still appear so nothing is silently lost —
 /// they re-triangulate as triangle soup on decode).
-fn build_geometry(mesh: &Mesh, id: i64, opts: &SceneEncodeOptions) -> FbxNode {
+/// A `Geometry` element plus, for the welded form, the corner →
+/// control-point map the deformer writer remaps cluster / shape
+/// `Indexes` through.
+struct GeometryEmit {
+    node: FbxNode,
+    corner_to_vertex: Option<Vec<u32>>,
+}
+
+/// Build the `Geometry` element for a mesh: the **welded** form when
+/// the mesh is a single decoded primitive whose per-corner buffers
+/// still agree with the round-tripped control-point table + polygon
+/// structure (`fbx:shared_positions` / `fbx:polygon_vertex_index`),
+/// else the expanded disconnected-triangle form.
+fn build_geometry(mesh: &Mesh, id: i64, opts: &SceneEncodeOptions) -> GeometryEmit {
+    if let Some(plan) = mesh
+        .primitives
+        .first()
+        .filter(|_| mesh.primitives.len() == 1)
+        .and_then(WeldPlan::from_primitive)
+    {
+        if let Some(node) = build_welded_geometry(mesh, &mesh.primitives[0], &plan, id, opts) {
+            return GeometryEmit {
+                node,
+                corner_to_vertex: Some(plan.corner_to_vertex),
+            };
+        }
+    }
+    GeometryEmit {
+        node: build_expanded_geometry(mesh, id, opts),
+        corner_to_vertex: None,
+    }
+}
+
+/// The round-tripped control-point layout of a decoded primitive:
+/// the original `Vertices` table, the raw `PolygonVertexIndex`, and
+/// the fan-triangulation maps from each emitted triangle corner back
+/// to its polygon-corner slot and control point. `None` unless the
+/// primitive's positions are exactly the fan triangulation of that
+/// table (i.e. the geometry was not edited since decode).
+struct WeldPlan {
+    shared_positions: Vec<f64>,
+    pvi: Vec<i32>,
+    corner_to_slot: Vec<u32>,
+    corner_to_vertex: Vec<u32>,
+    /// First triangle corner of every polygon.
+    polygon_first_corner: Vec<usize>,
+}
+
+impl WeldPlan {
+    fn from_primitive(prim: &Primitive) -> Option<Self> {
+        if prim.topology != oxideav_mesh3d::Topology::Triangles || prim.indices.is_some() {
+            return None;
+        }
+        let shared_positions: Vec<f64> = prim
+            .extras
+            .get("fbx:shared_positions")?
+            .as_array()?
+            .iter()
+            .map(Value::as_f64)
+            .collect::<Option<Vec<_>>>()?;
+        let pvi: Vec<i32> = prim
+            .extras
+            .get("fbx:polygon_vertex_index")?
+            .as_array()?
+            .iter()
+            .map(|v| v.as_i64().and_then(|n| i32::try_from(n).ok()))
+            .collect::<Option<Vec<_>>>()?;
+        let tri = crate::geometry::triangulate(&pvi).ok()?;
+        if tri.corner_indices.len() != prim.positions.len() {
+            return None;
+        }
+        let n_vertices = shared_positions.len() / 3;
+        for (corner, &v) in tri.corner_indices.iter().enumerate() {
+            let v = v as usize;
+            if v >= n_vertices {
+                return None;
+            }
+            let expect = [
+                shared_positions[v * 3] as f32,
+                shared_positions[v * 3 + 1] as f32,
+                shared_positions[v * 3 + 2] as f32,
+            ];
+            if prim.positions[corner] != expect {
+                return None;
+            }
+        }
+        let mut polygon_first_corner = Vec::with_capacity(tri.polygon_count as usize);
+        for (t, &poly) in tri.tri_polygon_index.iter().enumerate() {
+            if polygon_first_corner.len() == poly as usize {
+                polygon_first_corner.push(t * 3);
+            }
+        }
+        Some(Self {
+            shared_positions,
+            pvi,
+            corner_to_slot: tri.corner_pvi_index,
+            corner_to_vertex: tri.corner_indices,
+            polygon_first_corner,
+        })
+    }
+
+    /// De-fan a per-triangle-corner buffer to one value per
+    /// polygon-corner slot; `None` when two corners of the same slot
+    /// disagree (the buffer was edited per corner and no longer has a
+    /// polygon-corner form).
+    fn to_slots<T: Copy + PartialEq>(&self, per_corner: &[T]) -> Option<Vec<T>> {
+        if per_corner.len() != self.corner_to_slot.len() {
+            return None;
+        }
+        let mut out: Vec<Option<T>> = vec![None; self.pvi.len()];
+        for (corner, &slot) in self.corner_to_slot.iter().enumerate() {
+            let v = per_corner[corner];
+            match out[slot as usize] {
+                None => out[slot as usize] = Some(v),
+                Some(prev) if prev == v => {}
+                Some(_) => return None,
+            }
+        }
+        out.into_iter().collect()
+    }
+
+    /// The polygon-corner slot whose edge (slot → next slot in the
+    /// same polygon, wrapping at the closing corner —
+    /// `fbx-edges-smoothing-layer.md` §1) is the undirected pair.
+    fn slot_of_edge(&self, pair: [u32; 2]) -> Option<i32> {
+        let decode = |raw: i32| -> u32 {
+            if raw < 0 {
+                (!raw) as u32
+            } else {
+                raw as u32
+            }
+        };
+        let mut polygon_start = 0usize;
+        for (i, &raw) in self.pvi.iter().enumerate() {
+            let next = if raw < 0 { polygon_start } else { i + 1 };
+            if next < self.pvi.len() {
+                let (a, b) = (decode(raw), decode(self.pvi[next]));
+                if (a == pair[0] && b == pair[1]) || (a == pair[1] && b == pair[0]) {
+                    return i32::try_from(i).ok();
+                }
+            }
+            if raw < 0 {
+                polygon_start = i + 1;
+            }
+        }
+        None
+    }
+}
+
+/// The welded `Geometry`: original `Vertices` + `PolygonVertexIndex`,
+/// every per-corner attribute de-fanned to polygon-corner slots
+/// (`ByPolygonVertex` — UVs as an `IndexToDirect` pool, the form every
+/// staged producer writes), `Edges` + `LayerElementSmoothing` from the
+/// decoded pairs, `LayerElementMaterial` in its source mapping
+/// (`AllSame` / `ByPolygon`), the round-tripped `Properties70` records
+/// and `GeometryVersion`, and the `Layer` binding blocks. `None` when
+/// any per-corner buffer no longer has a polygon-corner form.
+fn build_welded_geometry(
+    mesh: &Mesh,
+    prim: &Primitive,
+    plan: &WeldPlan,
+    id: i64,
+    opts: &SceneEncodeOptions,
+) -> Option<FbxNode> {
+    let name = mesh.name.clone().unwrap_or_default();
+    let n_corners = prim.positions.len();
+    let mut children: Vec<FbxNode> = Vec::new();
+    if let Some(records) = prim
+        .extras
+        .get("fbx:geometry_records")
+        .and_then(Value::as_array)
+    {
+        // Emitted whenever the source carried the block, empty or not.
+        children.push(FbxNode {
+            name: "Properties70".to_string(),
+            properties: Vec::new(),
+            children: records
+                .iter()
+                .filter_map(crate::properties70::json_to_p_record)
+                .collect(),
+        });
+    }
+    children.push(FbxNode {
+        name: "Vertices".to_string(),
+        properties: vec![FbxProperty::F64Array(plan.shared_positions.clone())],
+        children: Vec::new(),
+    });
+    children.push(FbxNode {
+        name: "PolygonVertexIndex".to_string(),
+        properties: vec![FbxProperty::I32Array(plan.pvi.clone())],
+        children: Vec::new(),
+    });
+
+    // Edges + smoothing (doc §1 / §4): the decoded undirected pairs
+    // map back to their start-corner slots; `ByEdge` flags stay
+    // aligned with them, `ByPolygon` masks take each polygon's value.
+    let edge_pairs: Option<Vec<[u32; 2]>> = prim
+        .extras
+        .get("fbx:edges")
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.chunks_exact(2)
+                .filter_map(|c| Some([c[0].as_u64()? as u32, c[1].as_u64()? as u32]))
+                .collect()
+        });
+    let mut edge_slots: Vec<i32> = Vec::new();
+    let mut edge_kept: Vec<bool> = Vec::new();
+    if let Some(pairs) = &edge_pairs {
+        for pair in pairs {
+            match plan.slot_of_edge(*pair) {
+                Some(slot) => {
+                    edge_slots.push(slot);
+                    edge_kept.push(true);
+                }
+                None => edge_kept.push(false),
+            }
+        }
+        children.push(FbxNode {
+            name: "Edges".to_string(),
+            properties: vec![FbxProperty::I32Array(edge_slots.clone())],
+            children: Vec::new(),
+        });
+    }
+    children.push(leaf_i32("GeometryVersion", 124));
+
+    let flat3 = |buf: &[[f32; 3]]| -> Vec<f64> {
+        buf.iter()
+            .flat_map(|v| v.iter().map(|c| f64::from(*c)))
+            .collect()
+    };
+    if opts.emit_normals {
+        if let Some(buf) = prim_corner_vec3(prim, prim.normals.as_ref()) {
+            let slots = plan.to_slots(&buf)?;
+            children.push(layer_element_vec3(
+                "LayerElementNormal",
+                "Normals",
+                flat3(&slots),
+            ));
+        }
+    }
+    if opts.emit_uvs {
+        let uv_names = prim
+            .extras
+            .get("fbx:uv_set_names")
+            .and_then(Value::as_array);
+        for (k, set) in prim.uvs.iter().enumerate() {
+            if set.len() != n_corners {
+                return None;
+            }
+            let slots = plan.to_slots(&expand_uv(prim, set))?;
+            let label = uv_names.and_then(|n| n.get(k)).and_then(Value::as_str);
+            children.push(layer_element_uv_indexed(k, label, &slots));
+        }
+    }
+    if opts.emit_colors {
+        for (k, set) in prim.colors.iter().enumerate() {
+            if set.len() != n_corners {
+                return None;
+            }
+            let slots = plan.to_slots(&expand_vec4(prim, set))?;
+            let data: Vec<f64> = slots
+                .iter()
+                .flat_map(|v| v.iter().map(|c| f64::from(*c)))
+                .collect();
+            children.push(layer_element_color(k, data));
+        }
+    }
+    if opts.emit_tangents {
+        if let Some(t) = &prim.tangents {
+            if t.len() != n_corners {
+                return None;
+            }
+            let slots = plan.to_slots(&expand_vec4(prim, t))?;
+            let mut xyz = Vec::with_capacity(slots.len() * 3);
+            let mut w = Vec::with_capacity(slots.len());
+            for [x, y, z, ww] in &slots {
+                xyz.extend([f64::from(*x), f64::from(*y), f64::from(*z)]);
+                w.push(f64::from(*ww));
+            }
+            children.push(layer_element_tangent(xyz, w));
+        }
+    }
+    // Extra layers (flat per-corner buffers on extras) de-fanned the
+    // same way, through a temporary expanded-form emission.
+    {
+        let mut extra: Vec<FbxNode> = Vec::new();
+        emit_extra_layers(prim, n_corners, &mut extra);
+        for mut layer in extra {
+            for child in &mut layer.children {
+                if let Some(FbxProperty::F64Array(a)) = child.properties.first() {
+                    let width = if a.len() == n_corners * 3 {
+                        3
+                    } else if a.len() == n_corners {
+                        1
+                    } else {
+                        return None;
+                    };
+                    let rows: Vec<Vec<u64>> = a
+                        .chunks_exact(width)
+                        .map(|c| c.iter().map(|x| x.to_bits()).collect())
+                        .collect();
+                    let slots = plan.to_slots_owned(&rows)?;
+                    let flat: Vec<f64> = slots
+                        .into_iter()
+                        .flat_map(|r| r.into_iter().map(f64::from_bits))
+                        .collect();
+                    child.properties[0] = FbxProperty::F64Array(flat);
+                }
+            }
+            children.push(layer);
+        }
+    }
+    // Materials: per-polygon slots from the per-corner table, in the
+    // source mapping mode.
+    if let Some(per_corner) = prim
+        .extras
+        .get("fbx:face_material_slots")
+        .and_then(Value::as_array)
+    {
+        if per_corner.len() != n_corners {
+            return None;
+        }
+        let per_polygon: Vec<i32> = plan
+            .polygon_first_corner
+            .iter()
+            .map(|&c| {
+                per_corner[c]
+                    .as_i64()
+                    .unwrap_or(0)
+                    .clamp(0, i32::MAX as i64) as i32
+            })
+            .collect();
+        let all_same = per_polygon.windows(2).all(|w| w[0] == w[1]);
+        let mapping = prim
+            .extras
+            .get("fbx:material_mapping")
+            .and_then(Value::as_str);
+        if mapping == Some("AllSame") && all_same {
+            children.push(layer_element_material_mapped(
+                "AllSame",
+                vec![per_polygon.first().copied().unwrap_or(0)],
+            ));
+        } else {
+            children.push(layer_element_material_mapped("ByPolygon", per_polygon));
+        }
+    }
+    // Smoothing.
+    let mapping = prim
+        .extras
+        .get("fbx:smoothing_mapping")
+        .and_then(Value::as_str);
+    match mapping {
+        Some("ByEdge") => {
+            if let Some(per_edge) = prim
+                .extras
+                .get("fbx:edge_smoothing")
+                .and_then(Value::as_array)
+            {
+                let flags: Vec<i64> = per_edge
+                    .iter()
+                    .zip(&edge_kept)
+                    .filter(|(_, kept)| **kept)
+                    .filter_map(|(v, _)| v.as_i64())
+                    .collect();
+                if flags.len() == edge_slots.len() {
+                    children.push(layer_element_smoothing("ByEdge", &flags));
+                }
+            }
+        }
+        Some("ByPolygon") => {
+            if let Some(per_corner) = prim.extras.get("fbx:smoothing").and_then(Value::as_array) {
+                if per_corner.len() == n_corners {
+                    let per_polygon: Vec<i64> = plan
+                        .polygon_first_corner
+                        .iter()
+                        .map(|&c| per_corner[c].as_i64().unwrap_or(0))
+                        .collect();
+                    children.push(layer_element_smoothing("ByPolygon", &per_polygon));
+                }
+            }
+        }
+        _ => {}
+    }
+    append_empty_layers(prim, &mut children);
+    append_layer_blocks(&mut children);
+
+    Some(FbxNode {
+        name: "Geometry".to_string(),
+        properties: vec![
+            FbxProperty::I64(id),
+            FbxProperty::String(name_class(&name, "Geometry")),
+            FbxProperty::String(b"Mesh".to_vec()),
+        ],
+        children,
+    })
+}
+
+impl WeldPlan {
+    /// [`Self::to_slots`] for row-shaped (cloned) values.
+    fn to_slots_owned<T: Clone + PartialEq>(&self, per_corner: &[T]) -> Option<Vec<T>> {
+        if per_corner.len() != self.corner_to_slot.len() {
+            return None;
+        }
+        let mut out: Vec<Option<T>> = vec![None; self.pvi.len()];
+        for (corner, &slot) in self.corner_to_slot.iter().enumerate() {
+            let v = &per_corner[corner];
+            match &out[slot as usize] {
+                None => out[slot as usize] = Some(v.clone()),
+                Some(prev) if prev == v => {}
+                Some(_) => return None,
+            }
+        }
+        out.into_iter().collect()
+    }
+}
+
+/// The `Layer: k { Version: 100; LayerElement { Type; TypedIndex } … }`
+/// binding blocks (`fbx-binary-properties70.md` §6.4): one block per
+/// distinct `TypedIndex` across the emitted `LayerElement*` records,
+/// listing every element of that index in emission order — the table
+/// every staged producer writes after its layer elements.
+/// Re-emit the data-less layer shells the decode side stashed on
+/// `fbx:empty_layers` (see `geometry`), so the source's layer table
+/// keeps its shape.
+fn append_empty_layers(prim: &Primitive, children: &mut Vec<FbxNode>) {
+    for shell in prim
+        .extras
+        .get("fbx:empty_layers")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let Some(ty) = shell.get("type").and_then(Value::as_str) else {
+            continue;
+        };
+        let idx = shell
+            .get("typed_index")
+            .and_then(Value::as_i64)
+            .unwrap_or(0) as i32;
+        let leaves: Vec<FbxNode> = shell
+            .get("leaves")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(crate::properties70::json_to_leaf)
+            .collect();
+        children.push(FbxNode {
+            name: ty.to_owned(),
+            properties: vec![FbxProperty::I32(idx)],
+            children: leaves,
+        });
+    }
+}
+
+fn append_layer_blocks(children: &mut Vec<FbxNode>) {
+    let mut by_index: Vec<(i32, Vec<String>)> = Vec::new();
+    for c in children.iter() {
+        if !c.name.starts_with("LayerElement") {
+            continue;
+        }
+        let idx = c.properties.first().and_then(|p| p.as_i64()).unwrap_or(0) as i32;
+        match by_index.iter_mut().find(|(i, _)| *i == idx) {
+            Some((_, list)) => list.push(c.name.clone()),
+            None => by_index.push((idx, vec![c.name.clone()])),
+        }
+    }
+    by_index.sort_by_key(|(i, _)| *i);
+    for (idx, types) in by_index {
+        let mut layer_children = vec![leaf_i32("Version", 100)];
+        for t in types {
+            layer_children.push(FbxNode {
+                name: "LayerElement".to_string(),
+                properties: Vec::new(),
+                children: vec![leaf_string("Type", &t), leaf_i32("TypedIndex", idx)],
+            });
+        }
+        children.push(FbxNode {
+            name: "Layer".to_string(),
+            properties: vec![FbxProperty::I32(idx)],
+            children: layer_children,
+        });
+    }
+}
+
+/// `LayerElementUV` in the `IndexToDirect` form every staged producer
+/// writes: a deduplicated `UV` pool + a per-polygon-corner `UVIndex`.
+fn layer_element_uv_indexed(index: usize, name: Option<&str>, slots: &[[f32; 2]]) -> FbxNode {
+    let label = match name {
+        Some(n) if !n.is_empty() => n.to_owned(),
+        _ => format!("map{}", index + 1),
+    };
+    let mut pool: Vec<[f32; 2]> = Vec::new();
+    let mut lookup: std::collections::HashMap<[u32; 2], i32> = std::collections::HashMap::new();
+    let mut uv_index: Vec<i32> = Vec::with_capacity(slots.len());
+    for uv in slots {
+        let key = [uv[0].to_bits(), uv[1].to_bits()];
+        let i = *lookup.entry(key).or_insert_with(|| {
+            pool.push(*uv);
+            (pool.len() - 1) as i32
+        });
+        uv_index.push(i);
+    }
+    let data: Vec<f64> = pool
+        .iter()
+        .flat_map(|v| [f64::from(v[0]), f64::from(v[1])])
+        .collect();
+    FbxNode {
+        name: "LayerElementUV".to_string(),
+        properties: vec![FbxProperty::I32(index as i32)],
+        children: vec![
+            leaf_i32("Version", 101),
+            leaf_string("Name", &label),
+            leaf_string("MappingInformationType", "ByPolygonVertex"),
+            leaf_string("ReferenceInformationType", "IndexToDirect"),
+            FbxNode {
+                name: "UV".to_string(),
+                properties: vec![FbxProperty::F64Array(data)],
+                children: Vec::new(),
+            },
+            FbxNode {
+                name: "UVIndex".to_string(),
+                properties: vec![FbxProperty::I32Array(uv_index)],
+                children: Vec::new(),
+            },
+        ],
+    }
+}
+
+/// `LayerElementMaterial` under an explicit mapping mode
+/// (`AllSame` with a one-entry `Materials` list, or `ByPolygon`).
+fn layer_element_material_mapped(mapping: &str, slots: Vec<i32>) -> FbxNode {
+    let mut node = layer_element_material(slots);
+    for c in &mut node.children {
+        if c.name == "MappingInformationType" {
+            c.properties = vec![FbxProperty::String(mapping.as_bytes().to_vec())];
+        }
+    }
+    node
+}
+
+fn build_expanded_geometry(mesh: &Mesh, id: i64, opts: &SceneEncodeOptions) -> FbxNode {
     let name = mesh.name.clone().unwrap_or_default();
     let mut vertices: Vec<f64> = Vec::new();
     let mut pvi: Vec<i32> = Vec::new();
@@ -2278,7 +2826,33 @@ fn build_geometry(mesh: &Mesh, id: i64, opts: &SceneEncodeOptions) -> FbxNode {
         let n_corners = corner as usize;
         emit_extra_layers(prim, n_corners, &mut children);
         emit_edges_and_smoothing(prim, n_corners, &mut children);
+        append_empty_layers(prim, &mut children);
+        if let Some(records) = prim
+            .extras
+            .get("fbx:geometry_records")
+            .and_then(Value::as_array)
+        {
+            children.insert(
+                0,
+                FbxNode {
+                    name: "Properties70".to_string(),
+                    properties: Vec::new(),
+                    children: records
+                        .iter()
+                        .filter_map(crate::properties70::json_to_p_record)
+                        .collect(),
+                },
+            );
+        }
     }
+    children.insert(
+        children
+            .iter()
+            .position(|c| c.name.starts_with("LayerElement"))
+            .unwrap_or(children.len()),
+        leaf_i32("GeometryVersion", 124),
+    );
+    append_layer_blocks(&mut children);
 
     FbxNode {
         name: "Geometry".to_string(),

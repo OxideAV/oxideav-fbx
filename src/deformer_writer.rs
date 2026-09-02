@@ -94,9 +94,10 @@ pub(crate) struct DeformerEmit {
 ///
 /// `mesh_fbx_id` / `node_fbx_id` resolve scene ids to the FBX element
 /// ids [`crate::scene_writer`] allocated; `alloc` hands out fresh ids.
-pub(crate) fn build_deformer_objects(
+pub(crate) fn build_deformer_objects<'a>(
     scene: &Scene3D,
     mesh_fbx_id: impl Fn(usize) -> Option<i64>,
+    corner_to_vertex: impl Fn(usize) -> Option<&'a [u32]>,
     node_fbx_id: impl Fn(usize) -> Option<i64>,
     mut alloc: impl FnMut() -> i64,
 ) -> DeformerEmit {
@@ -125,6 +126,11 @@ pub(crate) fn build_deformer_objects(
         let Some(prim) = mesh.primitives.first() else {
             continue;
         };
+        // Welded geometry: cluster / shape `Indexes` are control-point
+        // indices, so per-corner buffers map through the corner →
+        // control-point table (corners sharing a control point carry
+        // the same value on a decoded mesh; the first one speaks).
+        let vertex_of = corner_to_vertex(mesh_id.0 as usize);
 
         // ---- Skin ----------------------------------------------------
         if let Some(skel) = node
@@ -140,6 +146,7 @@ pub(crate) fn build_deformer_objects(
                     skel,
                     joints,
                     weights,
+                    vertex_of,
                     &node_fbx_id,
                     &mut alloc,
                 );
@@ -209,7 +216,7 @@ pub(crate) fn build_deformer_objects(
 
                 let shape_fbx = alloc();
                 out.objects
-                    .push(shape_geometry(shape_fbx, &slot_name, target));
+                    .push(shape_geometry(shape_fbx, &slot_name, target, vertex_of));
                 out.connections.push(conn_oo(shape_fbx, channel_fbx));
                 channel_ids.push(channel_fbx);
             }
@@ -230,6 +237,7 @@ fn emit_skin(
     skel: &oxideav_mesh3d::Skeleton,
     corner_joints: &[[u16; 4]],
     corner_weights: &[[f32; 4]],
+    vertex_of: Option<&[u32]>,
     node_fbx_id: &impl Fn(usize) -> Option<i64>,
     alloc: &mut impl FnMut() -> i64,
 ) {
@@ -238,15 +246,25 @@ fn emit_skin(
     let joints = skel.joints.as_slice();
     let inverse_binds = skel.inverse_bind_matrices.as_slice();
     let mut per_joint: Vec<Vec<(i32, f64)>> = vec![Vec::new(); joints.len()];
+    let mut seen: Vec<std::collections::HashSet<u32>> = vec![Default::default(); joints.len()];
     for (corner, (j4, w4)) in corner_joints.iter().zip(corner_weights).enumerate() {
+        let index = match vertex_of {
+            Some(map) => match map.get(corner) {
+                Some(v) => *v,
+                None => continue,
+            },
+            None => corner as u32,
+        };
         for slot in 0..4 {
             let w = w4[slot];
             if w <= 0.0 {
                 continue;
             }
             let ji = j4[slot] as usize;
-            if let Some(list) = per_joint.get_mut(ji) {
-                list.push((corner as i32, w as f64));
+            if let (Some(list), Some(seen)) = (per_joint.get_mut(ji), seen.get_mut(ji)) {
+                if seen.insert(index) {
+                    list.push((index as i32, w as f64));
+                }
             }
         }
     }
@@ -319,7 +337,12 @@ fn emit_skin(
 /// Build a `Geometry` element of subtype `"Shape"` carrying a morph
 /// target's sparse deltas (`Indexes` + `Vertices` + optional
 /// `Normals`, per the blend-shape tree above).
-fn shape_geometry(id: i64, name: &str, target: &oxideav_mesh3d::MorphTarget) -> FbxNode {
+fn shape_geometry(
+    id: i64,
+    name: &str,
+    target: &oxideav_mesh3d::MorphTarget,
+    vertex_of: Option<&[u32]>,
+) -> FbxNode {
     let empty: Vec<[f32; 3]> = Vec::new();
     let pos = target.position.as_ref().unwrap_or(&empty);
 
@@ -332,6 +355,7 @@ fn shape_geometry(id: i64, name: &str, target: &oxideav_mesh3d::MorphTarget) -> 
     let mut normals: Vec<f64> = Vec::new();
     let has_normals = target.normal.is_some();
     let n = pos.len().max(target.normal.as_ref().map_or(0, Vec::len));
+    let mut seen: std::collections::HashSet<u32> = std::collections::HashSet::new();
     for i in 0..n {
         let p = pos.get(i).copied().unwrap_or([0.0; 3]);
         let nrm = target
@@ -343,7 +367,19 @@ fn shape_geometry(id: i64, name: &str, target: &oxideav_mesh3d::MorphTarget) -> 
         if p == [0.0; 3] && nrm == [0.0; 3] {
             continue;
         }
-        indexes.push(i as i32);
+        // Welded geometry: the corner's control point (first corner
+        // of a shared control point speaks for it).
+        let index = match vertex_of {
+            Some(map) => match map.get(i) {
+                Some(v) => *v,
+                None => continue,
+            },
+            None => i as u32,
+        };
+        if !seen.insert(index) {
+            continue;
+        }
+        indexes.push(index as i32);
         vertices.extend(p.iter().map(|&c| c as f64));
         if has_normals {
             normals.extend(nrm.iter().map(|&c| c as f64));

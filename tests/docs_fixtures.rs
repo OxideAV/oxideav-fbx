@@ -839,3 +839,145 @@ fn animation_catalogue_and_key_attrs_survive_re_encode() {
         }
     }
 }
+
+/// Welded geometry round trip: a decoded mesh whose per-corner
+/// buffers still agree with its round-tripped control-point table +
+/// polygon structure re-emits the *original* `Vertices` (8 per cube,
+/// not 36), the original n-gon `PolygonVertexIndex` (6 quads), the
+/// deduplicated `Edges` domain (12, `fbx-edges-smoothing-layer.md`
+/// §2), the `ByEdge` smoothing flags aligned with them, an `AllSame`
+/// material layer and the `Layer` binding blocks — and a skinned
+/// mesh's cluster `Indexes` become control-point indices.
+#[test]
+fn welded_geometry_round_trips_control_points_polygons_and_edges() {
+    use oxideav_fbx::binary::FbxProperty;
+    use oxideav_fbx::{FbxEncoder, FbxOutputForm};
+    use oxideav_mesh3d::Mesh3DEncoder;
+
+    fn arr_len(n: &FbxNode, leaf: &str) -> Option<usize> {
+        match n.child(leaf)?.properties.first()? {
+            FbxProperty::F64Array(a) => Some(a.len()),
+            FbxProperty::I32Array(a) => Some(a.len()),
+            _ => None,
+        }
+    }
+    fn leaf_str<'a>(n: &'a FbxNode, leaf: &str) -> Option<&'a str> {
+        n.child(leaf)?.properties.first()?.as_str()
+    }
+
+    if let Some(bytes) = fixture("cubes-ascii-v7500.fbx") {
+        let scene = decode(&bytes);
+        assert_eq!(scene.meshes[0].primitives[0].positions.len(), 36);
+        for form in [FbxOutputForm::Binary, FbxOutputForm::Ascii] {
+            let out = FbxEncoder::new().form(form).encode(&scene).unwrap();
+            let doc = parse_any(&out);
+            let geoms: Vec<&FbxNode> = doc
+                .root
+                .child("Objects")
+                .unwrap()
+                .children
+                .iter()
+                .filter(|o| o.name == "Geometry")
+                .collect();
+            assert_eq!(geoms.len(), 4);
+            let g = geoms[0];
+            assert_eq!(
+                arr_len(g, "Vertices"),
+                Some(24),
+                "{form:?}: 8 control points"
+            );
+            assert_eq!(
+                arr_len(g, "PolygonVertexIndex"),
+                Some(24),
+                "{form:?}: 6 quads"
+            );
+            let pvi = match g
+                .child("PolygonVertexIndex")
+                .unwrap()
+                .properties
+                .first()
+                .unwrap()
+            {
+                FbxProperty::I32Array(a) => a.clone(),
+                _ => panic!(),
+            };
+            assert_eq!(pvi.iter().filter(|v| **v < 0).count(), 6, "{form:?}: quads");
+            assert_eq!(
+                arr_len(g, "Edges"),
+                Some(12),
+                "{form:?}: the cube's 12 edges"
+            );
+            let sm = g.child("LayerElementSmoothing").expect("smoothing layer");
+            assert_eq!(leaf_str(sm, "MappingInformationType"), Some("ByEdge"));
+            assert_eq!(arr_len(sm, "Smoothing"), Some(12));
+            let mat = g.child("LayerElementMaterial").expect("material layer");
+            assert_eq!(leaf_str(mat, "MappingInformationType"), Some("AllSame"));
+            assert_eq!(arr_len(mat, "Materials"), Some(1));
+            let uv = g.child("LayerElementUV").expect("uv layer");
+            assert_eq!(
+                leaf_str(uv, "ReferenceInformationType"),
+                Some("IndexToDirect")
+            );
+            assert_eq!(arr_len(uv, "UVIndex"), Some(24));
+            assert!(g.child("GeometryVersion").is_some());
+            let layers: Vec<&FbxNode> = g.children.iter().filter(|c| c.name == "Layer").collect();
+            assert!(!layers.is_empty(), "{form:?}: Layer binding block");
+            assert!(layers[0]
+                .children_named("LayerElement")
+                .any(|le| leaf_str(le, "Type") == Some("LayerElementSmoothing")));
+            // The second decode sees the identical typed mesh + edge set.
+            let scene2 = decode(&out);
+            let (p1, p2) = (
+                &scene.meshes[0].primitives[0],
+                &scene2.meshes[0].primitives[0],
+            );
+            assert_eq!(p1.positions, p2.positions);
+            assert_eq!(p1.normals, p2.normals);
+            assert_eq!(p1.uvs, p2.uvs);
+            assert_eq!(p1.extras["fbx:edges"], p2.extras["fbx:edges"]);
+            assert_eq!(
+                p1.extras["fbx:shared_positions"],
+                p2.extras["fbx:shared_positions"]
+            );
+            assert_eq!(
+                p1.extras["fbx:edge_smoothing"],
+                p2.extras["fbx:edge_smoothing"]
+            );
+        }
+    }
+
+    if let Some(bytes) = fixture("skin-anim-binary-v7400.fbx") {
+        let scene = decode(&bytes);
+        let out = FbxEncoder::new().encode(&scene).unwrap();
+        let doc = parse_any(&out);
+        let objects = doc.root.child("Objects").unwrap();
+        let geom = objects
+            .children
+            .iter()
+            .find(|o| o.name == "Geometry")
+            .unwrap();
+        let n_vertices = arr_len(geom, "Vertices").unwrap() / 3;
+        assert!(
+            n_vertices < 360,
+            "welded: {n_vertices} control points, not 360 corners"
+        );
+        for cl in objects.children.iter().filter(|o| {
+            o.name == "Deformer"
+                && o.properties.get(2).and_then(FbxProperty::as_str) == Some("Cluster")
+        }) {
+            if let Some(FbxProperty::I32Array(idx)) =
+                cl.child("Indexes").and_then(|n| n.properties.first())
+            {
+                assert!(
+                    idx.iter().all(|i| (*i as usize) < n_vertices),
+                    "cluster indexes are control points"
+                );
+            }
+        }
+        let scene2 = decode(&out);
+        assert_eq!(
+            scene2.meshes[0].primitives[0].joints,
+            scene.meshes[0].primitives[0].joints
+        );
+    }
+}
