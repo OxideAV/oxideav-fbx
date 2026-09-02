@@ -42,7 +42,10 @@
 //! rounded to the nearest tick and stored as an `l` (i64) array. The
 //! decode path divides back by the same constant.
 
-use oxideav_mesh3d::{Animation, AnimationChannel, AnimationProperty, AnimationValues, NodeId};
+use oxideav_mesh3d::{
+    Animation, AnimationChannel, AnimationProperty, AnimationValues, NodeId, Scene3D,
+};
+use serde_json::Value;
 
 use crate::animation::KTIME_TICKS_PER_SECOND;
 use crate::binary::{FbxNode, FbxProperty};
@@ -69,34 +72,90 @@ pub(crate) struct AnimEmit {
 /// per target slot). `alloc` hands out fresh FBX ids for the
 /// animation elements.
 pub(crate) fn build_animation_objects(
-    animations: &[Animation],
+    scene: &Scene3D,
     node_fbx_id: impl Fn(NodeId) -> Option<i64>,
     morph_channel_ids: impl Fn(NodeId) -> Option<Vec<i64>>,
     node_chain: impl Fn(NodeId) -> Option<TransformChain>,
     mut alloc: impl FnMut() -> i64,
 ) -> AnimEmit {
+    let animations = &scene.animations;
     let mut objects = Vec::new();
     let mut connections = Vec::new();
 
+    // The round-tripped stack / layer catalogue
+    // (`fbx:anim_stacks`): each stack's own records and layer list,
+    // re-emitted verbatim; a stack with no typed `Animation` (a take
+    // carrying no curves) is emitted from it too.
+    let catalogue: Vec<&Value> = scene
+        .extras
+        .get(crate::animation::ANIM_STACKS_KEY)
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .collect();
+    let catalogue_entry = |name: &str| -> Option<&Value> {
+        catalogue
+            .iter()
+            .copied()
+            .find(|e| e.get("name").and_then(Value::as_str) == Some(name))
+    };
+    // (stack name, layer name) → emitted layer id, for the auxiliary
+    // curve nodes' membership below.
+    let mut layer_ids: Vec<(String, String, i64)> = Vec::new();
+    let key_attrs = KeyAttrs::from_scene(scene);
+    let node_name = |nid: NodeId| -> Option<String> {
+        scene.nodes.get(nid.0 as usize).and_then(|n| n.name.clone())
+    };
+
+    let mut emitted_stacks: Vec<String> = Vec::new();
     for anim in animations {
+        let stack_name = anim.name.clone().unwrap_or_default();
+        let entry = catalogue_entry(&stack_name);
         let stack_id = alloc();
         objects.push(element(
             "AnimationStack",
             stack_id,
-            anim.name.as_deref().unwrap_or(""),
+            &stack_name,
             "",
-            Vec::new(),
+            stack_body(entry, anim),
         ));
-        let layer_id = alloc();
-        objects.push(element(
-            "AnimationLayer",
-            layer_id,
-            "BaseLayer",
-            "",
-            Vec::new(),
-        ));
-        // AnimationLayer -> AnimationStack OO.
-        connections.push(conn_oo(layer_id, stack_id));
+        emitted_stacks.push(stack_name.clone());
+        // Layers: the catalogue's list (first hosts the channels),
+        // else one synthesised `BaseLayer`.
+        let layer_specs: Vec<(String, Vec<FbxNode>)> = entry
+            .and_then(|e| e.get("layers"))
+            .and_then(Value::as_array)
+            .map(|ls| {
+                ls.iter()
+                    .map(|l| {
+                        (
+                            l.get("name")
+                                .and_then(Value::as_str)
+                                .unwrap_or("BaseLayer")
+                                .to_owned(),
+                            records_of(l),
+                        )
+                    })
+                    .collect()
+            })
+            .filter(|v: &Vec<_>| !v.is_empty())
+            .unwrap_or_else(|| vec![("BaseLayer".to_owned(), Vec::new())]);
+        let mut first_layer = None;
+        for (lname, lrecords) in layer_specs {
+            let layer_id = alloc();
+            objects.push(element(
+                "AnimationLayer",
+                layer_id,
+                &lname,
+                "",
+                props70(lrecords),
+            ));
+            // AnimationLayer -> AnimationStack OO.
+            connections.push(conn_oo(layer_id, stack_id));
+            layer_ids.push((stack_name.clone(), lname, layer_id));
+            first_layer.get_or_insert(layer_id);
+        }
+        let layer_id = first_layer.expect("at least one layer");
 
         // Group the T/R/S channels per target node (first-seen order
         // preserved) so a chain-bearing node's channels can be
@@ -141,14 +200,17 @@ pub(crate) fn build_animation_objects(
                             curve_node_id,
                             "DeformPercent",
                             "",
-                            Vec::new(),
+                            props70(vec![p_number(
+                                "d|DeformPercent",
+                                f64::from(slot_vals.first().copied().unwrap_or(0.0)),
+                            )]),
                         ));
                         // AnimationCurveNode -> BlendShapeChannel OP.
                         connections.push(conn_op(curve_node_id, channel_fbx, "DeformPercent"));
                         // AnimationCurveNode -> AnimationLayer OO.
                         connections.push(conn_oo(curve_node_id, layer_id));
                         let curve_id = alloc();
-                        objects.push(build_curve(curve_id, times, &slot_vals));
+                        objects.push(build_curve(curve_id, times, &slot_vals, None));
                         connections.push(conn_op(curve_id, curve_node_id, "d|DeformPercent"));
                     }
                     continue;
@@ -170,6 +232,10 @@ pub(crate) fn build_animation_objects(
                 Some(id) => id,
                 None => continue,
             };
+            let join = CurveJoin {
+                stack: &stack_name,
+                target: node_name(*node),
+            };
             let emitted = match node_chain(*node) {
                 Some(chain) => decompose_chain_curves(&chain, group),
                 None => Vec::new(),
@@ -187,6 +253,8 @@ pub(crate) fn build_animation_objects(
                         target_prop,
                         &times,
                         &components,
+                        &key_attrs,
+                        &join,
                     );
                 }
                 continue;
@@ -209,7 +277,117 @@ pub(crate) fn build_animation_objects(
                     target_prop,
                     times,
                     &components,
+                    &key_attrs,
+                    &join,
                 );
+            }
+        }
+    }
+
+    // Catalogue stacks with no typed Animation — a take carrying no
+    // curves — are emitted with their layers so the file's take set
+    // (and the Definitions blocks it implies) survives.
+    for entry in &catalogue {
+        let name = entry.get("name").and_then(Value::as_str).unwrap_or("");
+        if emitted_stacks.iter().any(|s| s == name) {
+            continue;
+        }
+        let stack_id = alloc();
+        objects.push(element(
+            "AnimationStack",
+            stack_id,
+            name,
+            "",
+            props70(records_of(entry)),
+        ));
+        for l in entry
+            .get("layers")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            let lname = l.get("name").and_then(Value::as_str).unwrap_or("BaseLayer");
+            let layer_id = alloc();
+            objects.push(element(
+                "AnimationLayer",
+                layer_id,
+                lname,
+                "",
+                props70(records_of(l)),
+            ));
+            connections.push(conn_oo(layer_id, stack_id));
+            layer_ids.push((name.to_owned(), lname.to_owned(), layer_id));
+        }
+    }
+
+    // Auxiliary curve nodes (`fbx:aux_curve_nodes`), verbatim: the
+    // node's records, its Model target + property (an `object`
+    // target names an element this writer has no id for — its OP
+    // edge is not re-created), its layer membership and every
+    // `AnimationCurve` body.
+    for aux in scene
+        .extras
+        .get(crate::animation::AUX_CURVE_NODES_KEY)
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let cn_id = alloc();
+        objects.push(element(
+            "AnimationCurveNode",
+            cn_id,
+            aux.get("name").and_then(Value::as_str).unwrap_or(""),
+            "",
+            props70(records_of(aux)),
+        ));
+        if let (Some(nid), Some(prop)) = (
+            aux.get("target")
+                .and_then(|t| t.get("node"))
+                .and_then(Value::as_u64),
+            aux.get("property").and_then(Value::as_str),
+        ) {
+            if let Some(model_id) = node_fbx_id(NodeId(nid as u32)) {
+                connections.push(conn_op(cn_id, model_id, prop));
+            }
+        }
+        let stack = aux.get("stack").and_then(Value::as_str);
+        let layer = aux.get("layer").and_then(Value::as_str);
+        if let Some((_, _, lid)) = layer_ids
+            .iter()
+            .find(|(s, l, _)| Some(s.as_str()) == stack && Some(l.as_str()) == layer)
+        {
+            connections.push(conn_oo(cn_id, *lid));
+        }
+        for curve in aux
+            .get("curves")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            let curve_id = alloc();
+            let body: Vec<FbxNode> = curve
+                .get("body")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(crate::properties70::json_to_body_leaf)
+                .collect();
+            let mut node = element(
+                "AnimationCurve",
+                curve_id,
+                curve.get("name").and_then(Value::as_str).unwrap_or(""),
+                "",
+                body,
+            );
+            // The element class tag is `AnimCurve` (the decode side
+            // keys on the node name, not the class).
+            node.properties[1] = FbxProperty::String(name_class(
+                curve.get("name").and_then(Value::as_str).unwrap_or(""),
+                "AnimCurve",
+            ));
+            objects.push(node);
+            if let Some(axis) = curve.get("axis").and_then(Value::as_str) {
+                connections.push(conn_op(curve_id, cn_id, axis));
             }
         }
     }
@@ -220,8 +398,248 @@ pub(crate) fn build_animation_objects(
     }
 }
 
+/// The `Properties70` records of a catalogue entry (`"records"`).
+fn records_of(entry: &Value) -> Vec<FbxNode> {
+    entry
+        .get("records")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(crate::properties70::json_to_p_record)
+        .collect()
+}
+
+fn props70(records: Vec<FbxNode>) -> Vec<FbxNode> {
+    if records.is_empty() {
+        return Vec::new();
+    }
+    vec![FbxNode {
+        name: "Properties70".to_string(),
+        properties: Vec::new(),
+        children: records,
+    }]
+}
+
+/// An `AnimationStack`'s body: its round-tripped records when the
+/// catalogue carries the stack, else the `LocalStart` / `LocalStop` /
+/// `ReferenceStart` / `ReferenceStop` KTime span synthesised from the
+/// channels' keyframe range (the records every staged producer
+/// writes).
+fn stack_body(entry: Option<&Value>, anim: &Animation) -> Vec<FbxNode> {
+    if let Some(e) = entry {
+        let raw = records_of(e);
+        if !raw.is_empty() {
+            return props70(raw);
+        }
+    }
+    let mut lo = f32::INFINITY;
+    let mut hi = f32::NEG_INFINITY;
+    for ch in &anim.channels {
+        for t in &ch.sampler.keyframes {
+            lo = lo.min(*t);
+            hi = hi.max(*t);
+        }
+    }
+    if !(lo.is_finite() && hi.is_finite()) {
+        return Vec::new();
+    }
+    let ticks = |t: f32| (f64::from(t) * KTIME_TICKS_PER_SECOND).round() as i64;
+    props70(vec![
+        p_ktime("LocalStart", ticks(lo)),
+        p_ktime("LocalStop", ticks(hi)),
+        p_ktime("ReferenceStart", ticks(lo)),
+        p_ktime("ReferenceStop", ticks(hi)),
+    ])
+}
+
+/// The `fbx:key_attrs` catalogue (see
+/// [`crate::animation::extract_key_attr_catalogue`]) indexed for the
+/// per-curve lookup: an entry re-emits verbatim onto the curve whose
+/// stack / target / property / axis join it and whose emitted key
+/// count equals the entry's — the decode side resamples per-axis
+/// curves onto a union grid, so a curve whose grid changed keeps no
+/// attributes (stretching an uninterpreted per-key table is exactly
+/// what the open `KeyAttrFlags` docs gap forbids).
+struct KeyAttrs<'a> {
+    entries: Vec<&'a Value>,
+}
+
+struct CurveJoin<'a> {
+    stack: &'a str,
+    target: Option<String>,
+}
+
+impl<'a> KeyAttrs<'a> {
+    fn from_scene(scene: &'a Scene3D) -> Self {
+        Self {
+            entries: scene
+                .extras
+                .get("fbx:key_attrs")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .collect(),
+        }
+    }
+
+    fn entry(&self, join: &CurveJoin<'_>, prop: &str, axis: &str) -> Option<&'a Value> {
+        self.entries.iter().copied().find(|e| {
+            e.get("stack").and_then(Value::as_str) == Some(join.stack)
+                && e.get("target").and_then(Value::as_str) == join.target.as_deref()
+                && e.get("property").and_then(Value::as_str) == Some(prop)
+                && e.get("axis").and_then(Value::as_str) == Some(axis)
+        })
+    }
+
+    /// The source curve rebuilt verbatim (id left as 0 for the
+    /// caller to set) when linearly sampling it on the union grid
+    /// reproduces `values` to 1e-4 — i.e. the typed channel was not
+    /// edited — else `None`.
+    fn verbatim_curve(
+        &self,
+        join: &CurveJoin<'_>,
+        prop: &str,
+        axis: &str,
+        times: &[f32],
+        values: &[f32],
+    ) -> Option<FbxNode> {
+        let e = self.entry(join, prop, axis)?;
+        let key_times: Vec<i64> = e
+            .get("key_times")?
+            .as_array()?
+            .iter()
+            .map(Value::as_i64)
+            .collect::<Option<Vec<_>>>()?;
+        let key_values: Vec<f32> = e
+            .get("key_values")?
+            .as_array()?
+            .iter()
+            .map(|v| {
+                v.as_u64()
+                    .and_then(|b| u32::try_from(b).ok())
+                    .map(f32::from_bits)
+            })
+            .collect::<Option<Vec<_>>>()?;
+        if key_times.is_empty() || key_times.len() != key_values.len() {
+            return None;
+        }
+        let secs: Vec<f64> = key_times
+            .iter()
+            .map(|t| *t as f64 / KTIME_TICKS_PER_SECOND)
+            .collect();
+        for (t, v) in times.iter().zip(values) {
+            let t = f64::from(*t);
+            let sampled = if t <= secs[0] {
+                f64::from(key_values[0])
+            } else if t >= secs[secs.len() - 1] {
+                f64::from(key_values[key_values.len() - 1])
+            } else {
+                let i = secs.partition_point(|s| *s <= t).max(1);
+                let (t0, t1) = (secs[i - 1], secs[i]);
+                let (v0, v1) = (f64::from(key_values[i - 1]), f64::from(key_values[i]));
+                if t1 > t0 {
+                    v0 + (v1 - v0) * (t - t0) / (t1 - t0)
+                } else {
+                    v1
+                }
+            };
+            if (sampled - f64::from(*v)).abs() > 1.0e-4 * (1.0 + f64::from(v.abs())) {
+                return None;
+            }
+        }
+        let default = e
+            .get("default")
+            .and_then(Value::as_f64)
+            .unwrap_or(f64::from(key_values[0]));
+        let key_ver = e.get("key_ver").and_then(Value::as_i64).unwrap_or(4008) as i32;
+        let mut children = vec![
+            FbxNode {
+                name: "Default".to_string(),
+                properties: vec![FbxProperty::F64(default)],
+                children: Vec::new(),
+            },
+            FbxNode {
+                name: "KeyVer".to_string(),
+                properties: vec![FbxProperty::I32(key_ver)],
+                children: Vec::new(),
+            },
+            FbxNode {
+                name: "KeyTime".to_string(),
+                properties: vec![FbxProperty::I64Array(key_times.clone())],
+                children: Vec::new(),
+            },
+            FbxNode {
+                name: "KeyValueFloat".to_string(),
+                properties: vec![FbxProperty::F32Array(key_values)],
+                children: Vec::new(),
+            },
+        ];
+        children.extend(self.leaves(join, prop, axis, key_times.len()));
+        Some(FbxNode {
+            name: "AnimationCurve".to_string(),
+            properties: vec![
+                FbxProperty::I64(0),
+                FbxProperty::String(name_class("", "AnimCurve")),
+                FbxProperty::String(Vec::new()),
+            ],
+            children,
+        })
+    }
+
+    fn leaves(&self, join: &CurveJoin<'_>, prop: &str, axis: &str, n_keys: usize) -> Vec<FbxNode> {
+        let Some(e) = self
+            .entry(join, prop, axis)
+            .filter(|e| e.get("key_count").and_then(Value::as_u64) == Some(n_keys as u64))
+        else {
+            return Vec::new();
+        };
+        let ints = |key: &str| -> Option<Vec<i32>> {
+            e.get(key)?
+                .as_array()?
+                .iter()
+                .map(|v| v.as_i64().and_then(|n| i32::try_from(n).ok()))
+                .collect()
+        };
+        let mut out = Vec::new();
+        if let Some(flags) = ints("flags") {
+            out.push(FbxNode {
+                name: "KeyAttrFlags".to_string(),
+                properties: vec![FbxProperty::I32Array(flags)],
+                children: Vec::new(),
+            });
+        }
+        if let Some(bits) = e.get("data_bits").and_then(Value::as_array) {
+            let floats: Option<Vec<f32>> = bits
+                .iter()
+                .map(|v| {
+                    v.as_u64()
+                        .and_then(|b| u32::try_from(b).ok())
+                        .map(f32::from_bits)
+                })
+                .collect();
+            if let Some(f) = floats {
+                out.push(FbxNode {
+                    name: "KeyAttrDataFloat".to_string(),
+                    properties: vec![FbxProperty::F32Array(f)],
+                    children: Vec::new(),
+                });
+            }
+        }
+        if let Some(rc) = ints("ref_count") {
+            out.push(FbxNode {
+                name: "KeyAttrRefCount".to_string(),
+                properties: vec![FbxProperty::I32Array(rc)],
+                children: Vec::new(),
+            });
+        }
+        out
+    }
+}
+
 /// Emit one `AnimationCurveNode` + three per-axis `AnimationCurve`s
-/// with their `OO` / `OP` wiring.
+/// with their `OO` / `OP` wiring. The curve node carries the
+/// `d|X` / `d|Y` / `d|Z` default records (the first key of each
+/// component — the shape every staged producer writes).
 #[allow(clippy::too_many_arguments)]
 fn emit_trs_curves(
     objects: &mut Vec<FbxNode>,
@@ -232,14 +650,21 @@ fn emit_trs_curves(
     target_prop: &str,
     times: &[f32],
     components: &[Vec<f32>; 3],
+    key_attrs: &KeyAttrs<'_>,
+    join: &CurveJoin<'_>,
 ) {
     let curve_node_id = alloc();
+    let defaults: Vec<FbxNode> = ["d|X", "d|Y", "d|Z"]
+        .iter()
+        .zip(components)
+        .map(|(axis, vals)| p_number(axis, f64::from(vals.first().copied().unwrap_or(0.0))))
+        .collect();
     objects.push(element(
         "AnimationCurveNode",
         curve_node_id,
         target_prop,
         "",
-        Vec::new(),
+        props70(defaults),
     ));
     // AnimationCurveNode -> Model OP (the property name).
     connections.push(conn_op(curve_node_id, model_id, target_prop));
@@ -252,7 +677,22 @@ fn emit_trs_curves(
         ("d|Z", &components[2]),
     ] {
         let curve_id = alloc();
-        objects.push(build_curve(curve_id, times, values));
+        // The source curve verbatim (its own key grid, values,
+        // `Default` / `KeyVer` and `KeyAttr*` arrays) whenever the
+        // typed channel still samples identically from it; else the
+        // union-grid curve, with the attributes only when the grid is
+        // unchanged.
+        let curve = match key_attrs.verbatim_curve(join, target_prop, axis_tag, times, values) {
+            Some(mut original) => {
+                original.properties[0] = FbxProperty::I64(curve_id);
+                original
+            }
+            None => {
+                let attrs = key_attrs.leaves(join, target_prop, axis_tag, times.len());
+                build_curve(curve_id, times, values, Some(attrs))
+            }
+        };
+        objects.push(curve);
         // AnimationCurve -> AnimationCurveNode OP (the axis tag).
         connections.push(conn_op(curve_id, curve_node_id, axis_tag));
     }
@@ -464,11 +904,45 @@ fn channel_components(values: &AnimationValues, n_keys: usize) -> Option<[Vec<f3
 /// Build one `AnimationCurve` element carrying a `KeyTime` (l-array,
 /// KTime ticks) + `KeyValueFloat` (f-array) pair — the two sub-records
 /// the decode path's `read_curve` requires.
-fn build_curve(id: i64, times_secs: &[f32], values: &[f32]) -> FbxNode {
+fn build_curve(
+    id: i64,
+    times_secs: &[f32],
+    values: &[f32],
+    key_attrs: Option<Vec<FbxNode>>,
+) -> FbxNode {
     let key_times: Vec<i64> = times_secs
         .iter()
         .map(|t| (*t as f64 * KTIME_TICKS_PER_SECOND).round() as i64)
         .collect();
+    // Body shape observed on every staged curve: `Default` (the
+    // curve's first value), `KeyVer: 4008`, then the key arrays and —
+    // when the round-tripped catalogue supplies them — the `KeyAttr*`
+    // arrays verbatim.
+    let mut children = vec![
+        FbxNode {
+            name: "Default".to_string(),
+            properties: vec![FbxProperty::F64(f64::from(
+                values.first().copied().unwrap_or(0.0),
+            ))],
+            children: Vec::new(),
+        },
+        FbxNode {
+            name: "KeyVer".to_string(),
+            properties: vec![FbxProperty::I32(4008)],
+            children: Vec::new(),
+        },
+        FbxNode {
+            name: "KeyTime".to_string(),
+            properties: vec![FbxProperty::I64Array(key_times)],
+            children: Vec::new(),
+        },
+        FbxNode {
+            name: "KeyValueFloat".to_string(),
+            properties: vec![FbxProperty::F32Array(values.to_vec())],
+            children: Vec::new(),
+        },
+    ];
+    children.extend(key_attrs.into_iter().flatten());
     FbxNode {
         name: "AnimationCurve".to_string(),
         properties: vec![
@@ -476,18 +950,35 @@ fn build_curve(id: i64, times_secs: &[f32], values: &[f32]) -> FbxNode {
             FbxProperty::String(name_class("", "AnimCurve")),
             FbxProperty::String(Vec::new()),
         ],
-        children: vec![
-            FbxNode {
-                name: "KeyTime".to_string(),
-                properties: vec![FbxProperty::I64Array(key_times)],
-                children: Vec::new(),
-            },
-            FbxNode {
-                name: "KeyValueFloat".to_string(),
-                properties: vec![FbxProperty::F32Array(values.to_vec())],
-                children: Vec::new(),
-            },
+        children,
+    }
+}
+
+fn p_number(name: &str, v: f64) -> FbxNode {
+    FbxNode {
+        name: "P".to_string(),
+        properties: vec![
+            FbxProperty::String(name.as_bytes().to_vec()),
+            FbxProperty::String(b"Number".to_vec()),
+            FbxProperty::String(Vec::new()),
+            FbxProperty::String(b"A".to_vec()),
+            FbxProperty::F64(v),
         ],
+        children: Vec::new(),
+    }
+}
+
+fn p_ktime(name: &str, v: i64) -> FbxNode {
+    FbxNode {
+        name: "P".to_string(),
+        properties: vec![
+            FbxProperty::String(name.as_bytes().to_vec()),
+            FbxProperty::String(b"KTime".to_vec()),
+            FbxProperty::String(b"Time".to_vec()),
+            FbxProperty::String(Vec::new()),
+            FbxProperty::I64(v),
+        ],
+        children: Vec::new(),
     }
 }
 

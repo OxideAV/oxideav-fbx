@@ -77,7 +77,7 @@ use std::collections::HashMap;
 
 use oxideav_mesh3d::{
     Animation, AnimationChannel, AnimationProperty, AnimationSampler, AnimationTarget,
-    AnimationValues, Interpolation, NodeId,
+    AnimationValues, Interpolation, NodeId, Scene3D,
 };
 
 use crate::binary::{FbxDocument, FbxNode, FbxProperty};
@@ -396,6 +396,199 @@ pub fn extract_animations(
     animations
 }
 
+/// `Scene3D::extras` key: every `AnimationStack` with its own `P`
+/// records and its `AnimationLayer`s (name + records), document
+/// order — including stacks that carry no curves (a take with no
+/// keys), which the typed `Animation` list cannot represent.
+pub const ANIM_STACKS_KEY: &str = "fbx:anim_stacks";
+
+/// `Scene3D::extras` key: every `AnimationCurveNode` the typed
+/// animation extraction does *not* consume — nodes animating a
+/// property outside `Lcl Translation` / `Lcl Rotation` / `Lcl
+/// Scaling` / `DeformPercent` (custom `mr displacement …` /
+/// `MaxHandle` slots on a Model, light / camera attribute
+/// properties) or carrying no curve at all — verbatim: its records,
+/// target, property, stack / layer membership and its `AnimationCurve`
+/// bodies (every leaf, `KeyAttr*` included).
+pub const AUX_CURVE_NODES_KEY: &str = "fbx:aux_curve_nodes";
+
+/// Surface the [`ANIM_STACKS_KEY`] and [`AUX_CURVE_NODES_KEY`]
+/// catalogues (see each key's docs). Nothing is interpreted; the
+/// writer re-emits both verbatim so a decode → encode → decode keeps
+/// every animation object the file carried.
+pub fn extract_anim_catalogue(
+    doc: &FbxDocument,
+    scene: &mut Scene3D,
+    model_nodes: &HashMap<i64, NodeId>,
+    deformer_targets: &HashMap<i64, MorphChannelBinding>,
+) {
+    let Some(objects) = doc.root.child("Objects") else {
+        return;
+    };
+    let mut stacks: Vec<(i64, &FbxNode)> = Vec::new();
+    let mut layers: HashMap<i64, &FbxNode> = HashMap::new();
+    let mut curve_nodes: Vec<(i64, &FbxNode)> = Vec::new();
+    let mut curve_node_ids: HashMap<i64, ()> = HashMap::new();
+    let mut curves: HashMap<i64, &FbxNode> = HashMap::new();
+    let mut element_names: HashMap<i64, String> = HashMap::new();
+    for child in &objects.children {
+        let Some(id) = element_id(child) else {
+            continue;
+        };
+        element_names.insert(id, element_name(child).unwrap_or_default());
+        match child.name.as_str() {
+            "AnimationStack" => stacks.push((id, child)),
+            "AnimationLayer" => {
+                layers.insert(id, child);
+            }
+            "AnimationCurveNode" => {
+                curve_nodes.push((id, child));
+                curve_node_ids.insert(id, ());
+            }
+            "AnimationCurve" => {
+                curves.insert(id, child);
+            }
+            _ => {}
+        }
+    }
+    if stacks.is_empty() && curve_nodes.is_empty() {
+        return;
+    }
+
+    // Connections: layer → stack, curve node → layer, curve node →
+    // (target, property), curve → (curve node, axis).
+    let mut layers_of_stack: HashMap<i64, Vec<i64>> = HashMap::new();
+    let mut node_to_layer: HashMap<i64, i64> = HashMap::new();
+    let mut node_to_target: HashMap<i64, (i64, String)> = HashMap::new();
+    let mut curves_of_node: HashMap<i64, Vec<(i64, String)>> = HashMap::new();
+    let stack_ids: HashMap<i64, ()> = stacks.iter().map(|(id, _)| (*id, ())).collect();
+    if let Some(conns) = doc.root.child("Connections") {
+        for c in conns.children_named("C") {
+            let kind = c.properties.first().and_then(FbxProperty::as_str);
+            let child_id = c.properties.get(1).and_then(FbxProperty::as_i64);
+            let parent_id = c.properties.get(2).and_then(FbxProperty::as_i64);
+            let prop = c.properties.get(3).and_then(FbxProperty::as_str);
+            let (Some(kind), Some(child_id), Some(parent_id)) = (kind, child_id, parent_id) else {
+                continue;
+            };
+            match (kind, prop) {
+                ("OO", _) => {
+                    if layers.contains_key(&child_id) && stack_ids.contains_key(&parent_id) {
+                        layers_of_stack.entry(parent_id).or_default().push(child_id);
+                    } else if curve_node_ids.contains_key(&child_id)
+                        && layers.contains_key(&parent_id)
+                    {
+                        node_to_layer.entry(child_id).or_insert(parent_id);
+                    }
+                }
+                ("OP", Some(prop)) => {
+                    if curves.contains_key(&child_id) && curve_node_ids.contains_key(&parent_id) {
+                        curves_of_node
+                            .entry(parent_id)
+                            .or_default()
+                            .push((child_id, prop.to_owned()));
+                    } else if curve_node_ids.contains_key(&child_id) {
+                        node_to_target
+                            .entry(child_id)
+                            .or_insert((parent_id, prop.to_owned()));
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    // Stack catalogue.
+    let mut stack_json: Vec<serde_json::Value> = Vec::new();
+    for (sid, snode) in &stacks {
+        let layer_json: Vec<serde_json::Value> = layers_of_stack
+            .get(sid)
+            .into_iter()
+            .flatten()
+            .filter_map(|lid| layers.get(lid).map(|l| (lid, l)))
+            .map(|(lid, l)| {
+                serde_json::json!({
+                    "name": element_names.get(lid).cloned().unwrap_or_default(),
+                    "records": crate::properties70::own_records_json(l),
+                })
+            })
+            .collect();
+        stack_json.push(serde_json::json!({
+            "name": element_names.get(sid).cloned().unwrap_or_default(),
+            "records": crate::properties70::own_records_json(snode),
+            "layers": layer_json,
+        }));
+    }
+    if !stack_json.is_empty() {
+        scene
+            .extras
+            .entry(ANIM_STACKS_KEY.to_string())
+            .or_insert(serde_json::Value::Array(stack_json));
+    }
+
+    // Auxiliary curve nodes: everything the typed extraction leaves.
+    let layer_stack: HashMap<i64, i64> = layers_of_stack
+        .iter()
+        .flat_map(|(s, ls)| ls.iter().map(move |l| (*l, *s)))
+        .collect();
+    let mut aux: Vec<serde_json::Value> = Vec::new();
+    for (cid, cnode) in &curve_nodes {
+        let target = node_to_target.get(cid);
+        let curve_list = curves_of_node.get(cid);
+        let has_curve = curve_list.is_some_and(|c| !c.is_empty());
+        let typed = match target {
+            Some((tid, prop)) => {
+                (model_nodes.contains_key(tid) && property_for(prop).is_some() && has_curve)
+                    || (prop == TARGET_DEFORM_PERCENT
+                        && deformer_targets.contains_key(tid)
+                        && has_curve)
+            }
+            None => false,
+        };
+        if typed {
+            continue;
+        }
+        let layer_id = node_to_layer.get(cid).copied();
+        let stack_id = layer_id.and_then(|l| layer_stack.get(&l).copied());
+        let target_json = match target {
+            Some((tid, _)) => match model_nodes.get(tid) {
+                Some(nid) => serde_json::json!({ "node": nid.0 }),
+                None => serde_json::json!({
+                    "object": element_names.get(tid).cloned().unwrap_or_default()
+                }),
+            },
+            None => serde_json::Value::Null,
+        };
+        let curves_json: Vec<serde_json::Value> = curve_list
+            .into_iter()
+            .flatten()
+            .filter_map(|(curve_id, axis)| {
+                let c = curves.get(curve_id)?;
+                Some(serde_json::json!({
+                    "axis": axis,
+                    "name": element_names.get(curve_id).cloned().unwrap_or_default(),
+                    "body": crate::properties70::body_json(c),
+                }))
+            })
+            .collect();
+        aux.push(serde_json::json!({
+            "name": element_names.get(cid).cloned().unwrap_or_default(),
+            "records": crate::properties70::own_records_json(cnode),
+            "stack": stack_id.and_then(|s| element_names.get(&s).cloned()),
+            "layer": layer_id.and_then(|l| element_names.get(&l).cloned()),
+            "target": target_json,
+            "property": target.map(|(_, p)| p.clone()),
+            "curves": curves_json,
+        }));
+    }
+    if !aux.is_empty() {
+        scene
+            .extras
+            .entry(AUX_CURVE_NODES_KEY.to_string())
+            .or_insert(serde_json::Value::Array(aux));
+    }
+}
+
 /// Walk every `AnimationCurve` element and surface its raw key
 /// attribute sub-records — `KeyAttrFlags` / `KeyAttrDataFloat` /
 /// `KeyAttrRefCount` — as a JSON catalogue for
@@ -534,6 +727,37 @@ pub fn extract_key_attr_catalogue(doc: &FbxDocument) -> Option<serde_json::Value
         if let Some(n) = key_count {
             entry.insert("key_count".into(), serde_json::Value::from(n));
         }
+        // The curve's own key grid + values (lossless: ticks as i64,
+        // values as IEEE-754 bit patterns) and its `Default` /
+        // `KeyVer` leaves, so the writer can re-emit the *original*
+        // per-axis curve verbatim — attributes included — whenever
+        // the typed channel still samples identically from it.
+        if let Some(FbxProperty::I64Array(t)) =
+            node.child("KeyTime").and_then(|n| n.properties.first())
+        {
+            entry.insert("key_times".into(), serde_json::json!(t));
+        } else if let Some(FbxProperty::I32Array(t)) =
+            node.child("KeyTime").and_then(|n| n.properties.first())
+        {
+            entry.insert("key_times".into(), serde_json::json!(t));
+        }
+        if let Some(v) = f32_bits_array(node, "KeyValueFloat") {
+            entry.insert("key_values".into(), v);
+        }
+        if let Some(d) = node
+            .child("Default")
+            .and_then(|n| n.properties.first())
+            .and_then(|p| p.as_f64_loose())
+        {
+            entry.insert("default".into(), serde_json::json!(d));
+        }
+        if let Some(k) = node
+            .child("KeyVer")
+            .and_then(|n| n.properties.first())
+            .and_then(FbxProperty::as_i64)
+        {
+            entry.insert("key_ver".into(), serde_json::json!(k));
+        }
         if let Some(v) = flags {
             entry.insert("flags".into(), v);
         }
@@ -577,6 +801,12 @@ fn f32_bits_array(node: &FbxNode, name: &str) -> Option<serde_json::Value> {
         FbxProperty::I32Array(a) => a
             .iter()
             .map(|v| serde_json::Value::from(u32::from_ne_bytes(v.to_ne_bytes())))
+            .collect(),
+        // The ASCII reader widens every float array to `d`; the
+        // values are f32 on the wire, so narrowing is lossless.
+        FbxProperty::F64Array(a) => a
+            .iter()
+            .map(|v| serde_json::Value::from((*v as f32).to_bits()))
             .collect(),
         _ => return None,
     };

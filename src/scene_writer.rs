@@ -447,7 +447,12 @@ pub fn encode_scene_with_options(scene: &Scene3D, opts: &SceneEncodeOptions) -> 
     // record for the scene NodeId via the node-id → fbx-id map below;
     // MorphWeights channels target the node's BlendShapeChannels (one
     // DeformPercent OP connection per morph-target slot).
-    if !scene.animations.is_empty() {
+    if !scene.animations.is_empty()
+        || scene.extras.contains_key(crate::animation::ANIM_STACKS_KEY)
+        || scene
+            .extras
+            .contains_key(crate::animation::AUX_CURVE_NODES_KEY)
+    {
         let node_to_fbx =
             |nid: oxideav_mesh3d::NodeId| -> Option<i64> { node_ids.get(nid.0 as usize).copied() };
         let morph_channels_for = |nid: oxideav_mesh3d::NodeId| -> Option<Vec<i64>> {
@@ -467,7 +472,7 @@ pub fn encode_scene_with_options(scene: &Scene3D, opts: &SceneEncodeOptions) -> 
                 .and_then(crate::node_transform::chain_from_extras)
         };
         let anim_emit = crate::anim_writer::build_animation_objects(
-            &scene.animations,
+            scene,
             node_to_fbx,
             morph_channels_for,
             chain_for,

@@ -1103,6 +1103,115 @@ pub fn p_name(p: &FbxNode) -> Option<&str> {
     }
 }
 
+/// An element's direct body leaves including typed-array payloads
+/// (the `AnimationCurve` body: `Default` / `KeyVer` scalars plus the
+/// `KeyTime` / `KeyValueFloat` / `KeyAttr*` arrays), as
+/// `{ "name", "values": [tagged…] }` with the [`leaves_json`] scalar
+/// tags plus `{"i": [..]}` / `{"L": [..]}` / `{"f": [bits..]}` /
+/// `{"D": [..]}` / `{"b": [..]}` for `i` / `l` / `f` / `d` / `b`
+/// arrays (`f` as IEEE-754 bit patterns so the payload is lossless
+/// through JSON). `Properties70` and leaves with children are
+/// skipped; raw blobs / byte arrays are not representable.
+#[doc(hidden)]
+pub fn body_json(element: &FbxNode) -> Vec<Value> {
+    element
+        .children
+        .iter()
+        .filter(|c| c.name != "Properties70" && c.children.is_empty())
+        .filter_map(|c| {
+            let values: Option<Vec<Value>> = c
+                .properties
+                .iter()
+                .map(|v| {
+                    Some(match v {
+                        FbxProperty::Bool(b) => json!({ "c": b }),
+                        FbxProperty::I16(n) => json!({ "l": n }),
+                        FbxProperty::I32(n) => json!({ "l": n }),
+                        FbxProperty::I64(n) => json!({ "l": n }),
+                        FbxProperty::F32(x) => json!({ "d": x }),
+                        FbxProperty::F64(x) => json!({ "d": x }),
+                        FbxProperty::String(b) => json!({ "s": String::from_utf8_lossy(b) }),
+                        FbxProperty::I32Array(a) => json!({ "i": a }),
+                        FbxProperty::I64Array(a) => json!({ "L": a }),
+                        FbxProperty::F32Array(a) => {
+                            json!({ "f": a.iter().map(|x| x.to_bits()).collect::<Vec<u32>>() })
+                        }
+                        FbxProperty::F64Array(a) => json!({ "D": a }),
+                        FbxProperty::BoolArray(a) => json!({ "b": a }),
+                        _ => return None,
+                    })
+                })
+                .collect();
+            Some(json!({ "name": c.name, "values": values? }))
+        })
+        .collect()
+}
+
+/// Inverse of [`body_json`] for one entry.
+#[doc(hidden)]
+pub fn json_to_body_leaf(v: &Value) -> Option<FbxNode> {
+    let obj = v.as_object()?;
+    let name = obj.get("name")?.as_str()?.to_owned();
+    let mut properties = Vec::new();
+    for value in obj.get("values")?.as_array()? {
+        let tagged = value.as_object()?;
+        let (tag, inner) = tagged.iter().next()?;
+        let ints =
+            |v: &Value| -> Option<Vec<i64>> { v.as_array()?.iter().map(Value::as_i64).collect() };
+        properties.push(match tag.as_str() {
+            "c" => FbxProperty::Bool(inner.as_bool()?),
+            "l" => {
+                let n = inner.as_i64()?;
+                match i32::try_from(n) {
+                    Ok(narrow) => FbxProperty::I32(narrow),
+                    Err(_) => FbxProperty::I64(n),
+                }
+            }
+            "d" => FbxProperty::F64(inner.as_f64()?),
+            "s" => FbxProperty::String(inner.as_str()?.as_bytes().to_vec()),
+            "i" => FbxProperty::I32Array(
+                ints(inner)?
+                    .into_iter()
+                    .map(i32::try_from)
+                    .collect::<std::result::Result<Vec<_>, _>>()
+                    .ok()?,
+            ),
+            "L" => FbxProperty::I64Array(ints(inner)?),
+            "f" => FbxProperty::F32Array(
+                inner
+                    .as_array()?
+                    .iter()
+                    .map(|v| {
+                        v.as_u64()
+                            .and_then(|b| u32::try_from(b).ok())
+                            .map(f32::from_bits)
+                    })
+                    .collect::<Option<Vec<_>>>()?,
+            ),
+            "D" => FbxProperty::F64Array(
+                inner
+                    .as_array()?
+                    .iter()
+                    .map(Value::as_f64)
+                    .collect::<Option<Vec<_>>>()?,
+            ),
+            "b" => FbxProperty::BoolArray(
+                inner
+                    .as_array()?
+                    .iter()
+                    .map(Value::as_bool)
+                    .collect::<Option<Vec<_>>>()?,
+            ),
+            _ => return None,
+        });
+    }
+    Some(FbxNode {
+        name,
+        properties,
+        children: Vec::new(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -56,6 +56,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `DateTime_GMT`, `SrcDocumentUrl`, `TimeMarker`, empty `MetaData`
   fields and the producer's record order all survive. `Documents`
   always writes `ActiveAnimStackName`.
+- Animation completeness: the stack / layer catalogue
+  (`fbx:anim_stacks` — every `AnimationStack`'s records and layers,
+  curve-less takes included) and every curve node the typed
+  extraction leaves (`fbx:aux_curve_nodes` — custom-property
+  animation such as the SDK fixture's `mr displacement …` slots,
+  curve-less nodes, with their `AnimationCurve` bodies verbatim) ride
+  on `Scene3D::extras` and re-emit. Emitted curves carry `Default` /
+  `KeyVer`, curve nodes their `d|X` / `d|Y` / `d|Z` defaults, fresh
+  stacks a synthesised `LocalStart` / `LocalStop` / `ReferenceStart`
+  / `ReferenceStop` span, and the uninterpreted `fbx:key_attrs`
+  catalogue now also carries each source curve's own key grid, so
+  the writer re-emits the *original* per-axis `AnimationCurve`
+  verbatim (`Default` / `KeyVer` / `KeyAttrFlags` / `KeyAttrDataFloat`
+  / `KeyAttrRefCount` included) whenever the typed channel still
+  samples identically from it — all 90 of the skin-anim fixture's
+  curves — and falls back to the union-grid curve only for an edited
+  channel.
 - Textures referenced by no material (the staged fixture's orphan
   embedded texture) are emitted too; `Texture` elements follow
   texture-index order so ids survive a round trip.

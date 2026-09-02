@@ -162,7 +162,23 @@ fn put_extras(
     extras: &std::collections::HashMap<String, serde_json::Value>,
 ) {
     for (k, v) in extras {
-        fp.insert(format!("{prefix}.extras[{k}]"), canon_json(v));
+        // `fbx:key_attrs` is a set keyed by its join fields; emission
+        // order is not a feature, so it is fingerprinted sorted.
+        let v = if k == "fbx:key_attrs" {
+            let mut arr = v.as_array().cloned().unwrap_or_default();
+            arr.sort_by_key(|e| {
+                [
+                    e["stack"].as_str().unwrap_or("").to_owned(),
+                    e["target"].as_str().unwrap_or("").to_owned(),
+                    e["property"].as_str().unwrap_or("").to_owned(),
+                    e["axis"].as_str().unwrap_or("").to_owned(),
+                ]
+            });
+            serde_json::Value::Array(arr)
+        } else {
+            v.clone()
+        };
+        fp.insert(format!("{prefix}.extras[{k}]"), canon_json(&v));
     }
 }
 
@@ -572,17 +588,14 @@ fn known_gap(form: FbxOutputForm, kind: &str, key: &str) -> bool {
         return true;
     }
     let parity: &[&str] = &[
+        // objects this crate has no typed home for (`CollectionExclusive`
+        // display layers) are dropped, and their template block with them
+        "scene.extras[fbx:property_templates]",
         // geometry: shared vertices / polygons / edges / smoothing
         "mesh[*].prim[*].extras[fbx:edges]",
         "mesh[*].prim[*].extras[fbx:edge_smoothing]",
         "mesh[*].prim[*].extras[fbx:shared_positions]",
         "mesh[*].prim[*].extras[fbx:material_mapping]",
-        // animation: uninterpreted key-attribute passthrough
-        "scene.extras[fbx:key_attrs]",
-        // animation: a take whose stack carries no curves is not
-        // emitted, so its AnimationStack / AnimationLayer template
-        // blocks vanish with it
-        "scene.extras[fbx:property_templates]",
     ];
     let census: &[&str] = &[
         "FBXHeaderExtension/SceneInfo",

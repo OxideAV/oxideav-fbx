@@ -335,6 +335,14 @@ pub fn build_scene(doc: &FbxDocument) -> Result<Scene3D> {
     for anim in animations {
         scene.add_animation(anim);
     }
+    // Stack / layer catalogue + the curve nodes the typed extraction
+    // leaves (custom-property animation, curve-less nodes), verbatim.
+    crate::animation::extract_anim_catalogue(
+        doc,
+        &mut scene,
+        &model_nodes,
+        &deformer_out.channel_targets,
+    );
 
     // Raw per-curve key-attribute payloads (`KeyAttrFlags` /
     // `KeyAttrDataFloat` / `KeyAttrRefCount`) — surfaced verbatim on

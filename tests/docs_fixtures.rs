@@ -749,3 +749,93 @@ fn camera_attr_fixture_keeps_untyped_attribute_and_model_records() {
         assert_eq!(format!("{c1:?}"), format!("{c2:?}"));
     }
 }
+
+/// Animation objects beyond the typed channels survive a round trip:
+/// `cubes-ascii-v7500.fbx`'s take carries no curves (the typed scene
+/// has no `Animation`), yet its `AnimationStack` + `AnimationLayer`
+/// and their `Definitions` blocks reappear; the SDK fixture's eight
+/// custom-property curve nodes (`mr displacement …` / `MaxHandle`)
+/// reappear wired to their Model; and every one of the skin-anim
+/// fixture's 90 curves re-emits *verbatim* — its own key grid,
+/// `Default` / `KeyVer` and `KeyAttr*` arrays — because the typed
+/// channels still sample identically from the source curves.
+#[test]
+fn animation_catalogue_and_key_attrs_survive_re_encode() {
+    use oxideav_fbx::binary::FbxProperty;
+    use oxideav_fbx::{FbxEncoder, FbxOutputForm};
+    use oxideav_mesh3d::Mesh3DEncoder;
+
+    fn count(doc: &FbxDocument, class: &str, leaf: Option<&str>) -> usize {
+        doc.root
+            .child("Objects")
+            .map(|o| {
+                o.children
+                    .iter()
+                    .filter(|c| c.name == class)
+                    .filter(|c| leaf.is_none_or(|l| c.child(l).is_some()))
+                    .count()
+            })
+            .unwrap_or(0)
+    }
+
+    if let Some(bytes) = fixture("cubes-ascii-v7500.fbx") {
+        let scene = decode(&bytes);
+        assert!(scene.animations.is_empty(), "the take carries no curves");
+        for form in [FbxOutputForm::Binary, FbxOutputForm::Ascii] {
+            let out = FbxEncoder::new().form(form).encode(&scene).unwrap();
+            let doc = parse_any(&out);
+            assert_eq!(count(&doc, "AnimationStack", None), 1, "{form:?}");
+            assert_eq!(count(&doc, "AnimationLayer", None), 1, "{form:?}");
+            let defs = oxideav_fbx::definitions::Definitions::from_document(&doc);
+            assert_eq!(
+                defs.get("AnimationStack").unwrap().template_name.as_deref(),
+                Some("FbxAnimStack")
+            );
+        }
+    }
+
+    if let Some(bytes) = fixture("texture-video-ascii-v7500.fbx") {
+        let scene = decode(&bytes);
+        let aux = scene.extras["fbx:aux_curve_nodes"].as_array().unwrap();
+        assert_eq!(aux.len(), 8);
+        for form in [FbxOutputForm::Binary, FbxOutputForm::Ascii] {
+            let out = FbxEncoder::new().form(form).encode(&scene).unwrap();
+            let doc = parse_any(&out);
+            assert_eq!(count(&doc, "AnimationCurveNode", None), 8, "{form:?}");
+            // Each is OP-wired to the Box model under its property name.
+            let conns = doc.root.child("Connections").unwrap();
+            let op_to_model = conns
+                .children_named("C")
+                .filter(|c| {
+                    c.properties.first().and_then(FbxProperty::as_str) == Some("OP")
+                        && c.properties
+                            .get(3)
+                            .and_then(FbxProperty::as_str)
+                            .is_some_and(|p| p.starts_with("mr displacement") || p == "MaxHandle")
+                })
+                .count();
+            assert_eq!(op_to_model, 8, "{form:?}");
+        }
+    }
+
+    if let Some(bytes) = fixture("skin-anim-binary-v7400.fbx") {
+        let scene = decode(&bytes);
+        let src = parse_any(&bytes);
+        assert_eq!(count(&src, "AnimationCurve", Some("KeyAttrFlags")), 90);
+        for form in [FbxOutputForm::Binary, FbxOutputForm::Ascii] {
+            let out = FbxEncoder::new().form(form).encode(&scene).unwrap();
+            let doc = parse_any(&out);
+            assert_eq!(count(&doc, "AnimationCurve", None), 90, "{form:?}");
+            assert_eq!(count(&doc, "AnimationCurve", Some("Default")), 90);
+            assert_eq!(count(&doc, "AnimationCurve", Some("KeyVer")), 90);
+            assert_eq!(
+                count(&doc, "AnimationCurve", Some("KeyAttrFlags")),
+                90,
+                "{form:?}: every source curve re-emits verbatim"
+            );
+            // A second decode keeps the whole catalogue.
+            let scene2 = decode(&out);
+            assert_eq!(scene2.extras["fbx:key_attrs"].as_array().unwrap().len(), 90);
+        }
+    }
+}
