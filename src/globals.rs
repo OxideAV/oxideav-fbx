@@ -241,6 +241,18 @@ pub fn extract_global_settings(doc: &FbxDocument, scene: &mut Scene3D) -> usize 
         }
     }
 
+    // The whole record set verbatim (`fbx:global_settings_records`)
+    // — the writer merges its typed records into it by name, so
+    // records outside the recognised set (`TimeMarker`, vendor
+    // additions) and the producer's record order survive re-encode.
+    let records = crate::properties70::own_records_json(gs);
+    if !records.is_empty() {
+        extras.insert(
+            "fbx:global_settings_records".to_string(),
+            Value::Array(records),
+        );
+    }
+
     // Merge into the scene's extras (preserves any prior entry).
     for (k, v) in extras {
         scene.extras.entry(k).or_insert(v);
@@ -665,16 +677,22 @@ mod tests {
     }
 
     #[test]
-    fn unrecognised_record_names_are_ignored() {
-        // P-records this round doesn't recognise round-trip through
-        // FbxDocument but do not surface to Scene3D::extras (so a
-        // future round can opt-in to more names without an extras-key
-        // collision).
+    fn unrecognised_record_names_get_no_typed_key() {
+        // P-records this crate doesn't recognise get no typed
+        // `fbx:<snake_case>` key (so a future round can opt-in to
+        // more names without an extras-key collision) — they ride
+        // only on the verbatim `fbx:global_settings_records` set the
+        // writer re-emits.
         let doc = doc_with_globals(vec![p("SomeFutureField", "int", vec![FbxProperty::I32(7)])]);
         let mut scene = Scene3D::new();
         let n = extract_global_settings(&doc, &mut scene);
         assert_eq!(n, 0);
-        assert!(scene.extras.is_empty());
+        assert_eq!(scene.extras.len(), 1);
+        let raw = scene.extras["fbx:global_settings_records"]
+            .as_array()
+            .unwrap();
+        assert_eq!(raw.len(), 1);
+        assert_eq!(raw[0]["name"].as_str(), Some("SomeFutureField"));
     }
 
     #[test]

@@ -46,6 +46,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   an equivalent Euler branch is not an edit), else the typed records
   win for the mapped names and the rest still rides along; the `Lcl`
   triple is always written and `Version` leads every Model body.
+- Scene-wide section coverage: `GlobalSettings` (`fbx:global_settings_records`)
+  and the header `SceneInfo` object (`fbx:scene_info_records` /
+  `fbx:scene_info_leaves` / `fbx:scene_info_header` / the full
+  `fbx:meta_data_leaves`) ride verbatim, and the writer merges its
+  typed records into each set by name — a raw record is kept
+  verbatim while its value still matches, replaced only when the
+  typed field was edited — so `LastSaved|*`, `Original|FileName` /
+  `DateTime_GMT`, `SrcDocumentUrl`, `TimeMarker`, empty `MetaData`
+  fields and the producer's record order all survive. `Documents`
+  always writes `ActiveAnimStackName`.
 - Textures referenced by no material (the staged fixture's orphan
   embedded texture) are emitted too; `Texture` elements follow
   texture-index order so ids survive a round trip.

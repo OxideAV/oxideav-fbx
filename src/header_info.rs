@@ -137,8 +137,46 @@ pub fn extract_header_info(doc: &FbxDocument, scene: &mut Scene3D) -> usize {
     if let Some(scene_info) = ext.child("SceneInfo") {
         inserted += extract_metadata(scene_info, scene);
         inserted += extract_application_provenance(scene_info, scene);
+        inserted += extract_scene_info_raw(scene_info, scene);
     }
 
+    inserted
+}
+
+/// The `SceneInfo` object verbatim, alongside the typed picks: its
+/// header strings (`fbx:scene_info_header`), its scalar body leaves
+/// (`fbx:scene_info_leaves` — `Type` / `Version`), every `P` record
+/// (`fbx:scene_info_records` — the `Original|*` **and** `LastSaved|*`
+/// sets, `DocumentUrl` / `SrcDocumentUrl`, the `Original` /
+/// `LastSaved` compound parents, vendor additions) and the full
+/// `MetaData` leaf list (`fbx:meta_data_leaves`, empty fields and its
+/// `Version` included). The writer merges the typed `fbx:meta_*` /
+/// `fbx:application_*` / `fbx:document_url` values into these by
+/// name, so an edited typed value wins and everything else survives.
+fn extract_scene_info_raw(scene_info: &FbxNode, scene: &mut Scene3D) -> usize {
+    let mut inserted = 0usize;
+    let header: Vec<Value> = scene_info
+        .properties
+        .iter()
+        .filter_map(|p| p.as_str().map(|s| Value::String(s.to_owned())))
+        .collect();
+    if !header.is_empty() {
+        inserted += insert(scene, "fbx:scene_info_header", Value::Array(header));
+    }
+    let leaves = crate::properties70::leaves_json(scene_info, &[]);
+    if !leaves.is_empty() {
+        inserted += insert(scene, "fbx:scene_info_leaves", Value::Array(leaves));
+    }
+    let records = crate::properties70::own_records_json(scene_info);
+    if !records.is_empty() {
+        inserted += insert(scene, "fbx:scene_info_records", Value::Array(records));
+    }
+    if let Some(meta) = scene_info.child("MetaData") {
+        let meta_leaves = crate::properties70::leaves_json(meta, &[]);
+        if !meta_leaves.is_empty() {
+            inserted += insert(scene, "fbx:meta_data_leaves", Value::Array(meta_leaves));
+        }
+    }
     inserted
 }
 

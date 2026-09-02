@@ -563,6 +563,109 @@ pub fn encode_scene_with_options(scene: &Scene3D, opts: &SceneEncodeOptions) -> 
     }
 }
 
+/// Merge typed records into a round-tripped raw record list by
+/// name: the raw list's order is kept; a raw record whose name a
+/// typed record shares is kept verbatim when the two carry the same
+/// value (the wire form — label / flag strings, int vs double — is
+/// the producer's to keep) and replaced by the typed one only when
+/// the value differs (the typed field was edited); typed records
+/// with no raw counterpart are appended. Works for `P` records
+/// (name = first string property, payload = the values after the
+/// four leading strings) and for body leaves (name = node name,
+/// payload = every property) alike.
+fn merge_by_name(
+    raw: Vec<FbxNode>,
+    typed: Vec<FbxNode>,
+    name_of: fn(&FbxNode) -> String,
+) -> Vec<FbxNode> {
+    let mut pool: Vec<Option<FbxNode>> = typed.into_iter().map(Some).collect();
+    let mut out = Vec::with_capacity(raw.len() + pool.len());
+    for r in raw {
+        let rn = name_of(&r);
+        match pool
+            .iter_mut()
+            .find(|t| t.as_ref().is_some_and(|t| name_of(t) == rn))
+        {
+            Some(slot) => {
+                let t = slot.take().unwrap();
+                if payload_equal(&r, &t) {
+                    out.push(r);
+                } else {
+                    out.push(t);
+                }
+            }
+            None => out.push(r),
+        }
+    }
+    out.extend(pool.into_iter().flatten());
+    out
+}
+
+/// Value-level equality of two records of the same name: numeric
+/// payloads to 1e-9 relative, strings exactly; the leading four
+/// strings of a `P` record (name / typeName / label / flags) are
+/// not part of the payload.
+fn payload_equal(a: &FbxNode, b: &FbxNode) -> bool {
+    enum V {
+        N(f64),
+        S(Vec<u8>),
+    }
+    fn payload(n: &FbxNode) -> Vec<V> {
+        let skip = if n.name == "P" { 4 } else { 0 };
+        n.properties
+            .iter()
+            .skip(skip)
+            .map(|p| match p {
+                FbxProperty::Bool(b) => V::N(if *b { 1.0 } else { 0.0 }),
+                FbxProperty::I16(n) => V::N(f64::from(*n)),
+                FbxProperty::I32(n) => V::N(f64::from(*n)),
+                FbxProperty::I64(n) => V::N(*n as f64),
+                FbxProperty::F32(x) => V::N(f64::from(*x)),
+                FbxProperty::F64(x) => V::N(*x),
+                FbxProperty::String(s) => V::S(s.clone()),
+                other => V::S(format!("{other:?}").into_bytes()),
+            })
+            .collect()
+    }
+    let (pa, pb) = (payload(a), payload(b));
+    pa.len() == pb.len()
+        && pa.iter().zip(&pb).all(|(x, y)| match (x, y) {
+            (V::N(x), V::N(y)) => (x - y).abs() <= 1.0e-9 * x.abs().max(y.abs()).max(1.0),
+            (V::S(x), V::S(y)) => x == y,
+            _ => false,
+        })
+}
+
+fn p_record_name(p: &FbxNode) -> String {
+    crate::properties70::p_name(p).unwrap_or("").to_owned()
+}
+
+fn leaf_name(n: &FbxNode) -> String {
+    n.name.clone()
+}
+
+fn raw_records_from_extras(scene: &Scene3D, key: &str) -> Vec<FbxNode> {
+    scene
+        .extras
+        .get(key)
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(crate::properties70::json_to_p_record)
+        .collect()
+}
+
+fn raw_leaves_from_extras(scene: &Scene3D, key: &str) -> Vec<FbxNode> {
+    scene
+        .extras
+        .get(key)
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(crate::properties70::json_to_leaf)
+        .collect()
+}
+
 /// Monotonic FBX-id source.
 struct IdAllocator {
     next: i64,
@@ -662,17 +765,17 @@ fn creation_timestamp_node(stamp: &str) -> Option<FbxNode> {
 /// round-tripped extras. Returns `None` when the scene carries no
 /// metadata / provenance keys at all.
 fn build_scene_info(scene: &Scene3D) -> Option<FbxNode> {
-    let mut meta_children = Vec::new();
+    let mut meta_typed = Vec::new();
     for field in [
         "Title", "Subject", "Author", "Keywords", "Revision", "Comment",
     ] {
         let key = format!("fbx:meta_{}", field.to_ascii_lowercase());
         if let Some(val) = scene.extras.get(&key).and_then(|v| v.as_str()) {
-            meta_children.push(leaf_string(field, val));
+            meta_typed.push(leaf_string(field, val));
         }
     }
 
-    let mut ps = Vec::new();
+    let mut ps_typed = Vec::new();
     for (p_name, key) in [
         ("Original|ApplicationVendor", "fbx:application_vendor"),
         ("Original|ApplicationName", "fbx:application_name"),
@@ -680,22 +783,40 @@ fn build_scene_info(scene: &Scene3D) -> Option<FbxNode> {
         ("DocumentUrl", "fbx:document_url"),
     ] {
         if let Some(val) = scene.extras.get(key).and_then(|v| v.as_str()) {
-            ps.push(p_kstring(p_name, val));
+            ps_typed.push(p_kstring(p_name, val));
         }
     }
 
-    if meta_children.is_empty() && ps.is_empty() {
+    // Round-tripped raw sets (see `header_info::extract_scene_info_raw`)
+    // with the typed values merged in by name.
+    let raw_meta = raw_leaves_from_extras(scene, "fbx:meta_data_leaves");
+    let raw_ps = raw_records_from_extras(scene, "fbx:scene_info_records");
+    let raw_leaves = raw_leaves_from_extras(scene, "fbx:scene_info_leaves");
+    let have_raw = !raw_meta.is_empty() || !raw_ps.is_empty() || !raw_leaves.is_empty();
+    if meta_typed.is_empty() && ps_typed.is_empty() && !have_raw {
         return None;
     }
+    let meta_children = if raw_meta.is_empty() {
+        if meta_typed.is_empty() {
+            Vec::new()
+        } else {
+            let mut m = vec![leaf_i32("Version", 100)];
+            m.extend(meta_typed);
+            m
+        }
+    } else {
+        merge_by_name(raw_meta, meta_typed, leaf_name)
+    };
+    let ps = merge_by_name(raw_ps, ps_typed, p_record_name);
 
-    let mut children = Vec::new();
+    // Body order as observed: `Type`, `Version`, `MetaData`,
+    // `Properties70`.
+    let mut children = raw_leaves;
     if !meta_children.is_empty() {
-        let mut meta = vec![leaf_i32("Version", 100)];
-        meta.extend(meta_children);
         children.push(FbxNode {
             name: "MetaData".to_string(),
             properties: Vec::new(),
-            children: meta,
+            children: meta_children,
         });
     }
     if !ps.is_empty() {
@@ -706,12 +827,26 @@ fn build_scene_info(scene: &Scene3D) -> Option<FbxNode> {
         });
     }
 
+    let header: Vec<FbxProperty> = scene
+        .extras
+        .get("fbx:scene_info_header")
+        .and_then(|v| v.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str())
+                .map(|s| FbxProperty::String(s.as_bytes().to_vec()))
+                .collect()
+        })
+        .filter(|h: &Vec<FbxProperty>| !h.is_empty())
+        .unwrap_or_else(|| {
+            vec![
+                FbxProperty::String(b"SceneInfo::GlobalInfo".to_vec()),
+                FbxProperty::String(b"UserData".to_vec()),
+            ]
+        });
     Some(FbxNode {
         name: "SceneInfo".to_string(),
-        properties: vec![
-            FbxProperty::String(b"SceneInfo::GlobalInfo".to_vec()),
-            FbxProperty::String(b"UserData".to_vec()),
-        ],
+        properties: header,
         children,
     })
 }
@@ -920,6 +1055,15 @@ fn build_global_settings(scene: &Scene3D) -> FbxNode {
     });
     ps.push(p_double("UnitScaleFactor", scale_factor));
 
+    // Round-tripped raw set (`fbx:global_settings_records`) with the
+    // typed records merged in by name — keeps the producer's order and
+    // the records outside the recognised set (`TimeMarker`, …).
+    let ps = merge_by_name(
+        raw_records_from_extras(scene, "fbx:global_settings_records"),
+        ps,
+        p_record_name,
+    );
+
     FbxNode {
         name: "GlobalSettings".to_string(),
         properties: Vec::new(),
@@ -990,10 +1134,13 @@ fn build_documents(scene: &Scene3D, alloc: &mut IdAllocator) -> FbxNode {
 
     let mut children = vec![leaf_i32("Count", entries.len() as i32)];
     for (name, subtype, stack) in entries {
-        let mut ps = vec![p_object_ref("SourceObject")];
-        if let Some(stack) = stack {
-            ps.push(p_kstring("ActiveAnimStackName", &stack));
-        }
+        // `ActiveAnimStackName` is always written (an empty string
+        // when the document names no stack — the shape every
+        // staged fixture without animation carries).
+        let ps = vec![
+            p_object_ref("SourceObject"),
+            p_kstring("ActiveAnimStackName", stack.as_deref().unwrap_or("")),
+        ];
         children.push(FbxNode {
             name: "Document".to_string(),
             properties: vec![
@@ -3970,10 +4117,14 @@ mod tests {
         assert!(p70
             .children_named("P")
             .any(|p| p.properties.first().and_then(|v| v.as_str()) == Some("SourceObject")));
-        // No animations, no take extras — no ActiveAnimStackName.
-        assert!(!p70
+        // No animations, no take extras — ActiveAnimStackName is
+        // still written, as the empty string (the shape every staged
+        // fixture without animation carries).
+        let stack = p70
             .children_named("P")
-            .any(|p| p.properties.first().and_then(|v| v.as_str()) == Some("ActiveAnimStackName")));
+            .find(|p| p.properties.first().and_then(|v| v.as_str()) == Some("ActiveAnimStackName"))
+            .expect("ActiveAnimStackName always present");
+        assert_eq!(stack.properties.get(4).and_then(|v| v.as_str()), Some(""));
 
         // References is the observed-empty section.
         let refs = doc.root.child("References").unwrap();
