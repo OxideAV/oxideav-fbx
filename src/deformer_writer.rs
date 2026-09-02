@@ -6,15 +6,27 @@
 //!
 //! ```text
 //! Deformer (subtype "Skin")     --(OO)-->  Geometry
+//!     - Version / Link_DeformAcuracy
 //! Deformer (subtype "Cluster")  --(OO)-->  Deformer{Skin}
-//! Deformer (subtype "Cluster")  --(OO)-->  Model (bone)
-//!     - Indexes / Weights / Transform / TransformLink
+//! Model (bone)                  --(OO)-->  Deformer (subtype "Cluster")
+//!     - Version / UserData / Indexes / Weights / Transform /
+//!       TransformLink / TransformAssociateModel
 //!
 //! Deformer (subtype "BlendShape")         --(OO)-->  Geometry
 //! Deformer (subtype "BlendShapeChannel")  --(OO)-->  Deformer{BlendShape}
 //! Geometry (subtype "Shape")              --(OO)-->  BlendShapeChannel
 //!     - Indexes / Vertices (position deltas) / Normals (normal deltas)
 //! ```
+//!
+//! The bone ↔ cluster edge is written with the bone `Model` as the
+//! *child* of its `Cluster` — the direction the staged
+//! `skin-anim-binary-v7400.fbx` fixture carries (the decode side
+//! accepts either direction). The Skin element is named after the
+//! [`oxideav_mesh3d::Skeleton`] and each Cluster after its bone
+//! node, and the fixed-value leaves the fixture's producer writes on
+//! every element (`Version`, `Link_DeformAcuracy`, `UserData`, an
+//! identity `TransformAssociateModel`) are emitted verbatim so a
+//! decode → encode → decode of the fixture keeps its wire census.
 //!
 //! # Bind-matrix convention
 //!
@@ -123,9 +135,9 @@ pub(crate) fn build_deformer_objects(
             if let (Some(joints), Some(weights)) = (&prim.joints, &prim.weights) {
                 emit_skin(
                     &mut out,
+                    scene,
                     geom_fbx,
-                    skel.joints.as_slice(),
-                    &skel.inverse_bind_matrices,
+                    skel,
                     joints,
                     weights,
                     &node_fbx_id,
@@ -213,9 +225,9 @@ pub(crate) fn build_deformer_objects(
 #[allow(clippy::too_many_arguments)]
 fn emit_skin(
     out: &mut DeformerEmit,
+    scene: &Scene3D,
     geom_fbx: i64,
-    joints: &[NodeId],
-    inverse_binds: &[[[f32; 4]; 4]],
+    skel: &oxideav_mesh3d::Skeleton,
     corner_joints: &[[u16; 4]],
     corner_weights: &[[f32; 4]],
     node_fbx_id: &impl Fn(usize) -> Option<i64>,
@@ -223,6 +235,8 @@ fn emit_skin(
 ) {
     // Per-joint sparse (vertex, weight) lists from the per-corner
     // top-4 buffers.
+    let joints = skel.joints.as_slice();
+    let inverse_binds = skel.inverse_bind_matrices.as_slice();
     let mut per_joint: Vec<Vec<(i32, f64)>> = vec![Vec::new(); joints.len()];
     for (corner, (j4, w4)) in corner_joints.iter().zip(corner_weights).enumerate() {
         for slot in 0..4 {
@@ -238,7 +252,14 @@ fn emit_skin(
     }
 
     let skin_fbx = alloc();
-    out.objects.push(deformer_element(skin_fbx, "", "Skin"));
+    let mut skin = deformer_element(skin_fbx, skel.name.as_deref().unwrap_or(""), "Skin");
+    skin.children.push(leaf_i32("Version", 101));
+    skin.children.push(FbxNode {
+        name: "Link_DeformAcuracy".to_string(),
+        properties: vec![FbxProperty::F64(50.0)],
+        children: Vec::new(),
+    });
+    out.objects.push(skin);
     out.connections.push(conn_oo(skin_fbx, geom_fbx));
 
     for (j, bone_nid) in joints.iter().enumerate() {
@@ -252,7 +273,21 @@ fn emit_skin(
         let (indexes, weights): (Vec<i32>, Vec<f64>) = per_joint[j].iter().copied().unzip();
         let inverse_bind = inverse_binds.get(j).copied().unwrap_or(IDENTITY_4X4);
 
-        let mut cluster = deformer_element(cluster_fbx, &format!("Joint{j}"), "Cluster");
+        let cluster_name = scene
+            .nodes
+            .get(bone_nid.0 as usize)
+            .and_then(|n| n.name.clone())
+            .unwrap_or_else(|| format!("Joint{j}"));
+        let mut cluster = deformer_element(cluster_fbx, &cluster_name, "Cluster");
+        cluster.children.push(leaf_i32("Version", 100));
+        cluster.children.push(FbxNode {
+            name: "UserData".to_string(),
+            properties: vec![
+                FbxProperty::String(Vec::new()),
+                FbxProperty::String(Vec::new()),
+            ],
+            children: Vec::new(),
+        });
         cluster.children.push(FbxNode {
             name: "Indexes".to_string(),
             properties: vec![FbxProperty::I32Array(indexes)],
@@ -268,12 +303,16 @@ fn emit_skin(
         // then reproduces the inverse-bind exactly.
         cluster.children.push(mat16("Transform", inverse_bind));
         cluster.children.push(mat16("TransformLink", IDENTITY_4X4));
+        cluster
+            .children
+            .push(mat16("TransformAssociateModel", IDENTITY_4X4));
         out.objects.push(cluster);
 
         // Cluster -> Skin OO order defines the decode-side joint
-        // index, so it must follow the skeleton's joint order.
+        // index, so it must follow the skeleton's joint order. The
+        // bone edge is Model -> Cluster (fixture-observed direction).
         out.connections.push(conn_oo(cluster_fbx, skin_fbx));
-        out.connections.push(conn_oo(cluster_fbx, bone_fbx));
+        out.connections.push(conn_oo(bone_fbx, cluster_fbx));
     }
 }
 
@@ -409,6 +448,14 @@ fn name_class(name: &str, class: &str) -> Vec<u8> {
     v.push(0x01);
     v.extend_from_slice(class.as_bytes());
     v
+}
+
+fn leaf_i32(name: &str, v: i32) -> FbxNode {
+    FbxNode {
+        name: name.to_string(),
+        properties: vec![FbxProperty::I32(v)],
+        children: Vec::new(),
+    }
 }
 
 fn conn_oo(child_id: i64, parent_id: i64) -> FbxNode {

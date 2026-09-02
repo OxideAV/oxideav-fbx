@@ -20,6 +20,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Skin decode: a `Cluster` whose bone `Model` is wired as the
+  connection's *child* (`C: "OO", <model>, <cluster>` — the form the
+  staged `skin-anim-binary-v7400.fbx` fixture carries) was silently
+  dropped, losing the whole skin. Both edge directions now bind. The
+  skeleton takes the Skin element's display name, skins materialise
+  in document order, and the writer emits the fixture-observed
+  element shape (named Skin / per-bone Cluster elements, `Version`,
+  `Link_DeformAcuracy`, `UserData`, identity
+  `TransformAssociateModel`, Model → Cluster edge).
 - Decode determinism: `Animation` channel order and `LightId` /
   `CameraId` assignment followed hash-map iteration, so two decodes
   of the same bytes could bind channels / attributes to different

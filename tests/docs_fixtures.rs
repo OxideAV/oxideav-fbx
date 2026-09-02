@@ -470,3 +470,76 @@ fn texture_video_fixture_uvset_survives_re_encode() {
         assert_eq!(texref.uv_set, 0, "UVSet label re-joined after re-encode");
     }
 }
+
+/// `skin-anim-binary-v7400.fbx` wires every bone `Model` as the
+/// *child* of its `Cluster` (`C: "OO", <model>, <cluster>`), the
+/// mirror image of the Cluster-as-child form. The decoder accepts
+/// both, so the fixture's one `Skin` + nine `Cluster` deformers
+/// materialise a 9-joint skeleton named after the Skin element with
+/// per-corner joint / weight buffers on the mesh, and the whole skin
+/// survives `decode → encode → decode` (skeleton name, joint order,
+/// inverse-bind matrices, top-4 weights).
+#[test]
+fn skin_anim_fixture_decodes_and_round_trips_its_skin() {
+    use oxideav_fbx::FbxEncoder;
+    use oxideav_mesh3d::Mesh3DEncoder;
+
+    let Some(bytes) = fixture("skin-anim-binary-v7400.fbx") else {
+        return;
+    };
+    let scene = decode(&bytes);
+    assert_eq!(scene.skeletons.len(), 1, "one Skin deformer");
+    assert_eq!(scene.skins.len(), 1);
+    let skel = &scene.skeletons[0];
+    assert_eq!(skel.name.as_deref(), Some("Armature"));
+    assert_eq!(skel.joints.len(), 9, "nine Cluster deformers");
+    assert_eq!(skel.inverse_bind_matrices.len(), 9);
+    let joint_names: Vec<&str> = skel
+        .joints
+        .iter()
+        .map(|j| scene.nodes[j.0 as usize].name.as_deref().unwrap())
+        .collect();
+    assert_eq!(joint_names[0], "Bone");
+    assert_eq!(joint_names[8], "Bone.008");
+    let skinned = scene
+        .nodes
+        .iter()
+        .find(|n| n.skin.is_some())
+        .expect("the mesh node carries the skin");
+    assert_eq!(skinned.name.as_deref(), Some("Cylinder"));
+    let prim = &scene.meshes[skinned.mesh.unwrap().0 as usize].primitives[0];
+    let joints = prim.joints.as_ref().expect("per-corner joints");
+    let weights = prim.weights.as_ref().expect("per-corner weights");
+    assert_eq!(joints.len(), prim.positions.len());
+    assert!(
+        weights.iter().any(|w| w[0] > 0.0),
+        "the clusters carry non-zero weights"
+    );
+
+    {
+        let out = FbxEncoder::new().encode(&scene).expect("re-encode");
+        let scene2 = decode(&out);
+        assert_eq!(scene2.skeletons.len(), 1);
+        let skel2 = &scene2.skeletons[0];
+        assert_eq!(skel2.name.as_deref(), Some("Armature"));
+        assert_eq!(skel2.joints, skel.joints, "joint order survives");
+        for (a, b) in skel2
+            .inverse_bind_matrices
+            .iter()
+            .zip(&skel.inverse_bind_matrices)
+        {
+            for (ra, rb) in a.iter().zip(b) {
+                for (x, y) in ra.iter().zip(rb) {
+                    assert!((x - y).abs() < 1e-5, "inverse-bind survives");
+                }
+            }
+        }
+        let prim2 = &scene2.meshes[0].primitives[0];
+        assert_eq!(prim2.joints.as_ref(), Some(joints));
+        for (a, b) in prim2.weights.as_ref().unwrap().iter().zip(weights) {
+            for (x, y) in a.iter().zip(b) {
+                assert!((x - y).abs() < 1e-6);
+            }
+        }
+    }
+}

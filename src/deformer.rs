@@ -133,6 +133,9 @@ pub fn extract_deformers(
 
     // 1) Index every Deformer by id, classify by subtype.
     let mut skin_deformers: HashMap<i64, &FbxNode> = HashMap::new();
+    // Document order of the Skin deformers — skeleton / skin ids are
+    // positional, so materialisation walks them deterministically.
+    let mut skin_order: Vec<i64> = Vec::new();
     let mut cluster_deformers: HashMap<i64, &FbxNode> = HashMap::new();
     let mut blend_deformers: HashMap<i64, &FbxNode> = HashMap::new();
     // Document order of the BlendShape deformers — morph-target slots
@@ -152,7 +155,9 @@ pub fn extract_deformers(
                     };
                     match subtype(child).as_deref() {
                         Some("Skin") => {
-                            skin_deformers.insert(id, child);
+                            if skin_deformers.insert(id, child).is_none() {
+                                skin_order.push(id);
+                            }
                         }
                         Some("Cluster") => {
                             cluster_deformers.insert(id, child);
@@ -222,9 +227,18 @@ pub fn extract_deformers(
                     .push(child_id);
                 continue;
             }
-            // Cluster -> Bone (Model)
+            // Cluster <-> Bone (Model). Both directions are accepted:
+            // the staged skin-anim-binary-v7400.fbx fixture wires the
+            // bone Model as the *child* of its Cluster
+            // (`C: "OO", <model>, <cluster>`), while the
+            // Cluster-as-child form is the mirror image; either way
+            // the pair binds the cluster to exactly one bone.
             if cluster_deformers.contains_key(&child_id) && model_nodes.contains_key(&parent_id) {
                 cluster_to_bone.insert(child_id, parent_id);
+                continue;
+            }
+            if model_nodes.contains_key(&child_id) && cluster_deformers.contains_key(&parent_id) {
+                cluster_to_bone.entry(parent_id).or_insert(child_id);
                 continue;
             }
             // BlendShape -> Geometry
@@ -252,7 +266,10 @@ pub fn extract_deformers(
     }
 
     // 3) Materialise skins.
-    for (skin_id, geom_id) in &skin_to_geom {
+    for skin_id in &skin_order {
+        let Some(geom_id) = skin_to_geom.get(skin_id) else {
+            continue;
+        };
         let mesh_id = match geometry_meshes.get(geom_id) {
             Some(m) => *m,
             None => continue,
@@ -272,6 +289,16 @@ pub fn extract_deformers(
         }
 
         let mut skeleton = Skeleton::new();
+        // The Skin element's display name (`Armature::Deformer` →
+        // `Armature`) is the skeleton's name; the writer emits it
+        // back on the Skin element.
+        if let Some(name) = skin_deformers
+            .get(skin_id)
+            .and_then(|n| display_name(n))
+            .filter(|n| !n.is_empty())
+        {
+            skeleton.name = Some(name);
+        }
         // Per-corner accumulator: list of (joint_index, weight).
         let mut corner_weights: Vec<Vec<(u16, f32)>> = vec![Vec::new(); n_corners];
 
