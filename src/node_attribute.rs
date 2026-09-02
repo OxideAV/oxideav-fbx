@@ -139,6 +139,84 @@ pub fn extract_node_attribute_kinds(
     }
 }
 
+/// Surface every `NodeAttribute` element's own `P` records, scalar
+/// body leaves and display name verbatim on the owning Model's
+/// `Node::extras` — `fbx:node_attribute_records` /
+/// `fbx:node_attribute_leaves` / `fbx:node_attribute_name` — for
+/// *every* attribute kind (the typed light / camera decode only has a
+/// home for a handful of names; a `Camera` attribute's `FilmWidth` /
+/// `FocalLength` / `GateFit` records and its `Position` / `Up` /
+/// `LookAt` / `TypeFlags` / `GeometryVersion` leaves, a `LimbNode`'s
+/// `TypeFlags: "Skeleton"`, a `Light`'s `AreaLightShape` /
+/// `CastLight` / `ShadowColor` would otherwise be lost on re-encode).
+/// First attribute per Model wins.
+pub fn extract_node_attribute_records(
+    doc: &FbxDocument,
+    scene: &mut Scene3D,
+    model_nodes: &HashMap<i64, NodeId>,
+) {
+    let mut attrs: HashMap<i64, &FbxNode> = HashMap::new();
+    if let Some(objects) = doc.root.child("Objects") {
+        for child in &objects.children {
+            if child.name != "NodeAttribute" {
+                continue;
+            }
+            if let Some(id) = child.properties.first().and_then(FbxProperty::as_i64) {
+                attrs.insert(id, child);
+            }
+        }
+    }
+    if attrs.is_empty() {
+        return;
+    }
+    let Some(conns) = doc.root.child("Connections") else {
+        return;
+    };
+    for c in conns.children_named("C") {
+        let kind = c.properties.first().and_then(FbxProperty::as_str);
+        let child_id = c.properties.get(1).and_then(FbxProperty::as_i64);
+        let parent_id = c.properties.get(2).and_then(FbxProperty::as_i64);
+        let (Some("OO"), Some(child_id), Some(parent_id)) = (kind, child_id, parent_id) else {
+            continue;
+        };
+        let (Some(attr), Some(&nid)) = (attrs.get(&child_id), model_nodes.get(&parent_id)) else {
+            continue;
+        };
+        let Some(n) = scene.nodes.get_mut(nid.0 as usize) else {
+            continue;
+        };
+        if n.extras.contains_key("fbx:node_attribute_records")
+            || n.extras.contains_key("fbx:node_attribute_leaves")
+        {
+            continue;
+        }
+        let records = crate::properties70::own_records_json(attr);
+        if !records.is_empty() {
+            n.extras.insert(
+                "fbx:node_attribute_records".to_string(),
+                Value::Array(records),
+            );
+        }
+        let leaves = crate::properties70::leaves_json(attr, &[]);
+        if !leaves.is_empty() {
+            n.extras.insert(
+                "fbx:node_attribute_leaves".to_string(),
+                Value::Array(leaves),
+            );
+        }
+        if let Some(name) = attr
+            .properties
+            .get(1)
+            .and_then(FbxProperty::as_str)
+            .map(|s| s.split('\u{0}').next().unwrap_or("").to_owned())
+            .filter(|s| !s.is_empty())
+        {
+            n.extras
+                .insert("fbx:node_attribute_name".to_string(), Value::String(name));
+        }
+    }
+}
+
 /// Subtype-string extractor — third property of the element, per
 /// `docs/3d/fbx/fbx-binary-properties70.md` §5 + §6.
 fn subtype_string(node: &FbxNode) -> Option<String> {

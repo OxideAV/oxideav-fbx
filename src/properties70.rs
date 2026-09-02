@@ -990,6 +990,119 @@ pub fn json_to_p_record(v: &Value) -> Option<FbxNode> {
     })
 }
 
+/// Every `P` record of the element's `Properties70` block as JSON
+/// (document order), in the [`p_record_to_json`] shape. Empty when
+/// the element has no block.
+#[doc(hidden)]
+pub fn own_records_json(element: &FbxNode) -> Vec<Value> {
+    element
+        .child("Properties70")
+        .map(|p| {
+            p.children
+                .iter()
+                .filter(|c| c.name == "P")
+                .filter_map(p_record_to_json)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The element's scalar-only body leaves (every direct child other
+/// than `Properties70` and the names in `skip` whose properties are
+/// all scalars — `Version: 232`, `TypeFlags: "Skeleton"`,
+/// `Position: 0,0,-50`, …) as `{ "name", "values": [tagged…] }` in
+/// document order, using the same wire tags as [`p_record_to_json`].
+/// Leaves carrying arrays, blobs or children are not representable
+/// here and are skipped.
+#[doc(hidden)]
+pub fn leaves_json(element: &FbxNode, skip: &[&str]) -> Vec<Value> {
+    element
+        .children
+        .iter()
+        .filter(|c| c.name != "Properties70" && !skip.contains(&c.name.as_str()))
+        .filter(|c| c.children.is_empty())
+        .filter_map(|c| {
+            let values: Option<Vec<Value>> = c
+                .properties
+                .iter()
+                .map(|v| {
+                    Some(match v {
+                        FbxProperty::Bool(b) => json!({ "c": b }),
+                        FbxProperty::I16(n) => json!({ "l": n }),
+                        FbxProperty::I32(n) => json!({ "l": n }),
+                        FbxProperty::I64(n) => json!({ "l": n }),
+                        FbxProperty::F32(x) => json!({ "d": x }),
+                        FbxProperty::F64(x) => json!({ "d": x }),
+                        FbxProperty::String(b) => json!({ "s": String::from_utf8_lossy(b) }),
+                        _ => return None,
+                    })
+                })
+                .collect();
+            Some(json!({ "name": c.name, "values": values? }))
+        })
+        .collect()
+}
+
+/// Inverse of [`leaves_json`] for one entry.
+#[doc(hidden)]
+pub fn json_to_leaf(v: &Value) -> Option<FbxNode> {
+    let obj = v.as_object()?;
+    let name = obj.get("name")?.as_str()?.to_owned();
+    let mut properties = Vec::new();
+    for value in obj.get("values")?.as_array()? {
+        let tagged = value.as_object()?;
+        let (tag, inner) = tagged.iter().next()?;
+        properties.push(match tag.as_str() {
+            "c" => FbxProperty::Bool(inner.as_bool()?),
+            "l" => {
+                let n = inner.as_i64()?;
+                match i32::try_from(n) {
+                    Ok(narrow) => FbxProperty::I32(narrow),
+                    Err(_) => FbxProperty::I64(n),
+                }
+            }
+            "d" => FbxProperty::F64(inner.as_f64()?),
+            "s" => FbxProperty::String(inner.as_str()?.as_bytes().to_vec()),
+            _ => return None,
+        });
+    }
+    Some(FbxNode {
+        name,
+        properties,
+        children: Vec::new(),
+    })
+}
+
+/// The numeric payload of a `P` record (every value after the four
+/// leading strings, bools as 0 / 1, strings skipped) — the shape the
+/// writer compares a round-tripped raw record against its own typed
+/// emission with.
+#[doc(hidden)]
+pub fn p_numeric_values(p: &FbxNode) -> Vec<f64> {
+    p.properties
+        .iter()
+        .skip(4)
+        .filter_map(|v| match v {
+            FbxProperty::Bool(b) => Some(if *b { 1.0 } else { 0.0 }),
+            FbxProperty::I16(n) => Some(f64::from(*n)),
+            FbxProperty::I32(n) => Some(f64::from(*n)),
+            FbxProperty::I64(n) => Some(*n as f64),
+            FbxProperty::F32(x) => Some(f64::from(*x)),
+            FbxProperty::F64(x) => Some(*x),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The record name of a `P` node (its first string property).
+#[doc(hidden)]
+pub fn p_name(p: &FbxNode) -> Option<&str> {
+    match p.properties.first() {
+        Some(FbxProperty::String(b)) => std::str::from_utf8(b).ok(),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

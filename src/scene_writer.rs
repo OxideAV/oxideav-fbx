@@ -328,9 +328,12 @@ pub fn encode_scene_with_options(scene: &Scene3D, opts: &SceneEncodeOptions) -> 
         {
             if kind == "LimbNode" || kind == "Null" {
                 let attr_id = alloc.next();
-                objects
-                    .children
-                    .push(node_attribute(attr_id, kind, Vec::new()));
+                objects.children.push(node_attribute(
+                    attr_id,
+                    node,
+                    kind,
+                    attribute_raw_records(node),
+                ));
                 connections
                     .children
                     .push(connection_oo(attr_id, node_ids[ni]));
@@ -2526,10 +2529,67 @@ fn layer_element_material(per_polygon_slots: Vec<i32>) -> FbxNode {
 fn build_model(node: &Node, id: i64) -> FbxNode {
     let name = node.name.clone().unwrap_or_default();
     let mut children = Vec::new();
-    let props70 = build_node_transform_props(node);
+
+    // Body leaves round-tripped verbatim (`fbx:model_leaves`:
+    // `Version` / `MultiLayer` / `MultiTake` …). `Version` leads the
+    // body in every staged fixture; the rest follow `Properties70`.
+    // A fresh scene gets the fixture-observed `Version: 232`.
+    let leaves: Vec<FbxNode> = node
+        .extras
+        .get("fbx:model_leaves")
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(crate::properties70::json_to_leaf)
+        .collect();
+    let (version_leaf, other_leaves): (Vec<FbxNode>, Vec<FbxNode>) =
+        leaves.into_iter().partition(|l| l.name == "Version");
+    match version_leaf.into_iter().next() {
+        Some(v) => children.push(v),
+        None => children.push(leaf_i32("Version", 232)),
+    }
+
+    // `Properties70`: the round-tripped raw record set verbatim
+    // (`fbx:model_records`) as long as every chain-mapped record in
+    // it still carries the value the typed emission would write —
+    // i.e. nobody edited the typed transform / chain extras — else
+    // the typed chain records win and every other raw record still
+    // rides along.
+    let typed = build_node_transform_props(node);
+    let raw: Vec<FbxNode> = node
+        .extras
+        .get("fbx:model_records")
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(crate::properties70::json_to_p_record)
+        .collect();
+    let props70 = if !raw.is_empty() && raw_records_agree(&raw, &typed.children, MODEL_DEFAULTS) {
+        FbxNode {
+            name: "Properties70".to_string(),
+            properties: Vec::new(),
+            children: raw,
+        }
+    } else {
+        let mut ps = typed.children;
+        for r in raw {
+            let keep = crate::properties70::p_name(&r)
+                .is_some_and(|n| !MODEL_DEFAULTS.iter().any(|(t, _)| *t == n));
+            if keep {
+                ps.push(r);
+            }
+        }
+        FbxNode {
+            name: "Properties70".to_string(),
+            properties: Vec::new(),
+            children: ps,
+        }
+    };
     if !props70.children.is_empty() {
         children.push(props70);
     }
+    children.extend(other_leaves);
+
     // Trailing Model-body leaves (`docs/3d/fbx/fbx-ascii-grammar.md`
     // §7c: `Shading: T` / `Culling: "CullingOff"`) — re-emitted from
     // the decode-side `fbx:shading` / `fbx:culling` extras so they
@@ -2562,6 +2622,61 @@ fn build_model(node: &Node, id: i64) -> FbxNode {
         ],
         children,
     }
+}
+
+/// The transform-chain record names the typed `Node` owns, with the
+/// value each takes when absent (the `FbxNode` template defaults —
+/// identity chain, XYZ order, `RrSs` inheritance).
+const MODEL_DEFAULTS: &[(&str, &[f64])] = &[
+    ("Lcl Translation", &[0.0, 0.0, 0.0]),
+    ("Lcl Rotation", &[0.0, 0.0, 0.0]),
+    ("Lcl Scaling", &[1.0, 1.0, 1.0]),
+    ("RotationOffset", &[0.0, 0.0, 0.0]),
+    ("RotationPivot", &[0.0, 0.0, 0.0]),
+    ("PreRotation", &[0.0, 0.0, 0.0]),
+    ("PostRotation", &[0.0, 0.0, 0.0]),
+    ("ScalingOffset", &[0.0, 0.0, 0.0]),
+    ("ScalingPivot", &[0.0, 0.0, 0.0]),
+    ("GeometricTranslation", &[0.0, 0.0, 0.0]),
+    ("GeometricRotation", &[0.0, 0.0, 0.0]),
+    ("GeometricScaling", &[1.0, 1.0, 1.0]),
+    ("RotationOrder", &[0.0]),
+    ("InheritType", &[0.0]),
+];
+
+/// Does a round-tripped raw `P` set still agree with the typed
+/// emission on every typed-mapped name? A name absent on one side
+/// takes its documented default. Compared numerically to 1e-6 so
+/// the raw records' wire form (`Lcl Rotation` vs `Vector3D`, ints
+/// vs doubles) is not what decides.
+fn raw_records_agree(raw: &[FbxNode], typed: &[FbxNode], defaults: &[(&str, &[f64])]) -> bool {
+    let find = |set: &[FbxNode], name: &str| -> Option<Vec<f64>> {
+        set.iter()
+            .find(|p| crate::properties70::p_name(p) == Some(name))
+            .map(crate::properties70::p_numeric_values)
+    };
+    // `Lcl Rotation` is compared as a rotation, not as a triple: the
+    // typed emission decomposes `Node::transform` into *an* Euler
+    // triple for the record's `RotationOrder`, which may be a
+    // different branch of the same rotation than the producer wrote.
+    let order = find(raw, "RotationOrder")
+        .and_then(|v| v.first().copied())
+        .and_then(|v| crate::node_transform::RotationOrder::from_enum_int(v as i64))
+        .unwrap_or(crate::node_transform::RotationOrder::Xyz);
+    defaults.iter().all(|(name, default)| {
+        let a = find(raw, name).unwrap_or_else(|| default.to_vec());
+        let b = find(typed, name).unwrap_or_else(|| default.to_vec());
+        if a.len() != b.len() {
+            return false;
+        }
+        if *name == "Lcl Rotation" && a.len() == 3 {
+            let qa = crate::node_transform::euler_to_quat([a[0], a[1], a[2]], order);
+            let qb = crate::node_transform::euler_to_quat([b[0], b[1], b[2]], order);
+            let dot: f64 = qa.iter().zip(&qb).map(|(x, y)| x * y).sum();
+            return (dot.abs() - 1.0).abs() <= 1.0e-6;
+        }
+        a.iter().zip(&b).all(|(x, y)| (x - y).abs() <= 1.0e-6)
+    })
 }
 
 /// Build the `Properties70` block carrying the node-transform chain.
@@ -2601,15 +2716,11 @@ fn build_node_transform_props(node: &Node) -> FbxNode {
     } else {
         decompose_trs(node.transform)
     };
-    if translation != [0.0, 0.0, 0.0] {
-        ps.push(p_lcl("Lcl Translation", translation));
-    }
-    if rotation_deg != [0.0, 0.0, 0.0] {
-        ps.push(p_lcl("Lcl Rotation", rotation_deg));
-    }
-    if scale != [1.0, 1.0, 1.0] {
-        ps.push(p_lcl("Lcl Scaling", scale));
-    }
+    // The `Lcl` triple is always written (every staged producer
+    // writes all three even at their identity defaults).
+    ps.push(p_lcl("Lcl Translation", translation));
+    ps.push(p_lcl("Lcl Rotation", rotation_deg));
+    ps.push(p_lcl("Lcl Scaling", scale));
 
     // Chain-extension + geometric-TRS records (doc §1 / §2 names).
     for (key, name) in [
@@ -2824,7 +2935,172 @@ fn build_light_attribute(light: &oxideav_mesh3d::Light, node: &Node, id: i64) ->
         ps.push(p_bool("CastShadows", b));
     }
 
-    node_attribute(id, "Light", ps)
+    // Verbatim path: the round-tripped raw record set re-decodes to
+    // this very light (typed fields + kind tag + extras), so it is
+    // emitted untouched; else the typed records above win and the
+    // raw records outside the typed light mapping ride along.
+    let raw = attribute_raw_records(node);
+    let agrees = !raw.is_empty() && {
+        let (l2, tag2, extras2) = crate::lights_cameras::light_from_records(raw.clone());
+        light_eq(light, &l2)
+            && tag2.as_deref() == node.extras.get("fbx:light_type").and_then(|v| v.as_str())
+            && extras2.iter().all(|(k, v)| node.extras.get(k) == Some(v))
+    };
+    let ps = merge_typed_and_raw(ps, raw, agrees, LIGHT_TYPED_NAMES);
+    node_attribute(id, node, "Light", ps)
+}
+
+/// The `P` names the typed [`oxideav_mesh3d::Light`] decode consumes.
+const LIGHT_TYPED_NAMES: &[&str] = &[
+    "LightType",
+    "Color",
+    "Intensity",
+    "DecayType",
+    "DecayStart",
+    "InnerAngle",
+    "OuterAngle",
+    "CastShadows",
+];
+
+/// The `P` names the typed [`oxideav_mesh3d::Camera`] decode consumes.
+const CAMERA_TYPED_NAMES: &[&str] = &[
+    "CameraProjectionType",
+    "FieldOfView",
+    "FieldOfViewX",
+    "FieldOfViewY",
+    "NearPlane",
+    "FarPlane",
+    "AspectWidth",
+    "AspectHeight",
+    "OrthoZoom",
+];
+
+fn attribute_raw_records(node: &Node) -> Vec<FbxNode> {
+    node.extras
+        .get("fbx:node_attribute_records")
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(crate::properties70::json_to_p_record)
+        .collect()
+}
+
+/// Either the raw set verbatim (`agrees`) or the typed records plus
+/// every raw record whose name the typed mapping does not own.
+fn merge_typed_and_raw(
+    typed: Vec<FbxNode>,
+    raw: Vec<FbxNode>,
+    agrees: bool,
+    typed_names: &[&str],
+) -> Vec<FbxNode> {
+    if agrees {
+        return raw;
+    }
+    let mut ps = typed;
+    for r in raw {
+        if crate::properties70::p_name(&r).is_some_and(|n| !typed_names.contains(&n)) {
+            ps.push(r);
+        }
+    }
+    ps
+}
+
+fn close(a: f32, b: f32) -> bool {
+    (a - b).abs() <= 1.0e-5 * a.abs().max(b.abs()).max(1.0)
+}
+
+fn light_eq(a: &oxideav_mesh3d::Light, b: &oxideav_mesh3d::Light) -> bool {
+    use oxideav_mesh3d::Light;
+    let opt = |x: Option<f32>, y: Option<f32>| match (x, y) {
+        (None, None) => true,
+        (Some(x), Some(y)) => close(x, y),
+        _ => false,
+    };
+    let rgb = |x: [f32; 3], y: [f32; 3]| x.iter().zip(&y).all(|(p, q)| close(*p, *q));
+    match (a, b) {
+        (
+            Light::Directional { color, intensity },
+            Light::Directional {
+                color: c2,
+                intensity: i2,
+            },
+        ) => rgb(*color, *c2) && close(*intensity, *i2),
+        (
+            Light::Point {
+                color,
+                intensity,
+                range,
+            },
+            Light::Point {
+                color: c2,
+                intensity: i2,
+                range: r2,
+            },
+        ) => rgb(*color, *c2) && close(*intensity, *i2) && opt(*range, *r2),
+        (
+            Light::Spot {
+                color,
+                intensity,
+                range,
+                inner_cone_angle,
+                outer_cone_angle,
+            },
+            Light::Spot {
+                color: c2,
+                intensity: i2,
+                range: r2,
+                inner_cone_angle: in2,
+                outer_cone_angle: out2,
+            },
+        ) => {
+            rgb(*color, *c2)
+                && close(*intensity, *i2)
+                && opt(*range, *r2)
+                && close(*inner_cone_angle, *in2)
+                && close(*outer_cone_angle, *out2)
+        }
+        _ => false,
+    }
+}
+
+fn camera_eq(a: &oxideav_mesh3d::Camera, b: &oxideav_mesh3d::Camera) -> bool {
+    use oxideav_mesh3d::Camera;
+    let opt = |x: Option<f32>, y: Option<f32>| match (x, y) {
+        (None, None) => true,
+        (Some(x), Some(y)) => close(x, y),
+        _ => false,
+    };
+    match (a, b) {
+        (
+            Camera::Perspective {
+                aspect_ratio,
+                yfov,
+                znear,
+                zfar,
+            },
+            Camera::Perspective {
+                aspect_ratio: a2,
+                yfov: y2,
+                znear: n2,
+                zfar: f2,
+            },
+        ) => opt(*aspect_ratio, *a2) && close(*yfov, *y2) && close(*znear, *n2) && opt(*zfar, *f2),
+        (
+            Camera::Orthographic {
+                xmag,
+                ymag,
+                znear,
+                zfar,
+            },
+            Camera::Orthographic {
+                xmag: x2,
+                ymag: y2,
+                znear: n2,
+                zfar: f2,
+            },
+        ) => close(*xmag, *x2) && close(*ymag, *y2) && close(*znear, *n2) && close(*zfar, *f2),
+        _ => false,
+    }
 }
 
 /// Build a `NodeAttribute : "Camera"` element — the inverse of the
@@ -2889,24 +3165,52 @@ fn build_camera_attribute(camera: &oxideav_mesh3d::Camera, node: &Node, id: i64)
         }
     }
 
-    node_attribute(id, "Camera", ps)
+    // Verbatim path (see `build_light_attribute`).
+    let raw = attribute_raw_records(node);
+    let agrees = !raw.is_empty() && {
+        let (c2, extras2) = crate::lights_cameras::camera_from_records(raw.clone());
+        camera_eq(camera, &c2) && extras2.iter().all(|(k, v)| node.extras.get(k) == Some(v))
+    };
+    let ps = merge_typed_and_raw(ps, raw, agrees, CAMERA_TYPED_NAMES);
+    node_attribute(id, node, "Camera", ps)
 }
 
 /// Build a `NodeAttribute` element with the given §6 subtype
-/// discriminator and `Properties70` P-records.
-fn node_attribute(id: i64, subtype: &str, ps: Vec<FbxNode>) -> FbxNode {
+/// discriminator and `Properties70` P-records, its round-tripped
+/// display name (`fbx:node_attribute_name`) and scalar body leaves
+/// (`fbx:node_attribute_leaves` — `TypeFlags`, `GeometryVersion`,
+/// the camera `Position` / `Up` / `LookAt` triples, …) after the
+/// property block, in document order.
+fn node_attribute(id: i64, node: &Node, subtype: &str, ps: Vec<FbxNode>) -> FbxNode {
+    let name = node
+        .extras
+        .get("fbx:node_attribute_name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let mut children = Vec::new();
+    if !ps.is_empty() {
+        children.push(FbxNode {
+            name: "Properties70".to_string(),
+            properties: Vec::new(),
+            children: ps,
+        });
+    }
+    children.extend(
+        node.extras
+            .get("fbx:node_attribute_leaves")
+            .and_then(|v| v.as_array())
+            .into_iter()
+            .flatten()
+            .filter_map(crate::properties70::json_to_leaf),
+    );
     FbxNode {
         name: "NodeAttribute".to_string(),
         properties: vec![
             FbxProperty::I64(id),
-            FbxProperty::String(name_class("", "NodeAttribute")),
+            FbxProperty::String(name_class(name, "NodeAttribute")),
             FbxProperty::String(subtype.as_bytes().to_vec()),
         ],
-        children: vec![FbxNode {
-            name: "Properties70".to_string(),
-            properties: Vec::new(),
-            children: ps,
-        }],
+        children,
     }
 }
 

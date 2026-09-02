@@ -218,6 +218,31 @@ fn subtype_string(node: &FbxNode) -> Option<String> {
 /// (`"Area"` / `"Volume"` — kinds mesh3d doesn't model so the
 /// downstream consumer knows the mapping was lossy), and any extra
 /// `extras` entries to attach to the owning node.
+/// Decode a bare `P`-record set as a `Light` attribute — the check
+/// the writer runs on a round-tripped raw record set.
+#[doc(hidden)]
+pub fn light_from_records(records: Vec<FbxNode>) -> (Light, Option<String>, Vec<(String, Value)>) {
+    decode_light(&synthetic_attribute(records))
+}
+
+/// Decode a bare `P`-record set as a `Camera` attribute.
+#[doc(hidden)]
+pub fn camera_from_records(records: Vec<FbxNode>) -> (Camera, Vec<(String, Value)>) {
+    decode_camera(&synthetic_attribute(records))
+}
+
+fn synthetic_attribute(records: Vec<FbxNode>) -> FbxNode {
+    FbxNode {
+        name: "NodeAttribute".to_string(),
+        properties: Vec::new(),
+        children: vec![FbxNode {
+            name: "Properties70".to_string(),
+            properties: Vec::new(),
+            children: records,
+        }],
+    }
+}
+
 fn decode_light(node: &FbxNode) -> (Light, Option<String>, Vec<(String, Value)>) {
     let pm = PropertyMap::from_element(node);
     // Per §6 LightType: 0=Point, 1=Directional, 2=Spot, 3=Area, 4=Volume.

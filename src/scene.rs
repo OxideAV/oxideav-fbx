@@ -156,6 +156,31 @@ pub fn build_scene(doc: &FbxDocument) -> Result<Scene3D> {
                             serde_json::Value::String(st.clone()),
                         );
                     }
+                    // The Model's own `P` records and its remaining
+                    // body leaves (`Version` / `MultiLayer` /
+                    // `MultiTake`), verbatim, so records the typed
+                    // node has no home for (`DefaultAttributeIndex`,
+                    // `RotationActive`, `ScalingMax`, `currentUVSet`,
+                    // camera-model `AspectW` / `ViewFrustum`, vendor
+                    // `Maya|*` / `3dsMax|*` slots, …) survive
+                    // re-encode. The writer re-emits the record set
+                    // untouched while the typed transform still
+                    // decodes from it, else typed records win for the
+                    // chain names and the rest still ride along.
+                    let records = crate::properties70::own_records_json(child);
+                    if !records.is_empty() {
+                        node.extras.insert(
+                            "fbx:model_records".to_string(),
+                            serde_json::Value::Array(records),
+                        );
+                    }
+                    let leaves = crate::properties70::leaves_json(child, &["Shading", "Culling"]);
+                    if !leaves.is_empty() {
+                        node.extras.insert(
+                            "fbx:model_leaves".to_string(),
+                            serde_json::Value::Array(leaves),
+                        );
+                    }
                     let nid = scene.add_node(node);
                     model_nodes.insert(id, nid);
                     model_subtypes.insert(id, st);
@@ -394,6 +419,7 @@ pub fn build_scene(doc: &FbxDocument) -> Result<Scene3D> {
     // skeletal-bone Model from a locator/empty Model from a plain
     // Mesh Model without re-walking the `FbxDocument`.
     extract_node_attribute_kinds(doc, &mut scene, &model_nodes);
+    crate::node_attribute::extract_node_attribute_records(doc, &mut scene, &model_nodes);
 
     // Round 271 — `Geometry` non-`Mesh` subtype-discriminator
     // surfacing. The `"Mesh"` subtype is tessellated above; `"Shape"`

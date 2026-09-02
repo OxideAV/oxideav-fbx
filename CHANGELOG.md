@@ -36,6 +36,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   docs' "consume the template it is given, per file" rule — a mixed
   light + camera attribute set keeps its producer's `FbxCamera`
   body, a Blender-written 24-record Phong body stays 24 records.
+- Node-level record coverage: every `Model`'s own `P` records and
+  body leaves ride on `Node::extras["fbx:model_records"]` /
+  `["fbx:model_leaves"]`, and every `NodeAttribute`'s (light, camera,
+  limb, null, …) on `fbx:node_attribute_records` /
+  `fbx:node_attribute_leaves` / `fbx:node_attribute_name`. The writer
+  re-emits each set verbatim while the typed transform / light /
+  camera still decodes from it (rotations compared as rotations, so
+  an equivalent Euler branch is not an edit), else the typed records
+  win for the mapped names and the rest still rides along; the `Lcl`
+  triple is always written and `Version` leads every Model body.
 - Textures referenced by no material (the staged fixture's orphan
   embedded texture) are emitted too; `Texture` elements follow
   texture-index order so ids survive a round trip.

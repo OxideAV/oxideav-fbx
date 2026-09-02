@@ -646,3 +646,106 @@ fn template_record_names(doc: &FbxDocument, class: &str) -> Vec<String> {
         })
         .unwrap_or_default()
 }
+
+/// Node-level verbatim passthrough on `camera-attr-binary-v7400.fbx`:
+/// the camera `NodeAttribute`'s records outside the typed camera
+/// mapping (`FocalLength`, `FilmWidth`, `GateFit`) and its scalar
+/// body leaves (`Position` / `Up` / `LookAt` / `TypeFlags`), and the
+/// `Model`'s untyped records (`DefaultAttributeIndex`) and leaves
+/// (`MultiLayer` / `MultiTake`), all reappear on the re-encoded
+/// elements — the typed camera itself unchanged.
+#[test]
+fn camera_attr_fixture_keeps_untyped_attribute_and_model_records() {
+    use oxideav_fbx::binary::FbxProperty;
+    use oxideav_fbx::{FbxEncoder, FbxOutputForm};
+    use oxideav_mesh3d::Mesh3DEncoder;
+
+    let Some(bytes) = fixture("camera-attr-binary-v7400.fbx") else {
+        return;
+    };
+    let scene = decode(&bytes);
+    let cam_node = scene
+        .nodes
+        .iter()
+        .find(|n| n.camera.is_some())
+        .expect("a camera node");
+    let names = |v: &serde_json::Value| -> Vec<String> {
+        v.as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["name"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    let rec = names(&cam_node.extras["fbx:node_attribute_records"]);
+    assert!(rec.iter().any(|n| n == "FocalLength"), "{rec:?}");
+    let leaves = names(&cam_node.extras["fbx:node_attribute_leaves"]);
+    assert!(leaves.iter().any(|n| n == "Position"), "{leaves:?}");
+    assert!(leaves.iter().any(|n| n == "TypeFlags"), "{leaves:?}");
+    let model_rec = names(&cam_node.extras["fbx:model_records"]);
+    assert!(
+        model_rec.iter().any(|n| n == "DefaultAttributeIndex"),
+        "{model_rec:?}"
+    );
+
+    fn p_names(element: &FbxNode) -> Vec<String> {
+        element
+            .child("Properties70")
+            .map(|p| {
+                p.children
+                    .iter()
+                    .filter_map(|c| c.properties.first().and_then(FbxProperty::as_str))
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+    for form in [FbxOutputForm::Binary, FbxOutputForm::Ascii] {
+        let out = FbxEncoder::new()
+            .form(form)
+            .encode(&scene)
+            .expect("re-encode");
+        let doc = parse_any(&out);
+        let objects = doc.root.child("Objects").unwrap();
+        let cam_attr = objects
+            .children
+            .iter()
+            .find(|o| {
+                o.name == "NodeAttribute"
+                    && o.properties.get(2).and_then(FbxProperty::as_str) == Some("Camera")
+            })
+            .expect("camera attribute re-emitted");
+        let ps = p_names(cam_attr);
+        for want in ["FocalLength", "FilmWidth", "GateFit", "FieldOfView"] {
+            assert!(ps.iter().any(|n| n == want), "{form:?}: {want} in {ps:?}");
+        }
+        for leaf in ["Position", "Up", "LookAt", "TypeFlags", "GeometryVersion"] {
+            assert!(cam_attr.child(leaf).is_some(), "{form:?}: {leaf} leaf");
+        }
+        let model = objects
+            .children
+            .iter()
+            .find(|o| {
+                o.name == "Model"
+                    && o.properties.get(1).and_then(FbxProperty::as_str)
+                        == cam_attr
+                            .properties
+                            .get(1)
+                            .and_then(FbxProperty::as_str)
+                            .map(|_| "Camera\u{0}\u{1}Model")
+            })
+            .or_else(|| objects.children.iter().find(|o| o.name == "Model"))
+            .expect("a Model");
+        assert!(model.child("Version").is_some());
+        assert!(
+            model.child("MultiTake").is_some(),
+            "{form:?}: MultiTake leaf"
+        );
+        assert!(p_names(model).iter().any(|n| n == "DefaultAttributeIndex"));
+
+        // The typed camera is unchanged by the passthrough.
+        let scene2 = decode(&out);
+        let c1 = scene.cameras[cam_node.camera.unwrap().0 as usize];
+        let c2 = scene2.cameras[cam_node.camera.unwrap().0 as usize];
+        assert_eq!(format!("{c1:?}"), format!("{c2:?}"));
+    }
+}
