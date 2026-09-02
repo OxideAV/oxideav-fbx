@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.4](https://github.com/OxideAV/oxideav-fbx/compare/v0.0.3...v0.0.4) - 2026-09-02
+
+### Other
+
+- lib docs: resolve the Scene3D intra-doc links through oxideav_mesh3d
+- synthetic-scene fixed-point law; README round-trip fidelity section
+- opaque Objects passthrough, Texture/Video leaves, BindPose leaves — census fully closed
+- welded re-encode — original control points, n-gons, Edges domain, Layer blocks
+- stack/layer catalogue, auxiliary curve nodes, verbatim source curves with KeyAttr passthrough
+- verbatim scene-wide record sets merged with the typed picks by name
+- verbatim record + leaf passthrough on every Model and NodeAttribute
+- re-emit the file's own PropertyTemplate bodies verbatim
+- verbatim material records, orphan textures, base64 Content in ASCII form
+- bind Model->Cluster edges; named Skin/Cluster elements with the fixture's leaf set
+- fixed-point harness over the staged corpus; deterministic channel + attribute order
+
 ### Added
 
 - `tests/fixed_point.rs` — decode → encode → decode **fixed-point
