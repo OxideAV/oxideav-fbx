@@ -785,3 +785,179 @@ fn every_fixture_keeps_its_wire_record_census() {
     }
     assert!(failures.is_empty(), "wire-census losses:\n{failures}");
 }
+
+// ---------------------------------------------------------------------
+// Synthetic scenes — content the staged corpus lacks
+// ---------------------------------------------------------------------
+
+/// An API-authored scene exercising every typed surface the writer
+/// emits that no staged fixture carries: two morph targets with
+/// static weights + a strided `MorphWeights` animation, a two-joint
+/// skin, a spot light, an orthographic camera, two UV sets, vertex
+/// colours, tangents, a translation animation and a multi-material
+/// slot table.
+fn synthetic_scene() -> Scene3D {
+    use oxideav_mesh3d::{
+        Animation, AnimationChannel, AnimationProperty, AnimationSampler, AnimationTarget,
+        AnimationValues, Camera, Interpolation, Light, Material, Mesh, MorphTarget, Node,
+        Primitive, Skeleton, Skin, Topology,
+    };
+    let mut scene = Scene3D::new();
+    let mut prim = Primitive::new(Topology::Triangles);
+    prim.positions = vec![
+        [0.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [1.0, 1.0, 0.0],
+        [0.0, 0.0, 0.0],
+        [1.0, 1.0, 0.0],
+        [0.0, 1.0, 0.0],
+    ];
+    prim.normals = Some(vec![[0.0, 0.0, 1.0]; 6]);
+    prim.uvs = vec![
+        vec![
+            [0.0, 0.0],
+            [1.0, 0.0],
+            [1.0, 1.0],
+            [0.0, 0.0],
+            [1.0, 1.0],
+            [0.0, 1.0],
+        ],
+        vec![[0.5, 0.5]; 6],
+    ];
+    prim.colors = vec![vec![[1.0, 0.5, 0.25, 1.0]; 6]];
+    prim.tangents = Some(vec![[1.0, 0.0, 0.0, 1.0]; 6]);
+    prim.joints = Some(vec![[0, 1, 0, 0]; 6]);
+    prim.weights = Some(vec![[0.75, 0.25, 0.0, 0.0]; 6]);
+    let mut up = MorphTarget::default();
+    up.position = Some(vec![[0.0, 0.0, 0.5]; 6]);
+    let mut side = MorphTarget::default();
+    side.position = Some(vec![[0.25, 0.0, 0.0]; 6]);
+    side.normal = Some(vec![[0.0, 0.1, 0.0]; 6]);
+    prim.targets = vec![up, side];
+    let mat_a = scene.add_material(
+        Material::new()
+            .with_name("A")
+            .with_base_color([0.2, 0.4, 0.6, 1.0]),
+    );
+    let _mat_b = scene.add_material(Material::new().with_name("B"));
+    prim.material = Some(mat_a);
+    let mut mesh = Mesh::new(Some("Quad".into()));
+    mesh.weights = vec![0.25, 0.5];
+    mesh.target_names = vec!["Up".into(), "Side".into()];
+    mesh.primitives.push(prim);
+    let mid = scene.add_mesh(mesh);
+
+    let root = scene.add_node(Node::new().with_name("Root"));
+    let j0 = scene.add_node(Node::new().with_name("Joint0"));
+    let j1 = scene.add_node(Node::new().with_name("Joint1"));
+    scene.nodes[j0.0 as usize].children.push(j1);
+    let mut skel = Skeleton::new();
+    skel.name = Some("Rig".into());
+    skel.joints = vec![j0, j1];
+    skel.inverse_bind_matrices = vec![
+        [
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ],
+        [
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, -1.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ],
+    ];
+    let skel_id = scene.add_skeleton(skel);
+    let skin_id = scene.add_skin(Skin::new(skel_id));
+    let mut mesh_node = Node::new().with_name("QuadNode").with_mesh(mid);
+    mesh_node.skin = Some(skin_id);
+    let mesh_nid = scene.add_node(mesh_node);
+    let light = scene.add_light(Light::Spot {
+        color: [1.0, 0.9, 0.8],
+        intensity: 2.0,
+        range: Some(12.0),
+        inner_cone_angle: 0.3,
+        outer_cone_angle: 0.6,
+    });
+    let mut light_node = Node::new().with_name("Lamp");
+    light_node.light = Some(light);
+    let light_nid = scene.add_node(light_node);
+    let cam = scene.add_camera(Camera::Orthographic {
+        xmag: 4.0,
+        ymag: 3.0,
+        znear: 0.1,
+        zfar: 50.0,
+    });
+    let mut cam_node = Node::new().with_name("Cam");
+    cam_node.camera = Some(cam);
+    let cam_nid = scene.add_node(cam_node);
+    for n in [j0, mesh_nid, light_nid, cam_nid] {
+        scene.nodes[root.0 as usize].children.push(n);
+    }
+    scene.roots.push(root);
+
+    let mut anim = Animation::new(Some("Take 001".into()));
+    anim.channels.push(AnimationChannel {
+        target: AnimationTarget {
+            node: j1,
+            property: AnimationProperty::Translation,
+        },
+        sampler: AnimationSampler {
+            keyframes: vec![0.0, 0.5, 1.0],
+            values: AnimationValues::Vec3(vec![[0.0, 1.0, 0.0], [0.0, 1.5, 0.0], [0.0, 1.0, 0.0]]),
+            interpolation: Interpolation::Linear,
+        },
+    });
+    anim.channels.push(AnimationChannel {
+        target: AnimationTarget {
+            node: mesh_nid,
+            property: AnimationProperty::MorphWeights,
+        },
+        sampler: AnimationSampler {
+            keyframes: vec![0.0, 1.0],
+            values: AnimationValues::Scalar(vec![0.0, 0.0, 1.0, 0.5]),
+            interpolation: Interpolation::Linear,
+        },
+    });
+    scene.add_animation(anim);
+    scene
+}
+
+/// Law 4 — the synthetic scene obeys parity + fixed point in both
+/// forms: everything the API authored survives one writer pass, and
+/// the second pass changes nothing.
+#[test]
+fn synthetic_scene_round_trips_and_reaches_a_fixed_point() {
+    let gen0 = synthetic_scene();
+    gen0.validate().expect("authored scene is valid");
+    let f0 = fingerprint(&gen0);
+    let mut failures = String::new();
+    for form in [FbxOutputForm::Binary, FbxOutputForm::Ascii] {
+        let gen1 = decode(&encode(&gen0, form));
+        gen1.validate().expect("decoded scene is valid");
+        let gen2 = decode(&encode(&gen1, form));
+        let (f1, f2) = (fingerprint(&gen1), fingerprint(&gen2));
+        // Parity against the authored scene: dropped / changed keys
+        // only (the decoder legitimately *adds* `fbx:*` extras).
+        let d = diff(&f0, &f1);
+        for (k, v) in &d.dropped {
+            failures.push_str(&format!("[{form:?}] DROPPED {k} = {}\n", short(v)));
+        }
+        for (k, a, b) in &d.changed {
+            failures.push_str(&format!(
+                "[{form:?}] CHANGED {k}\n   was {}\n   now {}\n",
+                short(a),
+                short(b)
+            ));
+        }
+        let fx = diff(&f1, &f2);
+        if !fx.dropped.is_empty() || !fx.changed.is_empty() || !fx.added.is_empty() {
+            failures.push_str(&format!(
+                "[{form:?}] not a fixed point:\n{}",
+                report("fixed", &fx)
+            ));
+        }
+    }
+    assert!(failures.is_empty(), "synthetic violations:\n{failures}");
+}

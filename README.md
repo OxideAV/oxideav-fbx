@@ -814,6 +814,52 @@ clean-room from third-party documentation:
     `FbxEncoder::new().form(FbxOutputForm::Ascii)`, `.version(7700)`,
     `.compress_arrays_at(256)`.
 
+## Round-trip fidelity (round 455)
+
+`tests/fixed_point.rs` is the writer's oracle: every staged fixture
+(`docs/3d/fbx/fixtures/`, binary and ASCII) is decoded, re-encoded in
+**both** output forms, and decoded twice more; the typed `Scene3D`
+(every field, every `extras` key at every level, floats to 1e-4,
+quaternions sign-canonical) is diffed feature-by-feature and the
+`FbxDocument`'s record paths are counted. Three laws hold with **no
+open allow-list** (only the documented ASCII form limits — the
+binary-only `FileId` / `CreationTime` / `Creator` records and the
+footer id — are excused):
+
+- **parity** — nothing the reader surfaced from a fixture is dropped
+  or degraded by one writer pass;
+- **fixed point** — the writer converges after one pass
+  (`decode(encode(decode(encode(x))))` is stable);
+- **wire census** — every semantic record path in the fixture (bar the
+  thumbnail / `OtherFlags` producer blocks and the optional `NormalsW`
+  companion) reappears at least as often in the re-encode.
+
+The mechanism behind it is **verbatim-unless-edited passthrough**: the
+decoder keeps each element's own `Properties70` records and body leaves
+on `extras` (`fbx:material_records`, `fbx:model_records` /
+`fbx:model_leaves`, `fbx:node_attribute_records` / `_leaves` / `_name`,
+`fbx:global_settings_records`, `fbx:scene_info_records` / `_leaves` /
+`_header` + `fbx:meta_data_leaves`, `fbx:geometry_records`,
+`fbx:texture_records[i].leaves` / `video_leaves` / `video_records`,
+`fbx:property_templates`, `fbx:anim_stacks`, `fbx:aux_curve_nodes`,
+`fbx:opaque_objects`, `fbx:key_attrs` with each curve's own key grid),
+and the writer re-emits a raw set untouched as long as the typed fields
+still decode to the same values from it — comparing rotations as
+rotations, materials through the decoder's own PBR mapping, curves by
+re-sampling — and lets the typed field win for a mapped name only when
+it was actually edited, with every other raw record still riding along.
+Geometry is re-emitted **welded** (the original control-point table
+and n-gon `PolygonVertexIndex`, `Edges` domain, `ByEdge` / `ByPolygon`
+smoothing, `AllSame` / `ByPolygon` materials, `IndexToDirect` UV pools,
+`Layer` binding blocks) whenever the per-corner buffers still agree
+with the round-tripped layout, falling back to the expanded triangle
+list for an edited mesh. Skins round-trip from the fixture's
+`Model → Cluster` edge direction, `CollectionExclusive` display layers
+and custom-property curve nodes (`mr displacement …`) pass through
+opaque, and the ASCII form carries embedded `Video.Content` as base64.
+No third-party FBX consumer is installed on the round's machine, so the
+crate's own reader is the black-box oracle.
+
 ## Decode
 
 ```rust
@@ -858,7 +904,11 @@ the partial-support edges and the not-yet-implemented surfaces.
   described under "ASCII writer" above.
 - Encoder lossy edges —
   multi-primitive meshes skip the extras-borne extra-layer
-  re-emission (no unambiguous per-primitive concatenation). The
+  re-emission (no unambiguous per-primitive concatenation) and always
+  take the expanded triangle-list form (welding needs the decoded
+  single-primitive layout). An opaque object's edge to a peer this
+  writer has no id for (an `object`-named endpoint) is not
+  re-created. The
   `Mesh::weights` gap is closed: static per-target morph weights
   round-trip through each `BlendShapeChannel`'s `DeformPercent`
   record (×100 out, ÷100 back), and a `Node::weights` per-instance
@@ -885,19 +935,25 @@ the partial-support edges and the not-yet-implemented surfaces.
   id from `parse_footer` / `fbx:footer_id` is reproduced verbatim).
 - Animation: per-layer compositing weights and `KeyAttrFlags` cubic /
   step / TCB interpolation modes remain uninterpreted — linear
-  sampling between keyframes only. The raw payloads are no longer
-  dropped, though: every `AnimationCurve` carrying `KeyAttrFlags` /
-  `KeyAttrDataFloat` / `KeyAttrRefCount` contributes one entry to
+  sampling between keyframes only. The raw payloads are not dropped:
+  every `AnimationCurve` carrying `KeyAttrFlags` / `KeyAttrDataFloat`
+  / `KeyAttrRefCount` contributes one entry to
   `Scene3D::extras["fbx:key_attrs"]` (stack / target / property /
-  axis join key + the integer arrays verbatim + the data floats as
-  lossless IEEE-754 bit patterns + the curve's `key_count`). Nothing
-  is interpreted because `docs/3d/fbx/GAP-TRACKER.md` records **no
-  value assignment** for the bitfield (the open acquisition item —
-  an export sweep pinning one known mode per curve); the same gap
-  blocks re-emission on encode, since the decode side resamples
-  per-axis curves onto a union grid and stretching an uninterpreted
-  per-key table onto a new grid would require exactly those
-  semantics. (`PreRotation` / `PostRotation` / pivot /
+  axis join key, the integer arrays verbatim, the data floats as
+  lossless IEEE-754 bit patterns, the curve's `Default` / `KeyVer`
+  and its **own key grid + values**). Nothing is interpreted because
+  `docs/3d/fbx/GAP-TRACKER.md` records **no value assignment** for
+  the bitfield (the open acquisition item — an export sweep pinning
+  one known mode per curve). On encode the writer re-emits the
+  *original* per-axis curve verbatim — attributes included — whenever
+  the typed channel still samples identically from it (all 90 curves
+  of the staged skin-anim fixture); an edited channel falls back to
+  the union-grid curve, which carries the attributes only when its
+  key count is unchanged, since stretching an uninterpreted per-key
+  table onto a new grid would require exactly those semantics.
+  Stacks / layers (`fbx:anim_stacks`, curve-less takes included) and
+  curve nodes outside the typed channel set (`fbx:aux_curve_nodes`)
+  pass through verbatim. (`PreRotation` / `PostRotation` / pivot /
   `RotationOrder` composition **is** applied: channels bound to a
   chain-bearing Model re-compose the doc §1 product per merged
   keyframe, so the rotation channel is `Rpre · R(t) · Rpost⁻¹` and

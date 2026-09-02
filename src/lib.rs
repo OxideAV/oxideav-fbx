@@ -1,9 +1,9 @@
 //! Pure-Rust FBX (Filmbox) binary decoder.
 //!
-//! Implements [`oxideav_mesh3d::Mesh3DDecoder`] for the binary
-//! encoding of the FBX format originally developed by Kaydara for
-//! MotionBuilder, acquired by Autodesk in 2006. ASCII FBX is
-//! explicitly NYI in round 1 (see crate-level CHANGELOG).
+//! Implements [`oxideav_mesh3d::Mesh3DDecoder`] /
+//! [`oxideav_mesh3d::Mesh3DEncoder`] for both encodings (binary and
+//! ASCII) of the FBX format originally developed by Kaydara for
+//! MotionBuilder, acquired by Autodesk in 2006.
 //!
 //! # References
 //!

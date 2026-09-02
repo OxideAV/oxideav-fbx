@@ -15,8 +15,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   law: nothing the reader surfaced is dropped or degraded by one
   writer pass; fixed-point law: the writer converges after one pass)
   plus a wire-record census (every semantic record path in the
-  fixture reappears in the re-encode). Open gaps are enumerated in
-  one burn-down list the laws consult.
+  fixture reappears in the re-encode), plus a synthetic-scene law over
+  API-authored content the corpus lacks (morph targets + strided
+  weight animation, a two-joint skin, spot light, orthographic camera,
+  two UV sets, colours, tangents, multi-material slots). All laws now
+  hold with an empty allow-list; only the documented ASCII form limits
+  (binary-only `FileId` / `CreationTime` / `Creator`, footer id) are
+  excused.
 
 - Material property coverage: every material's own `Properties70`
   records ride verbatim on `Material::extras["fbx:material_records"]`
