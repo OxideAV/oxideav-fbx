@@ -547,3 +547,102 @@ fn skin_anim_fixture_decodes_and_round_trips_its_skin() {
         }
     }
 }
+
+/// `fbx-property-templates.md` §5: template bodies are producer
+/// renditions, so a round trip must re-emit the file's own bodies
+/// rather than this crate's built-ins. Pinned on the two producers
+/// in the corpus: the Blender-written 24-record `FbxSurfacePhong`
+/// and the `FbxCamera` body that `camera-attr-binary-v7400.fbx`
+/// carries despite its light + camera attribute mixture (the
+/// built-in rule would emit none), and the SDK-written 22-record
+/// `FbxSurfacePhong` of `texture-video-ascii-v7500.fbx`.
+#[test]
+fn definitions_templates_re_emit_the_files_own_bodies() {
+    use oxideav_fbx::definitions::Definitions;
+    use oxideav_fbx::{FbxEncoder, FbxOutputForm};
+    use oxideav_mesh3d::Mesh3DEncoder;
+
+    for (name, class, template, n_records) in [
+        (
+            "camera-attr-binary-v7400.fbx",
+            "Material",
+            "FbxSurfacePhong",
+            24,
+        ),
+        (
+            "camera-attr-binary-v7400.fbx",
+            "NodeAttribute",
+            "FbxCamera",
+            106,
+        ),
+        (
+            "texture-video-ascii-v7500.fbx",
+            "Material",
+            "FbxSurfacePhong",
+            22,
+        ),
+        (
+            "texture-video-ascii-v7500.fbx",
+            "Texture",
+            "FbxFileTexture",
+            16,
+        ),
+    ] {
+        let Some(bytes) = fixture(name) else {
+            return;
+        };
+        let scene = decode(&bytes);
+        let src = Definitions::from_document(&parse_any(&bytes));
+        let src_tpl = src.template_for(class).expect("source template");
+        assert_eq!(src_tpl.len(), n_records, "{name}/{class} source body");
+        for form in [FbxOutputForm::Binary, FbxOutputForm::Ascii] {
+            let out = FbxEncoder::new()
+                .form(form)
+                .encode(&scene)
+                .expect("re-encode");
+            let defs = Definitions::from_document(&parse_any(&out));
+            let def = defs.get(class).expect("class re-emitted");
+            assert_eq!(
+                def.template_name.as_deref(),
+                Some(template),
+                "{name}/{class}"
+            );
+            let tpl = def.template.as_ref().unwrap();
+            assert_eq!(tpl.len(), n_records, "{name}/{class} body survives");
+            assert_eq!(
+                template_record_names(&parse_any(&bytes), class),
+                template_record_names(&parse_any(&out), class),
+                "{name}/{class} record order"
+            );
+        }
+    }
+}
+
+/// The `P` record names of one class's first `PropertyTemplate`, in
+/// wire order (a `PropertyMap` is unordered).
+fn template_record_names(doc: &FbxDocument, class: &str) -> Vec<String> {
+    doc.root
+        .child("Definitions")
+        .into_iter()
+        .flat_map(|d| d.children_named("ObjectType"))
+        .find(|ot| {
+            ot.properties
+                .first()
+                .and_then(oxideav_fbx::binary::FbxProperty::as_str)
+                == Some(class)
+        })
+        .and_then(|ot| ot.child("PropertyTemplate"))
+        .and_then(|t| t.child("Properties70"))
+        .map(|p| {
+            p.children
+                .iter()
+                .filter_map(|c| {
+                    c.properties
+                        .first()
+                        .and_then(oxideav_fbx::binary::FbxProperty::as_str)
+                        .map(str::to_owned)
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}

@@ -45,6 +45,9 @@
 
 use std::collections::HashMap;
 
+use oxideav_mesh3d::Scene3D;
+use serde_json::Value;
+
 use crate::binary::{FbxDocument, FbxNode, FbxProperty};
 use crate::properties70::PropertyMap;
 
@@ -214,6 +217,108 @@ fn leaf_i64(parent: &FbxNode, name: &str) -> Option<i64> {
         .properties
         .first()
         .and_then(FbxProperty::as_i64)
+}
+
+/// `Scene3D::extras` key carrying the file's own `PropertyTemplate`
+/// bodies, verbatim (see [`surface_templates`]).
+pub const PROPERTY_TEMPLATES_KEY: &str = "fbx:property_templates";
+
+/// Surface every `ObjectType` block's `PropertyTemplate` bodies
+/// verbatim on `Scene3D::extras["fbx:property_templates"]` — a JSON
+/// array of `{ "object_type": "<class>", "templates": [ { "name":
+/// "<FbxClassName>", "properties": [ <P record>, … ] }, … ] }` in
+/// document order (records in the [`crate::properties70::p_record_to_json`]
+/// shape). `ObjectType: "Constraint"` is left to the constraint
+/// module (`fbx:constraint_templates`, one template per kind).
+///
+/// `docs/3d/fbx/fbx-property-templates.md` §5 is explicit that
+/// template bodies are *producer renditions*, not a normative table
+/// ("a reader must consume the template it is given, per file —
+/// never a hard-coded table"), so the writer re-emits the file's own
+/// bodies and falls back to its built-in fixture-staged bodies only
+/// for classes the source file carried no template for.
+pub fn surface_templates(doc: &FbxDocument, scene: &mut Scene3D) {
+    let Some(defs) = doc.root.child("Definitions") else {
+        return;
+    };
+    let mut out: Vec<Value> = Vec::new();
+    for ot in defs.children_named("ObjectType") {
+        let Some(class) = ot.properties.first().and_then(FbxProperty::as_str) else {
+            continue;
+        };
+        if class == "Constraint" {
+            continue;
+        }
+        let templates: Vec<Value> = ot
+            .children_named("PropertyTemplate")
+            .map(|t| {
+                let name = t
+                    .properties
+                    .first()
+                    .and_then(FbxProperty::as_str)
+                    .unwrap_or_default();
+                let properties: Vec<Value> = t
+                    .child("Properties70")
+                    .map(|p| {
+                        p.children
+                            .iter()
+                            .filter(|c| c.name == "P")
+                            .filter_map(crate::properties70::p_record_to_json)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                serde_json::json!({ "name": name, "properties": properties })
+            })
+            .collect();
+        if templates.is_empty() {
+            continue;
+        }
+        out.push(serde_json::json!({ "object_type": class, "templates": templates }));
+    }
+    if !out.is_empty() {
+        scene
+            .extras
+            .entry(PROPERTY_TEMPLATES_KEY.to_string())
+            .or_insert(Value::Array(out));
+    }
+}
+
+/// The round-tripped `PropertyTemplate` nodes for one `ObjectType`
+/// class, rebuilt from `fbx:property_templates`; `None` when the
+/// scene carries no entry for the class.
+#[doc(hidden)]
+pub fn template_nodes_from_extras(scene: &Scene3D, class: &str) -> Option<Vec<FbxNode>> {
+    let entry = scene
+        .extras
+        .get(PROPERTY_TEMPLATES_KEY)?
+        .as_array()?
+        .iter()
+        .find(|e| e.get("object_type").and_then(Value::as_str) == Some(class))?;
+    let nodes: Vec<FbxNode> = entry
+        .get("templates")?
+        .as_array()?
+        .iter()
+        .filter_map(|tpl| {
+            let name = tpl.get("name").and_then(Value::as_str)?;
+            let records: Vec<FbxNode> = tpl
+                .get("properties")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(crate::properties70::json_to_p_record)
+                .collect();
+            Some(FbxNode {
+                name: "PropertyTemplate".to_string(),
+                properties: vec![FbxProperty::String(name.as_bytes().to_vec())],
+                children: vec![FbxNode {
+                    name: "Properties70".to_string(),
+                    properties: Vec::new(),
+                    children: records,
+                }],
+            })
+        })
+        .collect();
+    Some(nodes)
 }
 
 #[cfg(test)]

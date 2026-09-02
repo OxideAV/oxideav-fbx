@@ -1053,7 +1053,11 @@ fn build_definitions(objects: &FbxNode, scene: &Scene3D) -> FbxNode {
         children: Vec::new(),
     });
 
-    // Per-class instance counts in first-appearance order.
+    // Per-class instance counts in first-appearance order, then
+    // re-ordered to the source file's own `Definitions` block order
+    // when the scene round-trips one (`fbx:property_templates` keeps
+    // it), so the section re-emits in the producer's sequence;
+    // classes the source did not list follow in appearance order.
     let mut classes: Vec<(&str, usize)> = Vec::new();
     for child in &objects.children {
         match classes.iter_mut().find(|(name, _)| *name == child.name) {
@@ -1061,6 +1065,21 @@ fn build_definitions(objects: &FbxNode, scene: &Scene3D) -> FbxNode {
             None => classes.push((child.name.as_str(), 1)),
         }
     }
+    let source_order: Vec<String> = scene
+        .extras
+        .get(crate::definitions::PROPERTY_TEMPLATES_KEY)
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|e| e.get("object_type").and_then(|v| v.as_str()))
+        .map(str::to_owned)
+        .collect();
+    classes.sort_by_key(|(class, _)| {
+        source_order
+            .iter()
+            .position(|c| c == class)
+            .unwrap_or(usize::MAX)
+    });
 
     // `NodeAttribute` follows `fbx-property-templates.md` §2 rule 2:
     // the template is named for the *concrete* attribute class, and a
@@ -1093,6 +1112,12 @@ fn build_definitions(objects: &FbxNode, scene: &Scene3D) -> FbxNode {
         // `fbx:constraint_templates` extras.
         if class == "Constraint" {
             ot_children.extend(crate::constraint::constraint_template_nodes(scene));
+        } else if let Some(nodes) = crate::definitions::template_nodes_from_extras(scene, class) {
+            // The source file's own template bodies for this class
+            // (`fbx:property_templates`), verbatim — the doc §5 rule
+            // that bodies are per-producer renditions, so a round
+            // trip must not swap them for this crate's built-ins.
+            ot_children.extend(nodes);
         } else if class == "NodeAttribute" {
             if node_attr_all_camera {
                 ot_children.push(template_node("FbxCamera", FBX_CAMERA_TEMPLATE));

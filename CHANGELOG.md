@@ -29,6 +29,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   roughness mapping, and the `FbxSurfacePhong` template body (from
   the SDK-authored staged fixture) is emitted unless every material
   is lambert-shaded.
+- `Definitions` completeness: the file's own `PropertyTemplate`
+  bodies ride verbatim on `Scene3D::extras["fbx:property_templates"]`
+  and the writer re-emits them per class (built-in fixture-staged
+  bodies only for classes the source carried none for), per the
+  docs' "consume the template it is given, per file" rule — a mixed
+  light + camera attribute set keeps its producer's `FbxCamera`
+  body, a Blender-written 24-record Phong body stays 24 records.
 - Textures referenced by no material (the staged fixture's orphan
   embedded texture) are emitted too; `Texture` elements follow
   texture-index order so ids survive a round trip.

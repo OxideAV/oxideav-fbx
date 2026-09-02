@@ -332,6 +332,11 @@ pub fn build_scene(doc: &FbxDocument) -> Result<Scene3D> {
     // take name == `AnimationStack` display name. See `crate::takes`.
     extract_takes(doc, &mut scene);
 
+    // The file's own `Definitions` template bodies, verbatim — the
+    // writer re-emits them so the class defaults a producer wrote
+    // survive a round trip (`fbx-property-templates.md` §5).
+    crate::definitions::surface_templates(doc, &mut scene);
+
     // `Documents` section (round 413) — per the §7 top-level section
     // list in `docs/3d/fbx/fbx-ascii-grammar.md` + the staged
     // cubes-ascii-v7500.fbx fixture body: the document catalogue

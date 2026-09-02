@@ -579,6 +579,10 @@ fn known_gap(form: FbxOutputForm, kind: &str, key: &str) -> bool {
         "mesh[*].prim[*].extras[fbx:material_mapping]",
         // animation: uninterpreted key-attribute passthrough
         "scene.extras[fbx:key_attrs]",
+        // animation: a take whose stack carries no curves is not
+        // emitted, so its AnimationStack / AnimationLayer template
+        // blocks vanish with it
+        "scene.extras[fbx:property_templates]",
     ];
     let census: &[&str] = &[
         "FBXHeaderExtension/SceneInfo",
