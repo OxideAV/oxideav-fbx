@@ -59,7 +59,7 @@
 //! - **Materials / Textures / Video** (round 5) —
 //!   `Objects { Material | Texture | Video }` records surface as
 //!   [`oxideav_mesh3d::Material`] / [`oxideav_mesh3d::Texture`] on
-//!   [`Scene3D`]. `Connections OP Texture -> Material(prop_name)`
+//!   [`oxideav_mesh3d::Scene3D`]. `Connections OP Texture -> Material(prop_name)`
 //!   wires `DiffuseColor` / `NormalMap` / `EmissiveColor` (plus
 //!   Maya / 3ds-Max exporter aliases) into the typed PBR slots.
 //!   `Material -> Model` OO connections set `Primitive::material`.
@@ -173,8 +173,9 @@
 //!   indices — round 5 ships one material per mesh.
 //! - Coordinate-system / unit-scale conversion — files travel with
 //!   their author's axis convention; downstream consumers handle
-//!   re-orientation per the [`Scene3D::up_axis`] /
-//!   [`Scene3D::front_axis`] / [`Scene3D::unit`] metadata.
+//!   re-orientation per the [`oxideav_mesh3d::Scene3D::up_axis`] /
+//!   [`oxideav_mesh3d::Scene3D::front_axis`] /
+//!   [`oxideav_mesh3d::Scene3D::unit`] metadata.
 //!
 //! # Standalone build
 //!
