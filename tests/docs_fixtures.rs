@@ -981,3 +981,113 @@ fn welded_geometry_round_trips_control_points_polygons_and_edges() {
         );
     }
 }
+
+/// The last census items: an `Objects` element of a class this crate
+/// has no typed home for (`texture-video-ascii-v7500.fbx`'s
+/// `CollectionExclusive` display layer, with its `Model → layer` OO
+/// membership edge), the Texture / Video body leaves and Video
+/// records (`Type` / `TextureName` / `Media` / `Cropping`, `Path` /
+/// `RelPath`), and the BindPose element's `Type` / `Version` /
+/// `NbPoseNodes` leaves all reappear after a round trip.
+#[test]
+fn opaque_objects_and_texture_video_pose_leaves_survive_re_encode() {
+    use oxideav_fbx::binary::FbxProperty;
+    use oxideav_fbx::{FbxEncoder, FbxOutputForm};
+    use oxideav_mesh3d::Mesh3DEncoder;
+
+    if let Some(bytes) = fixture("texture-video-ascii-v7500.fbx") {
+        let scene = decode(&bytes);
+        let opaque = scene.extras["fbx:opaque_objects"].as_array().unwrap();
+        assert_eq!(opaque.len(), 1);
+        assert_eq!(opaque[0]["class"].as_str(), Some("CollectionExclusive"));
+        assert_eq!(opaque[0]["name"].as_str(), Some("Box"));
+        for form in [FbxOutputForm::Binary, FbxOutputForm::Ascii] {
+            let out = FbxEncoder::new().form(form).encode(&scene).unwrap();
+            let doc = parse_any(&out);
+            let objects = doc.root.child("Objects").unwrap();
+            let layer = objects
+                .children
+                .iter()
+                .find(|o| o.name == "CollectionExclusive")
+                .expect("display layer re-emitted");
+            let layer_id = layer.properties[0].as_i64().unwrap();
+            assert_eq!(
+                layer.properties.get(2).and_then(FbxProperty::as_str),
+                Some("DisplayLayer")
+            );
+            let model_id = objects
+                .children
+                .iter()
+                .find(|o| o.name == "Model")
+                .unwrap()
+                .properties[0]
+                .as_i64()
+                .unwrap();
+            let conns = doc.root.child("Connections").unwrap();
+            assert!(
+                conns.children_named("C").any(|c| {
+                    c.properties.get(1).and_then(FbxProperty::as_i64) == Some(model_id)
+                        && c.properties.get(2).and_then(FbxProperty::as_i64) == Some(layer_id)
+                }),
+                "{form:?}: Model -> DisplayLayer membership edge"
+            );
+            let tex = objects
+                .children
+                .iter()
+                .find(|o| o.name == "Texture")
+                .unwrap();
+            for leaf in [
+                "Type",
+                "TextureName",
+                "Media",
+                "Cropping",
+                "Texture_Alpha_Source",
+            ] {
+                assert!(tex.child(leaf).is_some(), "{form:?}: Texture {leaf}");
+            }
+            let video = objects.children.iter().find(|o| o.name == "Video").unwrap();
+            assert!(video.child("Type").is_some());
+            let p70 = video.child("Properties70").expect("Video records");
+            assert!(p70.children.iter().any(|p| p
+                .properties
+                .first()
+                .and_then(FbxProperty::as_str)
+                == Some("Path")));
+            let defs = oxideav_fbx::definitions::Definitions::from_document(&doc);
+            assert_eq!(
+                defs.get("CollectionExclusive")
+                    .unwrap()
+                    .template_name
+                    .as_deref(),
+                Some("FbxDisplayLayer")
+            );
+        }
+    }
+
+    if let Some(bytes) = fixture("skin-anim-binary-v7400.fbx") {
+        let scene = decode(&bytes);
+        let out = FbxEncoder::new().encode(&scene).unwrap();
+        let doc = parse_any(&out);
+        let pose = doc
+            .root
+            .child("Objects")
+            .unwrap()
+            .children
+            .iter()
+            .find(|o| o.name == "Pose")
+            .unwrap();
+        assert_eq!(
+            pose.child("Type").and_then(|n| n.properties[0].as_str()),
+            Some("BindPose")
+        );
+        assert_eq!(
+            pose.child("Version").and_then(|n| n.properties[0].as_i64()),
+            Some(100)
+        );
+        assert_eq!(
+            pose.child("NbPoseNodes")
+                .and_then(|n| n.properties[0].as_i64()),
+            Some(pose.children_named("PoseNode").count() as i64)
+        );
+    }
+}

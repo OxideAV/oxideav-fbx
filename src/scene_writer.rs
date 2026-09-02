@@ -503,6 +503,15 @@ pub fn encode_scene_with_options(scene: &Scene3D, opts: &SceneEncodeOptions) -> 
     objects.children.extend(constraint_objects);
     connections.children.extend(constraint_connections);
 
+    // -- Opaque objects (round 455) -------------------------------------
+    // Elements of classes this crate has no typed home for, verbatim
+    // (`fbx:opaque_objects`), with their edges to scene nodes / the
+    // document root rebuilt.
+    let (opaque_objects, opaque_connections) =
+        crate::opaque::build_opaque_objects(scene, |ni| node_ids.get(ni).copied(), || alloc.next());
+    objects.children.extend(opaque_objects);
+    connections.children.extend(opaque_connections);
+
     // -- Top-level sections ---------------------------------------------
     let mut root = FbxNode {
         name: String::new(),
@@ -2029,7 +2038,7 @@ fn name_class(name: &str, class: &str) -> Vec<u8> {
 /// bone (`Matrix` is a direct d-array sub-record, row-major, world
 /// space).
 fn build_bind_pose(entries: Vec<(i64, Vec<f64>)>, id: i64) -> FbxNode {
-    let children = entries
+    let children: Vec<FbxNode> = entries
         .into_iter()
         .map(|(node_id, matrix)| FbxNode {
             name: "PoseNode".to_string(),
@@ -2048,6 +2057,14 @@ fn build_bind_pose(entries: Vec<(i64, Vec<f64>)>, id: i64) -> FbxNode {
             ],
         })
         .collect();
+    // Body leaves observed on the staged fixture's BindPose element:
+    // `Type: "BindPose"`, `Version: 100`, `NbPoseNodes: N`.
+    let mut body = vec![
+        leaf_string("Type", "BindPose"),
+        leaf_i32("Version", 100),
+        leaf_i32("NbPoseNodes", children.len() as i32),
+    ];
+    body.extend(children);
     FbxNode {
         name: "Pose".to_string(),
         properties: vec![
@@ -2055,7 +2072,7 @@ fn build_bind_pose(entries: Vec<(i64, Vec<f64>)>, id: i64) -> FbxNode {
             FbxProperty::String(name_class("BindPose", "Pose")),
             FbxProperty::String(b"BindPose".to_vec()),
         ],
-        children,
+        children: body,
     }
 }
 
@@ -4244,7 +4261,28 @@ fn build_texture(
     raw_records: Option<&serde_json::Value>,
 ) -> (FbxNode, Option<FbxNode>) {
     let name = tex.name.clone().unwrap_or_default();
-    let mut tex_children: Vec<FbxNode> = vec![leaf_i32("Version", 202)];
+    // Round-tripped body leaves (`fbx:texture_records[i].leaves`):
+    // `Type` / `Version` / `TextureName` lead the body, the rest
+    // (`Media`, `ModelUV*`, `Texture_Alpha_Source`, `Cropping`)
+    // follow the path leaves — the staged fixture's order. A fresh
+    // texture gets the observed `Version: 202`.
+    let raw_leaves: Vec<FbxNode> = raw_records
+        .and_then(|r| r.get("leaves"))
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(crate::properties70::json_to_leaf)
+        .collect();
+    let (head_leaves, tail_leaves): (Vec<FbxNode>, Vec<FbxNode>) = raw_leaves
+        .into_iter()
+        .partition(|l| matches!(l.name.as_str(), "Type" | "Version" | "TextureName"));
+    let mut tex_children: Vec<FbxNode> = head_leaves;
+    if !tex_children.iter().any(|l| l.name == "Version") {
+        // `Version: 202` is the default the decode side does not
+        // record; keep it right after `Type` (the observed order).
+        let at = usize::from(tex_children.first().is_some_and(|l| l.name == "Type"));
+        tex_children.insert(at, leaf_i32("Version", 202));
+    }
 
     // Properties70 — the `FbxFileTexture` records this crate types
     // (`docs/3d/fbx/fbx-property-templates.md` §3.1): the `UVSet`
@@ -4254,7 +4292,13 @@ fn build_texture(
     // untypable records round-tripped verbatim from
     // `Scene3D::extras["fbx:texture_records"]`.
     let mut p_records: Vec<FbxNode> = Vec::new();
-    if let Some(label) = uv_label {
+    // `UVSet`: the label resolved through a referencing material's
+    // mesh, else the authored string (an unreferenced texture keeps
+    // its own).
+    let raw_uv_set = raw_records
+        .and_then(|r| r.get("uv_set"))
+        .and_then(|v| v.as_str());
+    if let Some(label) = uv_label.or(raw_uv_set) {
         p_records.push(p_kstring("UVSet", label));
     }
     if let Some(t) = &texref.transform {
@@ -4362,6 +4406,7 @@ fn build_texture(
     if let Some(v) = raw_str("filename") {
         tex_children.push(leaf_string("Filename", &v));
     }
+    tex_children.extend(tail_leaves);
 
     let tex_node = FbxNode {
         name: "Texture".to_string(),
@@ -4385,8 +4430,36 @@ fn build_texture(
     ]
     .iter()
     .any(|k| raw_str(k).is_some());
+    let video_raw_leaves: Vec<FbxNode> = raw_records
+        .and_then(|r| r.get("video_leaves"))
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(crate::properties70::json_to_leaf)
+        .collect();
+    let video_raw_records: Vec<FbxNode> = raw_records
+        .and_then(|r| r.get("video_records"))
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(crate::properties70::json_to_p_record)
+        .collect();
+    let has_video_leaves = has_video_leaves || !video_raw_leaves.is_empty();
     let video_node = (embedded.is_some() || has_video_leaves).then(|| {
         let mut children = Vec::new();
+        // Body: `Type` first, then `Properties70`, the remaining
+        // leaves, the path leaves and the blob — the observed order.
+        let (type_leaf, other_leaves): (Vec<FbxNode>, Vec<FbxNode>) =
+            video_raw_leaves.into_iter().partition(|l| l.name == "Type");
+        children.extend(type_leaf);
+        if !video_raw_records.is_empty() {
+            children.push(FbxNode {
+                name: "Properties70".to_string(),
+                properties: Vec::new(),
+                children: video_raw_records,
+            });
+        }
+        children.extend(other_leaves);
         if let Some(f) = raw_str("video_filename") {
             children.push(leaf_string("Filename", &f));
         }

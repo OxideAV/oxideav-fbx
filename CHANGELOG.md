@@ -86,6 +86,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   binding blocks — with cluster / blend-shape `Indexes` remapped to
   control points. An edited mesh falls back to the expanded
   triangle-list form.
+- Opaque object passthrough (`opaque` module): `Objects` elements of a
+  class this crate has no typed home for (the SDK fixture's
+  `CollectionExclusive` display layer) ride verbatim on
+  `Scene3D::extras["fbx:opaque_objects"]` with their connections and
+  re-emit with edges to scene nodes / the document root rebuilt.
+- Texture / Video body leaves (`Type` / `TextureName` / `Media` /
+  `ModelUV*` / `Texture_Alpha_Source` / `Cropping`; `Type` /
+  `UseMipMap`), the Video's own records (`Path` / `RelPath`) and the
+  authored `UVSet` string ride on `fbx:texture_records` and re-emit;
+  the BindPose element carries its `Type` / `Version` / `NbPoseNodes`
+  leaves.
 - Textures referenced by no material (the staged fixture's orphan
   embedded texture) are emitted too; `Texture` elements follow
   texture-index order so ids survive a round trip.

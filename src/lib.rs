@@ -262,6 +262,10 @@ pub mod node_transform;
 /// being staged — `docs/3d/fbx/fbx-binary-properties70.md` §6 point 3
 /// enumerates only the subtype names.
 pub mod nurbs;
+/// Opaque `Objects` passthrough — elements of a class this crate has
+/// no typed home for (`CollectionExclusive` display layers, …), carried
+/// verbatim and re-emitted with their typed-endpoint connections.
+pub mod opaque;
 pub mod pose;
 pub mod properties70;
 pub mod scene;

@@ -428,6 +428,7 @@ pub fn build_scene(doc: &FbxDocument) -> Result<Scene3D> {
     // Mesh Model without re-walking the `FbxDocument`.
     extract_node_attribute_kinds(doc, &mut scene, &model_nodes);
     crate::node_attribute::extract_node_attribute_records(doc, &mut scene, &model_nodes);
+    crate::opaque::extract_opaque_objects(doc, &mut scene, &model_nodes);
 
     // Round 271 — `Geometry` non-`Mesh` subtype-discriminator
     // surfacing. The `"Mesh"` subtype is tessellated above; `"Shape"`

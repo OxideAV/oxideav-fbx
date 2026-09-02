@@ -590,19 +590,10 @@ fn known_gap(form: FbxOutputForm, kind: &str, key: &str) -> bool {
     if form_limit(form, kind, key) {
         return true;
     }
-    let parity: &[&str] = &[
-        // objects this crate has no typed home for (`CollectionExclusive`
-        // display layers) are dropped, and their template block with them
-        "scene.extras[fbx:property_templates]",
-    ];
-    let census: &[&str] = &[
-        "FBXHeaderExtension/SceneInfo",
-        "GlobalSettings/Properties70/P:TimeMarker",
-        "Documents/Document/Properties70/P:ActiveAnimStackName",
-        "Definitions/",
-        "Objects/",
-        "Connections/C",
-    ];
+    let parity: &[&str] = &[];
+    // Every census gap the round enumerated is closed; the list stays
+    // as the place a future finding goes.
+    let census: &[&str] = &[];
     let wild = |pat: &str, key: &str| -> bool {
         // `*` matches a run of digits.
         let mut k = key;

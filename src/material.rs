@@ -278,6 +278,56 @@ pub fn extract_materials(
                     .insert(format!("video_{key}"), serde_json::Value::String(v));
             }
         }
+        // The remaining Texture / Video body leaves (`Type` / `Version`
+        // / `TextureName` / `Media` / `ModelUVTranslation` /
+        // `ModelUVScaling` / `Texture_Alpha_Source` / `Cropping`;
+        // `Type` / `UseMipMap` on the Video), the Video's own `P`
+        // records (`Path` / `RelPath`) and the authored `UVSet`
+        // string, verbatim — the typed surfaces cover none of them.
+        // (`Version: 202` is the writer's own default and is not
+        // recorded, so a plain texture still surfaces nothing raw.)
+        let tex_leaves: Vec<serde_json::Value> = crate::properties70::leaves_json(
+            tex_node,
+            &["RelativeFilename", "FileName", "Filename"],
+        )
+        .into_iter()
+        .filter(|l| {
+            !(l["name"].as_str() == Some("Version")
+                && l["values"].as_array().is_some_and(|v| {
+                    v.len() == 1 && v[0].get("l").and_then(|n| n.as_i64()) == Some(202)
+                }))
+        })
+        .collect();
+        if !tex_leaves.is_empty() {
+            props
+                .raw
+                .insert("leaves".to_string(), serde_json::Value::Array(tex_leaves));
+        }
+        if let Some(video) = video_node {
+            let video_leaves = crate::properties70::leaves_json(
+                video,
+                &["RelativeFilename", "FileName", "Filename", "Content"],
+            );
+            if !video_leaves.is_empty() {
+                props.raw.insert(
+                    "video_leaves".to_string(),
+                    serde_json::Value::Array(video_leaves),
+                );
+            }
+            let video_records = crate::properties70::own_records_json(video);
+            if !video_records.is_empty() {
+                props.raw.insert(
+                    "video_records".to_string(),
+                    serde_json::Value::Array(video_records),
+                );
+            }
+        }
+        if let Some(label) = PropertyMap::from_element(tex_node).as_str("UVSet") {
+            props.raw.insert(
+                "uv_set".to_string(),
+                serde_json::Value::String(label.to_owned()),
+            );
+        }
         if !props.raw.is_empty() {
             texture_raw_records.insert(
                 tex_id.0.to_string(),
