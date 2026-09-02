@@ -28,6 +28,8 @@
 
 use std::collections::HashMap;
 
+use serde_json::{json, Value};
+
 use crate::binary::{FbxNode, FbxProperty};
 
 /// Decoded typed value of one `P` record.
@@ -886,6 +888,106 @@ impl FbxProperty {
             _ => None,
         }
     }
+}
+
+// ---- raw P record <-> JSON -------------------------------------------
+//
+// Shared by every verbatim-passthrough surface (constraints,
+// materials, ...): a `P` record becomes `{ name, type, label, flags,
+// values }` with wire-tagged values — `c` bool, `l` integer, `d`
+// float, `s` string — and back. Integer width is *not* part of the
+// tag: the ASCII reader yields `L` for every integer literal while
+// the binary reader keeps the producer's `I` / `L`, so the tag is
+// width-normalised and the re-emit side picks the wire width from
+// the record's typeName (`KTime` / `ULongLong` → `L`, else `I` when
+// the value fits — the `fbx-binary-properties70.md` §4 wire notes).
+
+/// One `P` record as JSON — `{ name, type, label, flags, values }`
+/// with wire-tagged values. `None` for records not matching the docs
+/// §4 four-leading-strings shape.
+#[doc(hidden)]
+pub fn p_record_to_json(p: &FbxNode) -> Option<Value> {
+    let mut strings = p.properties.iter().take(4).map(|v| match v {
+        FbxProperty::String(b) => Some(String::from_utf8_lossy(b).into_owned()),
+        _ => None,
+    });
+    let name = strings.next()??;
+    let type_name = strings.next()??;
+    let label = strings.next()??;
+    let flags = strings.next()??;
+    let values: Vec<Value> = p
+        .properties
+        .iter()
+        .skip(4)
+        .filter_map(|v| {
+            Some(match v {
+                // Width-normalised tags — see the module docs.
+                FbxProperty::Bool(b) => json!({ "c": b }),
+                FbxProperty::I16(n) => json!({ "l": n }),
+                FbxProperty::I32(n) => json!({ "l": n }),
+                FbxProperty::I64(n) => json!({ "l": n }),
+                FbxProperty::F32(x) => json!({ "d": x }),
+                FbxProperty::F64(x) => json!({ "d": x }),
+                FbxProperty::String(b) => json!({ "s": String::from_utf8_lossy(b) }),
+                // Array / raw payloads do not occur in P records
+                // (docs §4 value grammar).
+                _ => return None,
+            })
+        })
+        .collect();
+    Some(json!({
+        "name": name,
+        "type": type_name,
+        "label": label,
+        "flags": flags,
+        "values": values,
+    }))
+}
+
+/// Inverse of [`p_record_to_json`].
+#[doc(hidden)]
+pub fn json_to_p_record(v: &Value) -> Option<FbxNode> {
+    let obj = v.as_object()?;
+    let s = |key: &str| {
+        obj.get(key)
+            .and_then(Value::as_str)
+            .map(|s| FbxProperty::String(s.as_bytes().to_vec()))
+    };
+    let mut properties = vec![s("name")?, s("type")?, s("label")?, s("flags")?];
+    let wide_type = matches!(
+        obj.get("type").and_then(Value::as_str),
+        Some("KTime" | "ULongLong")
+    );
+    for value in obj
+        .get("values")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let tagged = value.as_object()?;
+        let (tag, inner) = tagged.iter().next()?;
+        let prop = match tag.as_str() {
+            "c" => FbxProperty::Bool(inner.as_bool()?),
+            // Integers re-emit as `I` when they fit (the docs §4
+            // wire form for `enum` / `int` / `bool`), `L` otherwise.
+            "l" => {
+                let n = inner.as_i64()?;
+                match i32::try_from(n) {
+                    Ok(narrow) if !wide_type => FbxProperty::I32(narrow),
+                    _ => FbxProperty::I64(n),
+                }
+            }
+            "d" => FbxProperty::F64(inner.as_f64()?),
+            "s" => FbxProperty::String(inner.as_str()?.as_bytes().to_vec()),
+            _ => return None,
+        };
+        properties.push(prop);
+    }
+    Some(FbxNode {
+        name: "P".to_string(),
+        properties,
+        children: Vec::new(),
+    })
 }
 
 #[cfg(test)]

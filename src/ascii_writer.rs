@@ -380,21 +380,11 @@ fn write_scalar(p: &FbxProperty, out: &mut Vec<u8>) -> Result<()> {
         FbxProperty::F64(v) => write_f64(*v, out),
         FbxProperty::Bool(v) => out.push(if *v { b'T' } else { b'F' }),
         FbxProperty::String(bytes) => write_string(bytes, out)?,
-        // Binary `R` blobs have no ASCII grammar form per §5; the
-        // fixture never carries a raw-binary property at the node
-        // level (only `Video.Content` does, and the round-200 ASCII
-        // reader doesn't synthesise `Raw` properties either — the
-        // ASCII path stops at the `Content:` byte stream level). We
-        // surface the unsupported case cleanly so callers see why
-        // the doc didn't round-trip.
-        FbxProperty::Raw(_) => {
-            return Err(Error::invalid(
-                "ascii FBX writer: `Raw` blob has no ASCII representation \
-                 (grammar §5 only defines string / integer / float / boolean \
-                 / UID / time-pair scalar forms — binary-only `R` properties \
-                 cannot round-trip through ASCII)",
-            ));
-        }
+        // Binary `R` blobs render as a quoted base64 string — the
+        // form the staged texture-video-ascii-v7500.fbx fixture uses
+        // for its embedded `Video.Content` (see [`crate::base64`]);
+        // the ASCII reader + `Content` consumer decode it back.
+        FbxProperty::Raw(bytes) => write_string(crate::base64::encode(bytes).as_bytes(), out)?,
         // `c` byte arrays are binary-only, like `R` blobs: no ASCII
         // grammar form is observed or documented for them.
         FbxProperty::ByteArray(_) => {
@@ -941,18 +931,36 @@ mod tests {
     }
 
     #[test]
-    fn raw_blob_is_rejected_cleanly() {
+    fn raw_blob_renders_as_base64_string() {
+        // The staged texture-video-ascii-v7500.fbx form of an
+        // embedded `Video.Content`: a quoted base64 string.
         let doc = doc_with_root(
             7500,
             vec![FbxNode {
-                name: "Bad".to_string(),
-                properties: vec![FbxProperty::Raw(vec![0, 1, 2, 3])],
+                name: "Content".to_string(),
+                properties: vec![FbxProperty::Raw(vec![0, 0, 10, 0, 0, 0, 0, 0])],
                 children: vec![],
             }],
         );
-        let err = write_ascii_document(&doc).expect_err("should reject Raw blob");
-        let msg = format!("{err}");
-        assert!(msg.contains("Raw"), "{msg}");
+        let text = write_ascii_document(&doc).expect("Raw renders");
+        let text = String::from_utf8(text).unwrap();
+        assert!(text.contains("Content: \"AAAKAAAAAAA=\""), "{text}");
+        let back = ascii::parse(text.as_bytes()).expect("re-parses");
+        let content = back
+            .root
+            .children
+            .iter()
+            .find(|n| n.name == "Content")
+            .unwrap();
+        match &content.properties[0] {
+            FbxProperty::String(b) => {
+                assert_eq!(
+                    crate::base64::decode(b).unwrap(),
+                    vec![0, 0, 10, 0, 0, 0, 0, 0]
+                );
+            }
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]

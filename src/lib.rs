@@ -199,6 +199,10 @@ pub mod anim_writer;
 pub mod animation;
 pub mod ascii;
 pub mod ascii_writer;
+/// Standard base64 for the ASCII form of binary `R` payloads
+/// (embedded `Video.Content`).
+#[doc(hidden)]
+pub mod base64;
 pub mod binary;
 /// `Constraint` object grammar — decode onto
 /// `Scene3D::extras["fbx:constraints"]` + lossless re-encode, per

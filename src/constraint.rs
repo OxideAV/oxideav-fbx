@@ -64,6 +64,7 @@ use oxideav_mesh3d::{NodeId, Scene3D};
 use serde_json::{json, Map, Value};
 
 use crate::binary::{FbxDocument, FbxNode, FbxProperty};
+use crate::properties70::{json_to_p_record, p_record_to_json};
 
 /// `Scene3D::extras` key for the constraint catalogue.
 pub const CONSTRAINTS_KEY: &str = "fbx:constraints";
@@ -372,90 +373,6 @@ pub(crate) fn constraint_template_nodes(scene: &Scene3D) -> Vec<FbxNode> {
             })
         })
         .collect()
-}
-
-// ---- raw P record <-> JSON -------------------------------------------
-
-/// One `P` record as JSON — `{ name, type, label, flags, values }`
-/// with wire-tagged values. `None` for records not matching the docs
-/// §4 four-leading-strings shape.
-fn p_record_to_json(p: &FbxNode) -> Option<Value> {
-    let mut strings = p.properties.iter().take(4).map(|v| match v {
-        FbxProperty::String(b) => Some(String::from_utf8_lossy(b).into_owned()),
-        _ => None,
-    });
-    let name = strings.next()??;
-    let type_name = strings.next()??;
-    let label = strings.next()??;
-    let flags = strings.next()??;
-    let values: Vec<Value> = p
-        .properties
-        .iter()
-        .skip(4)
-        .filter_map(|v| {
-            Some(match v {
-                // Width-normalised tags — see the module docs.
-                FbxProperty::Bool(b) => json!({ "c": b }),
-                FbxProperty::I16(n) => json!({ "l": n }),
-                FbxProperty::I32(n) => json!({ "l": n }),
-                FbxProperty::I64(n) => json!({ "l": n }),
-                FbxProperty::F32(x) => json!({ "d": x }),
-                FbxProperty::F64(x) => json!({ "d": x }),
-                FbxProperty::String(b) => json!({ "s": String::from_utf8_lossy(b) }),
-                // Array / raw payloads do not occur in P records
-                // (docs §4 value grammar).
-                _ => return None,
-            })
-        })
-        .collect();
-    Some(json!({
-        "name": name,
-        "type": type_name,
-        "label": label,
-        "flags": flags,
-        "values": values,
-    }))
-}
-
-/// Inverse of [`p_record_to_json`].
-fn json_to_p_record(v: &Value) -> Option<FbxNode> {
-    let obj = v.as_object()?;
-    let s = |key: &str| {
-        obj.get(key)
-            .and_then(Value::as_str)
-            .map(|s| FbxProperty::String(s.as_bytes().to_vec()))
-    };
-    let mut properties = vec![s("name")?, s("type")?, s("label")?, s("flags")?];
-    for value in obj
-        .get("values")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-    {
-        let tagged = value.as_object()?;
-        let (tag, inner) = tagged.iter().next()?;
-        let prop = match tag.as_str() {
-            "c" => FbxProperty::Bool(inner.as_bool()?),
-            // Integers re-emit as `I` when they fit (the docs §4
-            // wire form for `enum` / `int` / `bool`), `L` otherwise.
-            "l" => {
-                let n = inner.as_i64()?;
-                match i32::try_from(n) {
-                    Ok(narrow) => FbxProperty::I32(narrow),
-                    Err(_) => FbxProperty::I64(n),
-                }
-            }
-            "d" => FbxProperty::F64(inner.as_f64()?),
-            "s" => FbxProperty::String(inner.as_str()?.as_bytes().to_vec()),
-            _ => return None,
-        };
-        properties.push(prop);
-    }
-    Some(FbxNode {
-        name: "P".to_string(),
-        properties,
-        children: Vec::new(),
-    })
 }
 
 /// Read property[0] (the FBX element id) of an `Objects`-child record.

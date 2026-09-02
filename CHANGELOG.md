@@ -18,8 +18,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fixture reappears in the re-encode). Open gaps are enumerated in
   one burn-down list the laws consult.
 
+- Material property coverage: every material's own `Properties70`
+  records ride verbatim on `Material::extras["fbx:material_records"]`
+  (plus `fbx:material_version` / `fbx:multi_layer`), and the writer
+  re-emits them untouched unless the typed PBR fields were edited —
+  in which case the typed values win for the mapped names and every
+  other record still rides along. `Version` / `ShadingModel`
+  (authored spelling) / `MultiLayer` body leaves are emitted,
+  `Shininess` is written as the exact inverse of the decode-side
+  roughness mapping, and the `FbxSurfacePhong` template body (from
+  the SDK-authored staged fixture) is emitted unless every material
+  is lambert-shaded.
+- Textures referenced by no material (the staged fixture's orphan
+  embedded texture) are emitted too; `Texture` elements follow
+  texture-index order so ids survive a round trip.
+- ASCII output form: binary `R` blobs render as a quoted base64
+  string (the staged fixture's embedded `Video.Content` form), and
+  the binary-only `FileId` / `CreationTime` / `Creator` top-level
+  records are omitted, so every staged fixture now re-encodes as
+  ASCII.
+
 ### Fixed
 
+- ASCII embedded media: an ASCII `Video.Content` string was handed
+  through as the image bytes; it is base64 text (the staged
+  fixture's payload decodes to a TGA header) and is now decoded.
 - Skin decode: a `Cluster` whose bone `Model` is wired as the
   connection's *child* (`C: "OO", <model>, <cluster>` — the form the
   staged `skin-anim-binary-v7400.fbx` fixture carries) was silently

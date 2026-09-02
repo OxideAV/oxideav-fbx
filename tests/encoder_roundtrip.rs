@@ -1583,12 +1583,13 @@ fn encoded_scene_carries_documents_and_references_sections() {
 
 #[test]
 fn emitted_material_template_defaults_resolve_on_decode() {
-    // Round 413 — the encoder now writes the fixture-staged
-    // FbxSurfaceLambert PropertyTemplate; the decode side's
-    // with_template_defaults overlay must resolve the template's
-    // ShadingModel "Lambert" onto a material whose own records don't
-    // carry one (the encoder writes colour/factor records only), while
-    // explicitly-written records still win over template defaults.
+    // Round 413 / 455 — the encoder writes a fixture-staged Material
+    // PropertyTemplate (FbxSurfacePhong for a fresh typed material)
+    // and a `ShadingModel` body leaf; the decode side's
+    // with_template_defaults overlay + the leaf must agree on
+    // "Phong", while explicitly-written records still win over
+    // template defaults. A material tagged lambert re-emits its
+    // spelling verbatim and selects the FbxSurfaceLambert body.
     let mut scene = Scene3D::new();
     let mut mesh = quad_with_normals_and_uvs("Quad");
     let mat = scene.add_material(
@@ -1608,7 +1609,7 @@ fn emitted_material_template_defaults_resolve_on_decode() {
     // Template default resolved through the §7b overlay.
     assert_eq!(
         m.extras.get("fbx:shading_model").and_then(|v| v.as_str()),
-        Some("Lambert"),
+        Some("Phong"),
         "class-template ShadingModel default resolves"
     );
     // Explicit record wins over the template's 0.8 grey default.
@@ -1616,6 +1617,29 @@ fn emitted_material_template_defaults_resolve_on_decode() {
         (m.base_color[0] - 0.25).abs() < 1e-6 && (m.base_color[2] - 0.75).abs() < 1e-6,
         "own DiffuseColor record overrides the template default: {:?}",
         m.base_color
+    );
+
+    // Lambert-tagged material: authored spelling survives and the
+    // Lambert template body is selected.
+    scene.materials[0].extras.insert(
+        "fbx:shading_model".into(),
+        serde_json::Value::String("lambert".into()),
+    );
+    let bytes = encode_binary(&scene);
+    let scene3 = decode(&bytes);
+    assert_eq!(
+        scene3.materials[0]
+            .extras
+            .get("fbx:shading_model")
+            .and_then(|v| v.as_str()),
+        Some("lambert")
+    );
+    let defs = oxideav_fbx::definitions::Definitions::from_document(
+        &oxideav_fbx::binary::parse(&bytes).unwrap(),
+    );
+    assert_eq!(
+        defs.get("Material").unwrap().template_name.as_deref(),
+        Some("FbxSurfaceLambert")
     );
 }
 

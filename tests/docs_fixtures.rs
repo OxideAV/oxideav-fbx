@@ -477,11 +477,12 @@ fn texture_video_fixture_uvset_survives_re_encode() {
 /// both, so the fixture's one `Skin` + nine `Cluster` deformers
 /// materialise a 9-joint skeleton named after the Skin element with
 /// per-corner joint / weight buffers on the mesh, and the whole skin
-/// survives `decode → encode → decode` (skeleton name, joint order,
-/// inverse-bind matrices, top-4 weights).
+/// survives `decode → encode → decode` in both output forms
+/// (skeleton name, joint order, inverse-bind matrices, top-4
+/// weights).
 #[test]
 fn skin_anim_fixture_decodes_and_round_trips_its_skin() {
-    use oxideav_fbx::FbxEncoder;
+    use oxideav_fbx::{FbxEncoder, FbxOutputForm};
     use oxideav_mesh3d::Mesh3DEncoder;
 
     let Some(bytes) = fixture("skin-anim-binary-v7400.fbx") else {
@@ -516,8 +517,11 @@ fn skin_anim_fixture_decodes_and_round_trips_its_skin() {
         "the clusters carry non-zero weights"
     );
 
-    {
-        let out = FbxEncoder::new().encode(&scene).expect("re-encode");
+    for form in [FbxOutputForm::Binary, FbxOutputForm::Ascii] {
+        let out = FbxEncoder::new()
+            .form(form)
+            .encode(&scene)
+            .expect("re-encode");
         let scene2 = decode(&out);
         assert_eq!(scene2.skeletons.len(), 1);
         let skel2 = &scene2.skeletons[0];

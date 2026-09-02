@@ -215,6 +215,10 @@ pub fn extract_materials(
         // the self-contained-FBX case (the `Content` R-blob on a
         // `Video` record).
         let embedded = video_node.and_then(read_content_blob);
+        // The path the typed image carries (`Texture::from_uri`) —
+        // empty for an embedded blob. Path leaves equal to it need no
+        // raw copy; the writer re-derives them from the URI.
+        let mut typed_uri = String::new();
         let tex = if let Some(bytes) = embedded {
             let mime = video_node
                 .and_then(|v| read_string_child(v, "Filename"))
@@ -232,6 +236,7 @@ pub fn extract_materials(
                 .or_else(|| video_node.and_then(|v| read_string_child(v, "RelativeFilename")))
                 .or_else(|| video_node.and_then(|v| read_string_child(v, "FileName")))
                 .unwrap_or_default();
+            typed_uri = uri.clone();
             let mut t = Texture::from_uri(uri);
             t.name = name;
             t
@@ -245,7 +250,34 @@ pub fn extract_materials(
         // transform when representable, and the raw untypable records
         // (surfaced on `Scene3D::extras["fbx:texture_records"]`, keyed
         // by the scene texture index, for lossless re-encode).
-        let props = decode_texture_props(tex_node, texture_template);
+        let mut props = decode_texture_props(tex_node, texture_template);
+        // Path leaves on the Texture / Video elements that the typed
+        // image cannot carry ride raw too: an embedded texture has no
+        // typed path at all, yet the producer's `RelativeFilename` /
+        // `FileName` still name the source file (they are what the
+        // MIME guess above reads); an external texture's absolute
+        // `FileName` differs from its relative URI; and the backing
+        // Video element's own path leaves are separate records. Only
+        // leaves that differ from the typed URI are recorded, so a
+        // plain external texture surfaces nothing raw.
+        for (leaf, key) in [
+            ("RelativeFilename", "relative_filename"),
+            ("FileName", "file_name"),
+            ("Filename", "filename"),
+        ] {
+            if let Some(v) = read_string_child(tex_node, leaf).filter(|v| *v != typed_uri) {
+                props
+                    .raw
+                    .insert(key.to_string(), serde_json::Value::String(v));
+            }
+            if let Some(v) =
+                video_node.and_then(|n| read_string_child(n, leaf).filter(|v| !v.is_empty()))
+            {
+                props
+                    .raw
+                    .insert(format!("video_{key}"), serde_json::Value::String(v));
+            }
+        }
         if !props.raw.is_empty() {
             texture_raw_records.insert(
                 tex_id.0.to_string(),
@@ -293,6 +325,7 @@ pub fn extract_materials(
         let mut mat = Material::new();
         mat.name = element_name(mat_node);
         apply_properties70(mat_node, &mut mat, material_template);
+        surface_raw_material_records(mat_node, &mut mat);
         let mat_id = scene.add_material(mat);
         material_lookup.insert(mid, mat_id);
     }
@@ -787,6 +820,77 @@ fn apply_properties70(node: &FbxNode, mat: &mut Material, template: Option<&Prop
     }
 }
 
+/// Surface the material element's **own** `Properties70` records
+/// verbatim on `Material::extras["fbx:material_records"]` (one
+/// wire-tagged JSON record each, document order — the
+/// [`crate::properties70::p_record_to_json`] shape), plus the
+/// `Version` / `MultiLayer` body leaves on `fbx:material_version` /
+/// `fbx:multi_layer`.
+///
+/// The typed [`Material`] only has a home for the PBR translation of
+/// a handful of names (diffuse / opacity / emissive / shininess /
+/// reflection); everything else a producer authors — `AmbientColor`,
+/// `SpecularColor` / `SpecularFactor`, `TransparentColor` /
+/// `TransparencyFactor`, `ReflectionColor`, the legacy `Diffuse` /
+/// `Specular` / `Emissive` / `Ambient` `Vector3D` triples, `Bump` /
+/// `NormalMap` / displacement records, vendor `Maya|*` / `3dsMax|*`
+/// properties — has none, and would otherwise be lost on re-encode.
+/// The writer re-emits the set verbatim unless the typed fields were
+/// edited (see `scene_writer::build_material`).
+fn surface_raw_material_records(node: &FbxNode, mat: &mut Material) {
+    let records: Vec<serde_json::Value> = node
+        .child("Properties70")
+        .map(|p| {
+            p.children
+                .iter()
+                .filter(|c| c.name == "P")
+                .filter_map(crate::properties70::p_record_to_json)
+                .collect()
+        })
+        .unwrap_or_default();
+    if !records.is_empty() {
+        mat.extras.insert(
+            "fbx:material_records".into(),
+            serde_json::Value::Array(records),
+        );
+    }
+    for (leaf, key) in [
+        ("Version", "fbx:material_version"),
+        ("MultiLayer", "fbx:multi_layer"),
+    ] {
+        if let Some(v) = node
+            .child(leaf)
+            .and_then(|n| n.properties.first())
+            .and_then(FbxProperty::as_i64)
+        {
+            mat.extras.insert(key.into(), serde_json::Value::from(v));
+        }
+    }
+}
+
+/// The typed PBR view of a bare `P`-record set — the decode the
+/// writer runs on a material's round-tripped raw records to decide
+/// whether the typed fields still agree with them (own records only,
+/// no class template). `None` when there are no records.
+#[doc(hidden)]
+pub fn material_from_own_records(records: Vec<FbxNode>) -> Option<Material> {
+    if records.is_empty() {
+        return None;
+    }
+    let node = FbxNode {
+        name: "Material".to_string(),
+        properties: Vec::new(),
+        children: vec![FbxNode {
+            name: "Properties70".to_string(),
+            properties: Vec::new(),
+            children: records,
+        }],
+    };
+    let mut mat = Material::new();
+    apply_properties70(&node, &mut mat, None);
+    Some(mat)
+}
+
 /// Read a direct-child node's first string property (string-typed
 /// FBX sub-records carry a single `S` property). Used for
 /// `RelativeFilename` / `FileName` lookups on Texture + Video records.
@@ -811,14 +915,18 @@ fn read_content_blob(node: &FbxNode) -> Option<Vec<u8>> {
                 Some(bytes.clone())
             }
         }
-        // Some exporters mis-tag the embedded blob as `S` (string)
-        // rather than `R` (raw). Accept either — both type codes have
-        // identical wire layout (`u32 length | bytes`).
+        // The ASCII form carries the blob as a quoted base64 string
+        // (the staged texture-video-ascii-v7500.fbx fixture's
+        // `Content: , "AAAKAAAA…"` — a TGA header once decoded; see
+        // [`crate::base64`]). A string that is not well-formed base64
+        // is taken as the payload bytes themselves (an exporter
+        // mis-tagging the blob as `S` — both type codes have the
+        // identical `u32 length | bytes` wire layout).
         FbxProperty::String(bytes) => {
             if bytes.is_empty() {
                 None
             } else {
-                Some(bytes.clone())
+                Some(crate::base64::decode(bytes).unwrap_or_else(|| bytes.clone()))
             }
         }
         _ => None,

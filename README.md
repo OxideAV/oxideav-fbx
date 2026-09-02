@@ -685,10 +685,16 @@ clean-room from third-party documentation:
   fixture (8 top-level §7 sections, 4 Geometry + 4 Model + 2
   Material objects, both float and int typed arrays, Cyrillic
   identifiers, backslash paths). Output is valid UTF-8 by
-  construction. `R` raw blobs (binary-only `R` properties) and
-  strings carrying interior `"` or newline have no ASCII grammar
-  form and surface a clean `Error::invalid` rather than silently
-  produce broken text. Banner toggle via
+  construction. `R` raw blobs render as a quoted base64 string —
+  the form the staged texture-video-ascii-v7500.fbx fixture uses
+  for its embedded `Video.Content` (its text decodes to a TGA
+  header), which the ASCII reader + `Content` consumer decode back,
+  so embedded media survives both forms; the binary-only top-level
+  `FileId` / `CreationTime` / `Creator` provenance records are
+  omitted in ASCII output (every staged ASCII fixture carries
+  exactly the eight §7 sections). Strings carrying interior `"` or
+  newline have no ASCII grammar form and surface a clean
+  `Error::invalid` rather than silently produce broken text.
   `write_ascii_document_with_options(&doc, &AsciiWriterOptions::default().emit_banner(false))`.
 - **`Scene3D` encoder (`Mesh3DEncoder`)** — `FbxEncoder` /
   `scene_writer::encode_scene` is the inverse of `scene::build_scene`:

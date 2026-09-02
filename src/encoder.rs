@@ -83,7 +83,13 @@ impl FbxEncoder {
 
 impl Mesh3DEncoder for FbxEncoder {
     fn encode(&mut self, scene: &Scene3D) -> Result<Vec<u8>> {
-        let doc = encode_scene_with_options(scene, &self.scene_options);
+        let mut scene_options = self.scene_options.clone();
+        if self.form == FbxOutputForm::Ascii {
+            // Binary-only top-level provenance records have no ASCII
+            // form (see `SceneEncodeOptions::binary_provenance`).
+            scene_options.binary_provenance = false;
+        }
+        let doc = encode_scene_with_options(scene, &scene_options);
         match self.form {
             FbxOutputForm::Binary => {
                 // A decoded binary file's footer id rides on

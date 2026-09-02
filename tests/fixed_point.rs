@@ -545,17 +545,33 @@ fn run_fixture(name: &str, form: FbxOutputForm) -> Option<Result<Outcome, String
 /// laws below skip exactly these and nothing else, so closing a
 /// feature means deleting its line here (and the law then guards
 /// it forever).
+/// Inherent differences between the two output forms — documented,
+/// permanent, not burn-down items: the binary-only top-level
+/// provenance records (`FileId` / `CreationTime` / `Creator`,
+/// `fbx-binary-properties70.md` §3c) and the binary footer id have
+/// no ASCII form (every staged ASCII fixture carries exactly the
+/// eight §7 sections), so a binary fixture re-encoded as ASCII loses
+/// exactly those four extras.
+fn form_limit(form: FbxOutputForm, kind: &str, key: &str) -> bool {
+    form == FbxOutputForm::Ascii
+        && match kind {
+            "parity" => matches!(
+                key,
+                "scene.extras[fbx:file_id]"
+                    | "scene.extras[fbx:file_creation_time]"
+                    | "scene.extras[fbx:file_creator]"
+                    | "scene.extras[fbx:footer_id]"
+            ),
+            "census" => matches!(key, "FileId" | "CreationTime" | "Creator"),
+            _ => false,
+        }
+}
+
 fn known_gap(form: FbxOutputForm, kind: &str, key: &str) -> bool {
-    // The ASCII writer has no form for `R` blobs (binary `FileId`,
-    // embedded `Video.Content`), so every fixture carrying one
-    // cannot yet be re-encoded as ASCII at all.
-    if kind == "encode" && form == FbxOutputForm::Ascii {
+    if form_limit(form, kind, key) {
         return true;
     }
     let parity: &[&str] = &[
-        // material property coverage
-        "material[*].extras[fbx:shading_model]",
-        "material[*].roughness",
         // geometry: shared vertices / polygons / edges / smoothing
         "mesh[*].prim[*].extras[fbx:edges]",
         "mesh[*].prim[*].extras[fbx:edge_smoothing]",
@@ -563,11 +579,6 @@ fn known_gap(form: FbxOutputForm, kind: &str, key: &str) -> bool {
         "mesh[*].prim[*].extras[fbx:material_mapping]",
         // animation: uninterpreted key-attribute passthrough
         "scene.extras[fbx:key_attrs]",
-        // textures referenced by no material are never emitted
-        "texture[*].image",
-        "texture[*].name",
-        "texture[*].sampler",
-        "scene.extras[fbx:texture_records]",
     ];
     let census: &[&str] = &[
         "FBXHeaderExtension/SceneInfo",

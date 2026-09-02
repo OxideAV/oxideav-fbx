@@ -112,6 +112,13 @@ pub struct SceneEncodeOptions {
     /// handedness-sign `TangentsW`) for primitives that carry the
     /// canonical glTF-style `Primitive::tangents` slot. Default `true`.
     pub emit_tangents: bool,
+    /// Emit the binary-only top-level provenance siblings of
+    /// `FBXHeaderExtension` (`FileId` / `CreationTime` / `Creator`,
+    /// `fbx-binary-properties70.md` §3c) from the `fbx:file_*`
+    /// extras. The ASCII form has no such records — every staged
+    /// ASCII fixture carries exactly the eight §7 sections — so the
+    /// ASCII encoder path turns this off. Default `true`.
+    pub binary_provenance: bool,
 }
 
 impl Default for SceneEncodeOptions {
@@ -122,6 +129,7 @@ impl Default for SceneEncodeOptions {
             emit_uvs: true,
             emit_colors: true,
             emit_tangents: true,
+            binary_provenance: true,
         }
     }
 }
@@ -218,42 +226,62 @@ pub fn encode_scene_with_options(scene: &Scene3D, opts: &SceneEncodeOptions) -> 
             }
         }
     }
-    let mut texture_emitted = vec![false; scene.textures.len()];
+    // Every `Scene3D::Texture` becomes one `Texture` element, in
+    // texture-index order (the decode side assigns `TextureId`s in
+    // document order, so this keeps the ids stable across a round
+    // trip). A texture referenced by no material — the *orphan*
+    // embedded texture the staged texture-video-ascii-v7500.fbx
+    // fixture carries — is emitted too, with default reference
+    // settings. The first material slot referencing a texture
+    // supplies its `UVSet` / placement records (a texture shared by
+    // several slots carries the first reference's; divergent
+    // per-slot transforms on one shared texture are a documented
+    // lossy edge).
+    let mut first_ref: Vec<Option<(usize, oxideav_mesh3d::TextureRef)>> =
+        vec![None; scene.textures.len()];
+    for (xi, mat) in scene.materials.iter().enumerate() {
+        for (texref, _) in material_texture_slots(mat) {
+            if let Some(slot) = first_ref.get_mut(texref.texture.0 as usize) {
+                if slot.is_none() {
+                    *slot = Some((xi, texref));
+                }
+            }
+        }
+    }
+    for (tex_idx, tex) in scene.textures.iter().enumerate() {
+        let (uv_label, texref) = match first_ref[tex_idx] {
+            Some((xi, texref)) => (uv_set_label(scene, mesh_of_material[xi], &texref), texref),
+            None => (
+                None,
+                oxideav_mesh3d::TextureRef::new(oxideav_mesh3d::TextureId(tex_idx as u32)),
+            ),
+        };
+        let raw_records = scene
+            .extras
+            .get("fbx:texture_records")
+            .and_then(|v| v.get(tex_idx.to_string()));
+        let (tex_node, video_node) = build_texture(
+            tex,
+            texture_ids[tex_idx],
+            video_ids[tex_idx],
+            &texref,
+            uv_label.as_deref(),
+            raw_records,
+        );
+        objects.children.push(tex_node);
+        if let Some(vnode) = video_node {
+            objects.children.push(vnode);
+            // Video -> Texture OO (backing media).
+            connections
+                .children
+                .push(connection_oo(video_ids[tex_idx], texture_ids[tex_idx]));
+        }
+    }
     for (xi, mat) in scene.materials.iter().enumerate() {
         for (texref, prop_name) in material_texture_slots(mat) {
             let tex_idx = texref.texture.0 as usize;
             if tex_idx >= scene.textures.len() {
                 continue;
-            }
-            // First-binding-wins per Texture element: the element is
-            // deduplicated per `TextureId`, so a texture shared by
-            // several slots carries the first reference's UVSet /
-            // transform records (divergent per-slot transforms on one
-            // shared texture are a documented lossy edge).
-            if !texture_emitted[tex_idx] {
-                texture_emitted[tex_idx] = true;
-                let tex = &scene.textures[tex_idx];
-                let uv_label = uv_set_label(scene, mesh_of_material[xi], &texref);
-                let raw_records = scene
-                    .extras
-                    .get("fbx:texture_records")
-                    .and_then(|v| v.get(tex_idx.to_string()));
-                let (tex_node, video_node) = build_texture(
-                    tex,
-                    texture_ids[tex_idx],
-                    video_ids[tex_idx],
-                    &texref,
-                    uv_label.as_deref(),
-                    raw_records,
-                );
-                objects.children.push(tex_node);
-                if let Some(vnode) = video_node {
-                    objects.children.push(vnode);
-                    // Video -> Texture OO (backing media).
-                    connections
-                        .children
-                        .push(connection_oo(video_ids[tex_idx], texture_ids[tex_idx]));
-                }
             }
             // Texture -> Material(prop_name) OP connection.
             connections.children.push(connection_op(
@@ -473,31 +501,33 @@ pub fn encode_scene_with_options(scene: &Scene3D, opts: &SceneEncodeOptions) -> 
     // FileId, CreationTime, Creator, GlobalSettings, ...`). Only
     // present when the source document carried them (see
     // `crate::header_info::extract_top_level_provenance`).
-    if let Some(bytes) = scene
-        .extras
-        .get("fbx:file_id")
-        .and_then(|v| v.as_str())
-        .and_then(hex_to_bytes)
-    {
-        root.children.push(FbxNode {
-            name: "FileId".to_string(),
-            properties: vec![FbxProperty::Raw(bytes)],
-            children: Vec::new(),
-        });
-    }
-    if let Some(t) = scene
-        .extras
-        .get("fbx:file_creation_time")
-        .and_then(|v| v.as_str())
-    {
-        root.children.push(leaf_string("CreationTime", t));
-    }
-    if let Some(c) = scene
-        .extras
-        .get("fbx:file_creator")
-        .and_then(|v| v.as_str())
-    {
-        root.children.push(leaf_string("Creator", c));
+    if opts.binary_provenance {
+        if let Some(bytes) = scene
+            .extras
+            .get("fbx:file_id")
+            .and_then(|v| v.as_str())
+            .and_then(hex_to_bytes)
+        {
+            root.children.push(FbxNode {
+                name: "FileId".to_string(),
+                properties: vec![FbxProperty::Raw(bytes)],
+                children: Vec::new(),
+            });
+        }
+        if let Some(t) = scene
+            .extras
+            .get("fbx:file_creation_time")
+            .and_then(|v| v.as_str())
+        {
+            root.children.push(leaf_string("CreationTime", t));
+        }
+        if let Some(c) = scene
+            .extras
+            .get("fbx:file_creator")
+            .and_then(|v| v.as_str())
+        {
+            root.children.push(leaf_string("Creator", c));
+        }
     }
     root.children.push(build_global_settings(scene));
     // `Documents` + `References` — the §7 sections sitting between
@@ -1067,6 +1097,23 @@ fn build_definitions(objects: &FbxNode, scene: &Scene3D) -> FbxNode {
             if node_attr_all_camera {
                 ot_children.push(template_node("FbxCamera", FBX_CAMERA_TEMPLATE));
             }
+        } else if class == "Material" {
+            // Concrete-class rule again: `FbxSurfaceLambert` when
+            // every emitted material declares a lambert shading
+            // model, else the `FbxSurfacePhong` body (whose specular
+            // records the typed `roughness` / `metallic` map onto).
+            let all_lambert = !scene.materials.is_empty()
+                && scene.materials.iter().all(|m| {
+                    m.extras
+                        .get("fbx:shading_model")
+                        .and_then(|v| v.as_str())
+                        .is_some_and(|s| s.eq_ignore_ascii_case("lambert"))
+                });
+            ot_children.push(if all_lambert {
+                template_node("FbxSurfaceLambert", FBX_SURFACE_LAMBERT_TEMPLATE)
+            } else {
+                template_node("FbxSurfacePhong", FBX_SURFACE_PHONG_TEMPLATE)
+            });
         } else if let Some(template) = class_property_template(class) {
             ot_children.push(template);
         }
@@ -1134,7 +1181,6 @@ fn class_property_template(class: &str) -> Option<FbxNode> {
         "AnimationLayer" => ("FbxAnimLayer", FBX_ANIM_LAYER_TEMPLATE),
         "AnimationCurveNode" => ("FbxAnimCurveNode", FBX_ANIM_CURVE_NODE_TEMPLATE),
         "Geometry" => ("FbxMesh", FBX_MESH_TEMPLATE),
-        "Material" => ("FbxSurfaceLambert", FBX_SURFACE_LAMBERT_TEMPLATE),
         "Model" => ("FbxNode", FBX_NODE_TEMPLATE),
         "Texture" => ("FbxFileTexture", FBX_FILE_TEXTURE_TEMPLATE),
         "Video" => ("FbxVideo", FBX_VIDEO_TEMPLATE),
@@ -1468,6 +1514,60 @@ const FBX_MESH_TEMPLATE: &[TRecord] = &[
 /// default set, transcribed from the staged fixture's Definitions.
 /// Note the fixture's mixed `"Color"` vs `"ColorRGB"` typeNames —
 /// both accepted by the decode side's `as_color_rgb`.
+/// `FbxSurfacePhong` — the 22-record body the SDK-authored
+/// `docs/3d/fbx/fixtures/texture-video-ascii-v7500.fbx` carries
+/// (`fbx-property-templates.md` §6 lists it among that fixture's
+/// bodies): the Lambert set plus the specular / reflection records
+/// the typed `roughness` / `metallic` fields map onto.
+const FBX_SURFACE_PHONG_TEMPLATE: &[TRecord] = &[
+    ("ShadingModel", "KString", "", "", TDef::S("Phong")),
+    ("MultiLayer", "bool", "", "", TDef::I(0)),
+    ("EmissiveColor", "Color", "", "A", TDef::V(0.0, 0.0, 0.0)),
+    ("EmissiveFactor", "Number", "", "A", TDef::D(1.0)),
+    ("AmbientColor", "Color", "", "A", TDef::V(0.2, 0.2, 0.2)),
+    ("AmbientFactor", "Number", "", "A", TDef::D(1.0)),
+    ("DiffuseColor", "Color", "", "A", TDef::V(0.8, 0.8, 0.8)),
+    ("DiffuseFactor", "Number", "", "A", TDef::D(1.0)),
+    ("Bump", "Vector3D", "Vector", "", TDef::V(0.0, 0.0, 0.0)),
+    (
+        "NormalMap",
+        "Vector3D",
+        "Vector",
+        "",
+        TDef::V(0.0, 0.0, 0.0),
+    ),
+    ("BumpFactor", "double", "Number", "", TDef::D(1.0)),
+    ("TransparentColor", "Color", "", "A", TDef::V(0.0, 0.0, 0.0)),
+    ("TransparencyFactor", "Number", "", "A", TDef::D(0.0)),
+    (
+        "DisplacementColor",
+        "ColorRGB",
+        "Color",
+        "",
+        TDef::V(0.0, 0.0, 0.0),
+    ),
+    ("DisplacementFactor", "double", "Number", "", TDef::D(1.0)),
+    (
+        "VectorDisplacementColor",
+        "ColorRGB",
+        "Color",
+        "",
+        TDef::V(0.0, 0.0, 0.0),
+    ),
+    (
+        "VectorDisplacementFactor",
+        "double",
+        "Number",
+        "",
+        TDef::D(1.0),
+    ),
+    ("SpecularColor", "Color", "", "A", TDef::V(0.2, 0.2, 0.2)),
+    ("SpecularFactor", "Number", "", "A", TDef::D(1.0)),
+    ("ShininessExponent", "Number", "", "A", TDef::D(20.0)),
+    ("ReflectionColor", "Color", "", "A", TDef::V(0.0, 0.0, 0.0)),
+    ("ReflectionFactor", "Number", "", "A", TDef::D(1.0)),
+];
+
 const FBX_SURFACE_LAMBERT_TEMPLATE: &[TRecord] = &[
     ("ShadingModel", "KString", "", "", TDef::S("Lambert")),
     ("MultiLayer", "bool", "", "", TDef::I(0)),
@@ -2788,44 +2888,115 @@ fn node_attribute(id: i64, subtype: &str, ps: Vec<FbxNode>) -> FbxNode {
 /// Build a `Material` element record from a [`Material`].
 fn build_material(mat: &Material, id: i64) -> FbxNode {
     let name = mat.name.clone().unwrap_or_default();
-    let mut ps: Vec<FbxNode> = Vec::new();
-    // DiffuseColor (the rgb of base_color; the decode path multiplies
-    // DiffuseColor × DiffuseFactor, so we emit DiffuseFactor 1.0).
-    ps.push(p_color(
-        "DiffuseColor",
-        [
-            mat.base_color[0] as f64,
-            mat.base_color[1] as f64,
-            mat.base_color[2] as f64,
-        ],
-    ));
-    ps.push(p_number("DiffuseFactor", 1.0));
-    // Opacity (base_color alpha).
-    if matches!(mat.alpha_mode, AlphaMode::Blend) || mat.base_color[3] < 1.0 {
-        ps.push(p_double("Opacity", mat.base_color[3] as f64));
-    }
-    // EmissiveColor × EmissiveFactor.
-    if mat.emissive_factor != [0.0, 0.0, 0.0] {
+
+    // Verbatim path: the decode side stashed the element's own
+    // `P` records on `fbx:material_records`. They are re-emitted
+    // untouched as long as the typed PBR fields still decode to the
+    // same values from them (i.e. nobody edited the typed
+    // material); otherwise the typed fields win for the names this
+    // crate maps and every *other* raw record still rides along.
+    let raw: Vec<FbxNode> = mat
+        .extras
+        .get("fbx:material_records")
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(crate::properties70::json_to_p_record)
+        .collect();
+    let raw_agrees = crate::material::material_from_own_records(raw.clone())
+        .map(|decoded| typed_material_eq(&decoded, mat))
+        .unwrap_or(false);
+
+    let ps: Vec<FbxNode> = if raw_agrees {
+        raw
+    } else {
+        let mut ps: Vec<FbxNode> = Vec::new();
+        // DiffuseColor (the rgb of base_color; the decode path
+        // multiplies DiffuseColor × DiffuseFactor, so we emit
+        // DiffuseFactor 1.0).
         ps.push(p_color(
-            "EmissiveColor",
+            "DiffuseColor",
             [
-                mat.emissive_factor[0] as f64,
-                mat.emissive_factor[1] as f64,
-                mat.emissive_factor[2] as f64,
+                mat.base_color[0] as f64,
+                mat.base_color[1] as f64,
+                mat.base_color[2] as f64,
             ],
         ));
-        ps.push(p_number("EmissiveFactor", 1.0));
-    }
-    // ReflectionFactor ← metallic.
-    if mat.metallic != 1.0 {
+        ps.push(p_number("DiffuseFactor", 1.0));
+        // Opacity (base_color alpha).
+        if matches!(mat.alpha_mode, AlphaMode::Blend) || mat.base_color[3] < 1.0 {
+            ps.push(p_double("Opacity", mat.base_color[3] as f64));
+        }
+        // EmissiveColor × EmissiveFactor.
+        if mat.emissive_factor != [0.0, 0.0, 0.0] {
+            ps.push(p_color(
+                "EmissiveColor",
+                [
+                    mat.emissive_factor[0] as f64,
+                    mat.emissive_factor[1] as f64,
+                    mat.emissive_factor[2] as f64,
+                ],
+            ));
+            ps.push(p_number("EmissiveFactor", 1.0));
+        }
+        // Shininess ← roughness: the exact inverse of the decode
+        // side's `roughness = sqrt(2 / (n + 2))`, always written so
+        // the value is independent of whichever class template the
+        // file carries (a Phong template defaults ShininessExponent
+        // to 20, which would otherwise re-decode as roughness 0.30).
+        ps.push(p_double(
+            "Shininess",
+            shininess_from_roughness(mat.roughness),
+        ));
+        // ReflectionFactor ← metallic (same template-independence
+        // argument).
         ps.push(p_number("ReflectionFactor", mat.metallic as f64));
-    }
+        // Raw records outside the typed mapping ride along verbatim.
+        for r in raw {
+            let keep = match r.properties.first() {
+                Some(FbxProperty::String(n)) => !TYPED_MATERIAL_NAMES
+                    .iter()
+                    .any(|t| t.as_bytes() == n.as_slice()),
+                _ => false,
+            };
+            if keep {
+                ps.push(r);
+            }
+        }
+        ps
+    };
 
-    let children = vec![FbxNode {
-        name: "Properties70".to_string(),
-        properties: Vec::new(),
-        children: ps,
-    }];
+    // Body leaves in fixture order: `Version`, `ShadingModel`,
+    // `MultiLayer`, then `Properties70`. The shading-model string is
+    // re-emitted with its authored spelling (`"phong"` / `"Phong"` /
+    // `"lambert"` all occur in the staged corpus); a fresh scene
+    // defaults to `"Phong"`, the classic material whose template
+    // carries the specular records the typed PBR fields map onto.
+    let version = mat
+        .extras
+        .get("fbx:material_version")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(102);
+    let shading = mat
+        .extras
+        .get("fbx:shading_model")
+        .and_then(|v| v.as_str())
+        .unwrap_or("Phong");
+    let multi_layer = mat
+        .extras
+        .get("fbx:multi_layer")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+    let children = vec![
+        leaf_i32("Version", version as i32),
+        leaf_string("ShadingModel", shading),
+        leaf_i32("MultiLayer", multi_layer as i32),
+        FbxNode {
+            name: "Properties70".to_string(),
+            properties: Vec::new(),
+            children: ps,
+        },
+    ];
 
     FbxNode {
         name: "Material".to_string(),
@@ -2836,6 +3007,46 @@ fn build_material(mat: &Material, id: i64) -> FbxNode {
         ],
         children,
     }
+}
+
+/// The `P`-record names whose values the typed [`Material`] fields
+/// own (see `crate::material::apply_properties70`); every other name
+/// is passthrough-only.
+const TYPED_MATERIAL_NAMES: &[&str] = &[
+    "DiffuseColor",
+    "Diffuse",
+    "DiffuseFactor",
+    "Opacity",
+    "EmissiveColor",
+    "EmissiveFactor",
+    "Shininess",
+    "ShininessExponent",
+    "ReflectionFactor",
+    "ShadingModel",
+];
+
+/// Inverse of the decode-side `roughness = sqrt(2 / (n + 2))`.
+fn shininess_from_roughness(roughness: f32) -> f64 {
+    let r = f64::from(roughness.clamp(1.0e-3, 1.0));
+    (2.0 / (r * r) - 2.0).max(0.0)
+}
+
+/// Do two materials agree on every field the FBX classic-material
+/// mapping produces? (Name / textures / extras are not compared —
+/// only the values the `P` records decide.)
+fn typed_material_eq(a: &Material, b: &Material) -> bool {
+    let close = |x: f32, y: f32| (x - y).abs() <= 1.0e-5;
+    a.base_color
+        .iter()
+        .zip(&b.base_color)
+        .all(|(x, y)| close(*x, *y))
+        && a.emissive_factor
+            .iter()
+            .zip(&b.emissive_factor)
+            .all(|(x, y)| close(*x, *y))
+        && close(a.roughness, b.roughness)
+        && close(a.metallic, b.metallic)
+        && a.alpha_mode == b.alpha_mode
 }
 
 /// A primitive's material slot table in FBX OO-connection order —
@@ -3075,8 +3286,27 @@ fn build_texture(
         oxideav_mesh3d::ImageData::Embedded(_) => (String::new(), None),
     };
 
-    tex_children.push(leaf_string("RelativeFilename", &uri));
-    tex_children.push(leaf_string("FileName", &uri));
+    // Path leaves: the round-tripped producer strings when the decode
+    // side stashed them (`fbx:texture_records[i].relative_filename`
+    // / `file_name` / `filename`, plus the `video_*` trio for the
+    // backing Video element), else the typed URI.
+    let raw_str = |key: &str| -> Option<String> {
+        raw_records
+            .and_then(|r| r.get(key))
+            .and_then(|v| v.as_str())
+            .map(str::to_owned)
+    };
+    tex_children.push(leaf_string(
+        "RelativeFilename",
+        &raw_str("relative_filename").unwrap_or_else(|| uri.clone()),
+    ));
+    tex_children.push(leaf_string(
+        "FileName",
+        &raw_str("file_name").unwrap_or_else(|| uri.clone()),
+    ));
+    if let Some(v) = raw_str("filename") {
+        tex_children.push(leaf_string("Filename", &v));
+    }
 
     let tex_node = FbxNode {
         name: "Texture".to_string(),
@@ -3088,21 +3318,46 @@ fn build_texture(
         children: tex_children,
     };
 
-    let video_node = embedded.map(|bytes| FbxNode {
-        name: "Video".to_string(),
-        properties: vec![
-            FbxProperty::I64(video_id),
-            FbxProperty::String(name_class(&name, "Video")),
-            FbxProperty::String(b"Clip".to_vec()),
-        ],
-        children: vec![
-            leaf_string("RelativeFilename", &uri),
-            FbxNode {
+    // A backing `Video` element is emitted for embedded bytes (the
+    // self-contained form) and also for an external texture whose
+    // source file carried one (`video_*` path leaves round-tripped
+    // on the raw records) — the staged texture-video fixture backs
+    // its external texture with a Content-less Video element.
+    let has_video_leaves = [
+        "video_filename",
+        "video_file_name",
+        "video_relative_filename",
+    ]
+    .iter()
+    .any(|k| raw_str(k).is_some());
+    let video_node = (embedded.is_some() || has_video_leaves).then(|| {
+        let mut children = Vec::new();
+        if let Some(f) = raw_str("video_filename") {
+            children.push(leaf_string("Filename", &f));
+        }
+        if let Some(f) = raw_str("video_file_name") {
+            children.push(leaf_string("FileName", &f));
+        }
+        children.push(leaf_string(
+            "RelativeFilename",
+            &raw_str("video_relative_filename").unwrap_or_else(|| uri.clone()),
+        ));
+        if let Some(bytes) = embedded {
+            children.push(FbxNode {
                 name: "Content".to_string(),
                 properties: vec![FbxProperty::Raw(bytes)],
                 children: Vec::new(),
-            },
-        ],
+            });
+        }
+        FbxNode {
+            name: "Video".to_string(),
+            properties: vec![
+                FbxProperty::I64(video_id),
+                FbxProperty::String(name_class(&name, "Video")),
+                FbxProperty::String(b"Clip".to_vec()),
+            ],
+            children,
+        }
     });
 
     (tex_node, video_node)
@@ -3558,13 +3813,35 @@ mod tests {
         let doc = encode_scene(&scene);
         let defs = crate::definitions::Definitions::from_document(&doc);
 
-        // Material → FbxSurfaceLambert with the fixture defaults.
+        // Material → FbxSurfacePhong for a fresh (typed-PBR)
+        // material, with the fixture defaults incl. the specular /
+        // reflection records the typed fields map onto.
         let mat_def = defs.get("Material").expect("Material ObjectType");
-        assert_eq!(mat_def.template_name.as_deref(), Some("FbxSurfaceLambert"));
+        assert_eq!(mat_def.template_name.as_deref(), Some("FbxSurfacePhong"));
         let tpl = defs.template_for("Material").expect("template body");
-        assert_eq!(tpl.as_kstring("ShadingModel"), Some("Lambert"));
+        assert_eq!(tpl.as_kstring("ShadingModel"), Some("Phong"));
         assert_eq!(tpl.as_number("DiffuseFactor"), Some(1.0));
         assert_eq!(tpl.as_color_rgb("DiffuseColor"), Some([0.8, 0.8, 0.8]));
+        assert_eq!(tpl.as_number("ShininessExponent"), Some(20.0));
+        assert_eq!(tpl.as_number("ReflectionFactor"), Some(1.0));
+
+        // A scene whose every material declares a lambert shading
+        // model gets the FbxSurfaceLambert body instead.
+        let mut lambert = scene.clone();
+        lambert.materials[0].extras.insert(
+            "fbx:shading_model".into(),
+            serde_json::Value::String("lambert".into()),
+        );
+        let ldefs = crate::definitions::Definitions::from_document(&encode_scene(&lambert));
+        assert_eq!(
+            ldefs.get("Material").unwrap().template_name.as_deref(),
+            Some("FbxSurfaceLambert")
+        );
+        assert!(ldefs
+            .template_for("Material")
+            .unwrap()
+            .as_number("ShininessExponent")
+            .is_none());
 
         // Model → FbxNode with zero pivots / identity Lcl defaults.
         let tpl = defs.template_for("Model").expect("Model template");
