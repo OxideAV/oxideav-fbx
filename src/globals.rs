@@ -164,21 +164,17 @@ pub fn extract_global_settings(doc: &FbxDocument, scene: &mut Scene3D) -> usize 
         }
     }
 
-    // String-typed (KString) records.
-    for name in ["DefaultCamera"] {
-        if let Some(s) = props.as_str(name) {
-            extras.insert(extras_key(name), Value::String(s.to_owned()));
-            recognised += 1;
-        }
+    // String-typed (KString) record.
+    if let Some(s) = props.as_str("DefaultCamera") {
+        extras.insert(extras_key("DefaultCamera"), Value::String(s.to_owned()));
+        recognised += 1;
     }
 
-    // Vec3-typed records (ColorRGB / Vector3D).
-    for name in ["AmbientColor"] {
-        if let Some(v) = props.as_vec3(name) {
-            let arr = Value::Array(vec![f64_value(v[0]), f64_value(v[1]), f64_value(v[2])]);
-            extras.insert(extras_key(name), arr);
-            recognised += 1;
-        }
+    // Vec3-typed record (ColorRGB / Vector3D).
+    if let Some(v) = props.as_vec3("AmbientColor") {
+        let arr = Value::Array(vec![f64_value(v[0]), f64_value(v[1]), f64_value(v[2])]);
+        extras.insert(extras_key("AmbientColor"), arr);
+        recognised += 1;
     }
 
     // Translate `UnitScaleFactor` to `Scene3D::unit` for the two
