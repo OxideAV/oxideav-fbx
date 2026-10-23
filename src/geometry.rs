@@ -390,28 +390,28 @@ pub fn extract_geometry_mesh_with_corners(
     // boundaries without re-deriving the triangulation; the
     // `fbx:material_mapping` key captures the original mapping mode
     // for diagnostics.
-    if let Some(layer) = geom.children_named("LayerElementMaterial").next() {
-        if let Some(per_corner_slots) = pull_layer_material_slots(layer, &triangles)? {
-            // Per-corner buffer (length == corner_indices.len()).
-            prim.extras.insert(
-                "fbx:face_material_slots".to_string(),
-                Value::Array(
-                    per_corner_slots
-                        .iter()
-                        .map(|&s| Value::Number(serde_json::Number::from(s)))
-                        .collect(),
-                ),
-            );
-            // Record the source mapping for downstream consumers.
-            if let Some(mapping) = layer.child("MappingInformationType").and_then(|n| {
-                n.properties
-                    .first()
-                    .and_then(FbxProperty::as_str)
-                    .map(str::to_owned)
-            }) {
-                prim.extras
-                    .insert("fbx:material_mapping".to_string(), Value::String(mapping));
-            }
+    if let Some(layer) = geom.children_named("LayerElementMaterial").next()
+        && let Some(per_corner_slots) = pull_layer_material_slots(layer, &triangles)?
+    {
+        // Per-corner buffer (length == corner_indices.len()).
+        prim.extras.insert(
+            "fbx:face_material_slots".to_string(),
+            Value::Array(
+                per_corner_slots
+                    .iter()
+                    .map(|&s| Value::Number(serde_json::Number::from(s)))
+                    .collect(),
+            ),
+        );
+        // Record the source mapping for downstream consumers.
+        if let Some(mapping) = layer.child("MappingInformationType").and_then(|n| {
+            n.properties
+                .first()
+                .and_then(FbxProperty::as_str)
+                .map(str::to_owned)
+        }) {
+            prim.extras
+                .insert("fbx:material_mapping".to_string(), Value::String(mapping));
         }
     }
 
@@ -458,34 +458,33 @@ pub fn extract_geometry_mesh_with_corners(
             ),
         );
     }
-    if let Some(layer) = geom.children_named("LayerElementSmoothing").next() {
-        if let Some(sm) =
+    if let Some(layer) = geom.children_named("LayerElementSmoothing").next()
+        && let Some(sm) =
             pull_layer_smoothing(layer, edge_pairs.as_deref(), &polygon_indices, &triangles)?
-        {
+    {
+        prim.extras.insert(
+            "fbx:smoothing".to_string(),
+            Value::Array(
+                sm.per_corner
+                    .iter()
+                    .map(|&v| Value::Number(serde_json::Number::from(v)))
+                    .collect(),
+            ),
+        );
+        prim.extras.insert(
+            "fbx:smoothing_mapping".to_string(),
+            Value::String(sm.mapping.to_string()),
+        );
+        if let Some(per_edge) = &sm.per_edge {
             prim.extras.insert(
-                "fbx:smoothing".to_string(),
+                "fbx:edge_smoothing".to_string(),
                 Value::Array(
-                    sm.per_corner
+                    per_edge
                         .iter()
                         .map(|&v| Value::Number(serde_json::Number::from(v)))
                         .collect(),
                 ),
             );
-            prim.extras.insert(
-                "fbx:smoothing_mapping".to_string(),
-                Value::String(sm.mapping.to_string()),
-            );
-            if let Some(per_edge) = &sm.per_edge {
-                prim.extras.insert(
-                    "fbx:edge_smoothing".to_string(),
-                    Value::Array(
-                        per_edge
-                            .iter()
-                            .map(|&v| Value::Number(serde_json::Number::from(v)))
-                            .collect(),
-                    ),
-                );
-            }
         }
     }
 
@@ -703,11 +702,7 @@ pub(crate) fn triangulate(pvi: &[i32]) -> Result<Triangulation> {
 /// Gessler's writeup the last index of each polygon is stored as
 /// `~vertex_index`. Positive values pass through.
 fn decode_pvi(raw: i32) -> u32 {
-    if raw < 0 {
-        (!raw) as u32
-    } else {
-        raw as u32
-    }
+    if raw < 0 { (!raw) as u32 } else { raw as u32 }
 }
 
 /// The layer-disambiguating integer (`TypedIndex`) carried directly
@@ -773,7 +768,9 @@ fn pull_layer_vec3(
         )));
     }
     let triples: Vec<[f32; 3]> = raw
-        .chunks_exact(3)
+        .as_chunks::<3>()
+        .0
+        .iter()
         .map(|c| [c[0] as f32, c[1] as f32, c[2] as f32])
         .collect();
     // Optional indirection.
@@ -1017,7 +1014,9 @@ fn pull_layer_vec2(
         )));
     }
     let pairs: Vec<[f32; 2]> = raw
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|c| [c[0] as f32, c[1] as f32])
         .collect();
     let index_arr: Option<Vec<i32>> = layer.child(index_name).and_then(|n| {
@@ -1090,7 +1089,9 @@ fn pull_layer_vec4(
         )));
     }
     let quads: Vec<[f32; 4]> = raw
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| [c[0] as f32, c[1] as f32, c[2] as f32, c[3] as f32])
         .collect();
     let index_arr: Option<Vec<i32>> = layer.child(index_name).and_then(|n| {
@@ -1709,9 +1710,11 @@ mod tests {
         // edge table the mesh does not carry) still surfaces nothing
         // rather than mis-attribute the payload.
         let by_edge = make_layer_color_node(vec![0.25, 0.5, 0.75, 1.0], "ByEdge", "Direct", None);
-        assert!(pull_layer_vec4(&by_edge, "Colors", "ColorIndex", 3, &tris)
-            .unwrap()
-            .is_none());
+        assert!(
+            pull_layer_vec4(&by_edge, "Colors", "ColorIndex", 3, &tris)
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
@@ -1973,7 +1976,7 @@ mod tests {
         // Each quad fans into 2 triangles = 6 corners.
         let expected: Vec<i64> = masks
             .iter()
-            .flat_map(|&m| std::iter::repeat(m as i64).take(6))
+            .flat_map(|&m| std::iter::repeat_n(m as i64, 6))
             .collect();
         assert_eq!(per_corner, expected);
         // ByPolygon has no per-edge form.

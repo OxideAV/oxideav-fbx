@@ -25,7 +25,7 @@
 //! Test 3 — two tangent layers: first canonical, second in extras.
 //! Test 4 — a binormal layer surfaces on `fbx:binormals` with W.
 
-use oxideav_fbx::{FbxDecoder, FBX_MAGIC};
+use oxideav_fbx::{FBX_MAGIC, FbxDecoder};
 use oxideav_mesh3d::Mesh3DDecoder;
 
 const NULL_RECORD_BYTES_32: usize = 13;

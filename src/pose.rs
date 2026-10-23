@@ -139,11 +139,11 @@ pub fn extract_poses(doc: &FbxDocument, scene: &mut Scene3D, model_nodes: &HashM
     // 1) Stash each bone's bind-pose world matrix into its node's
     //    extras so the data round-trips even without a skeleton.
     for (&bone_id, matrix) in &bind_pose_world {
-        if let Some(&node_id) = model_nodes.get(&bone_id) {
-            if let Some(node) = scene.nodes.get_mut(node_id.0 as usize) {
-                node.extras
-                    .insert("fbx:bind_pose".to_string(), mat4_to_json(matrix));
-            }
+        if let Some(&node_id) = model_nodes.get(&bone_id)
+            && let Some(node) = scene.nodes.get_mut(node_id.0 as usize)
+        {
+            node.extras
+                .insert("fbx:bind_pose".to_string(), mat4_to_json(matrix));
         }
     }
 
@@ -470,9 +470,11 @@ mod tests {
         let doc = doc_with_pose(pose);
 
         extract_poses(&doc, &mut scene, &model_nodes);
-        assert!(!scene.nodes[n0.0 as usize]
-            .extras
-            .contains_key("fbx:bind_pose"));
+        assert!(
+            !scene.nodes[n0.0 as usize]
+                .extras
+                .contains_key("fbx:bind_pose")
+        );
     }
 
     #[test]
@@ -559,9 +561,11 @@ mod tests {
             root,
         };
         extract_poses(&doc, &mut scene, &model_nodes);
-        assert!(!scene.nodes[n0.0 as usize]
-            .extras
-            .contains_key("fbx:bind_pose"));
+        assert!(
+            !scene.nodes[n0.0 as usize]
+                .extras
+                .contains_key("fbx:bind_pose")
+        );
     }
 
     #[test]
@@ -747,8 +751,10 @@ mod tests {
             root,
         };
         extract_poses(&doc, &mut scene, &model_nodes);
-        assert!(!scene.nodes[n0.0 as usize]
-            .extras
-            .contains_key("fbx:bind_pose_parent_local"));
+        assert!(
+            !scene.nodes[n0.0 as usize]
+                .extras
+                .contains_key("fbx:bind_pose_parent_local")
+        );
     }
 }

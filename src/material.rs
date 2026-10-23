@@ -402,16 +402,16 @@ pub fn extract_materials(
         // mutably borrowed (the UV-name join reads the scene's meshes).
         let mut texref = oxideav_mesh3d::TextureRef::new(tex_id);
         if let Some(props) = texture_props.get(texture_fid) {
-            if let Some(uv_name) = props.uv_set_name.as_deref() {
-                if let Some(idx) = resolve_uv_set_index(
+            if let Some(uv_name) = props.uv_set_name.as_deref()
+                && let Some(idx) = resolve_uv_set_index(
                     uv_name,
                     *material_fid,
                     &models_of_material,
                     model_to_mesh,
                     scene,
-                ) {
-                    texref = texref.with_uv_set(idx);
-                }
+                )
+            {
+                texref = texref.with_uv_set(idx);
             }
             if let Some(t) = props.transform {
                 texref = texref.with_transform(t);
@@ -595,11 +595,11 @@ fn decode_texture_props(node: &FbxNode, template: Option<&PropertyMap>) -> Textu
     let scale_pivot = own.as_vec3("TextureScalingPivot");
     let uv_swap = own.as_bool("UVSwap");
 
-    let planar = translation.map_or(true, |t| t[2] == 0.0)
-        && rotation.map_or(true, |r| r[0] == 0.0 && r[1] == 0.0)
-        && scaling.map_or(true, |s| s[2] == 1.0)
-        && rot_pivot.map_or(true, |p| p == [0.0; 3])
-        && scale_pivot.map_or(true, |p| p == [0.0; 3])
+    let planar = translation.is_none_or(|t| t[2] == 0.0)
+        && rotation.is_none_or(|r| r[0] == 0.0 && r[1] == 0.0)
+        && scaling.is_none_or(|s| s[2] == 1.0)
+        && rot_pivot.is_none_or(|p| p == [0.0; 3])
+        && scale_pivot.is_none_or(|p| p == [0.0; 3])
         && uv_swap != Some(true);
     let authored = translation.is_some() || rotation.is_some() || scaling.is_some();
     let transform = if authored && planar {
@@ -649,10 +649,10 @@ fn decode_texture_props(node: &FbxNode, template: Option<&PropertyMap>) -> Textu
             raw.insert(snake_key(name), v.into());
         }
     }
-    if let Some(v) = own.as_f64("Texture alpha") {
-        if let Some(n) = serde_json::Number::from_f64(v) {
-            raw.insert("texture_alpha".to_string(), serde_json::Value::Number(n));
-        }
+    if let Some(v) = own.as_f64("Texture alpha")
+        && let Some(n) = serde_json::Number::from_f64(v)
+    {
+        raw.insert("texture_alpha".to_string(), serde_json::Value::Number(n));
     }
     if transform.is_none() {
         for (key, val) in [
@@ -729,10 +729,10 @@ fn resolve_uv_set_index(
             else {
                 continue;
             };
-            if let Some(pos) = names.iter().position(|n| n.as_str() == Some(uv_name)) {
-                if pos < prim.uvs.len() {
-                    return Some(pos as u32);
-                }
+            if let Some(pos) = names.iter().position(|n| n.as_str() == Some(uv_name))
+                && pos < prim.uvs.len()
+            {
+                return Some(pos as u32);
             }
         }
     }

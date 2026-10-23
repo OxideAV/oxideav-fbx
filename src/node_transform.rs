@@ -592,13 +592,13 @@ fn decode_local_transform(props: &PropertyMap) -> DecodedTransform {
 
     // InheritType (doc §4) — a world-composition selector, surfaced
     // raw when non-default; `crate::inherit` consumes it.
-    if let Some(inherit) = props.as_enum("InheritType") {
-        if inherit != 0 {
-            extras.push((
-                "fbx:inherit_type".to_string(),
-                serde_json::Value::from(i64::from(inherit)),
-            ));
-        }
+    if let Some(inherit) = props.as_enum("InheritType")
+        && inherit != 0
+    {
+        extras.push((
+            "fbx:inherit_type".to_string(),
+            serde_json::Value::from(i64::from(inherit)),
+        ));
     }
 
     let order = match order_int {

@@ -345,10 +345,9 @@ pub(crate) fn build_animation_objects(
                 .and_then(|t| t.get("node"))
                 .and_then(Value::as_u64),
             aux.get("property").and_then(Value::as_str),
-        ) {
-            if let Some(model_id) = node_fbx_id(NodeId(nid as u32)) {
-                connections.push(conn_op(cn_id, model_id, prop));
-            }
+        ) && let Some(model_id) = node_fbx_id(NodeId(nid as u32))
+        {
+            connections.push(conn_op(cn_id, model_id, prop));
         }
         let stack = aux.get("stack").and_then(Value::as_str);
         let layer = aux.get("layer").and_then(Value::as_str);

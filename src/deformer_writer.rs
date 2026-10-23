@@ -137,20 +137,19 @@ pub(crate) fn build_deformer_objects<'a>(
             .skin
             .and_then(|sid| scene.skins.get(sid.0 as usize))
             .and_then(|skin| scene.skeletons.get(skin.skeleton.0 as usize))
+            && let (Some(joints), Some(weights)) = (&prim.joints, &prim.weights)
         {
-            if let (Some(joints), Some(weights)) = (&prim.joints, &prim.weights) {
-                emit_skin(
-                    &mut out,
-                    scene,
-                    geom_fbx,
-                    skel,
-                    joints,
-                    weights,
-                    vertex_of,
-                    &node_fbx_id,
-                    &mut alloc,
-                );
-            }
+            emit_skin(
+                &mut out,
+                scene,
+                geom_fbx,
+                skel,
+                joints,
+                weights,
+                vertex_of,
+                &node_fbx_id,
+                &mut alloc,
+            );
         }
 
         // ---- Blend shapes ---------------------------------------------
@@ -261,10 +260,10 @@ fn emit_skin(
                 continue;
             }
             let ji = j4[slot] as usize;
-            if let (Some(list), Some(seen)) = (per_joint.get_mut(ji), seen.get_mut(ji)) {
-                if seen.insert(index) {
-                    list.push((index as i32, w as f64));
-                }
+            if let (Some(list), Some(seen)) = (per_joint.get_mut(ji), seen.get_mut(ji))
+                && seen.insert(index)
+            {
+                list.push((index as i32, w as f64));
             }
         }
     }

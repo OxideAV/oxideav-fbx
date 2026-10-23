@@ -206,10 +206,10 @@ pub fn encode_scene_with_options(scene: &Scene3D, opts: &SceneEncodeOptions) -> 
     // (the join the decode side's `resolve_uv_set_index` reads).
     let mut mesh_of_material: Vec<Option<usize>> = vec![None; scene.materials.len()];
     let note_material = |mat_idx: usize, mi: usize, map: &mut Vec<Option<usize>>| {
-        if let Some(slot) = map.get_mut(mat_idx) {
-            if slot.is_none() {
-                *slot = Some(mi);
-            }
+        if let Some(slot) = map.get_mut(mat_idx)
+            && slot.is_none()
+        {
+            *slot = Some(mi);
         }
     };
     for (mi, mesh) in scene.meshes.iter().enumerate() {
@@ -248,10 +248,10 @@ pub fn encode_scene_with_options(scene: &Scene3D, opts: &SceneEncodeOptions) -> 
         vec![None; scene.textures.len()];
     for (xi, mat) in scene.materials.iter().enumerate() {
         for (texref, _) in material_texture_slots(mat) {
-            if let Some(slot) = first_ref.get_mut(texref.texture.0 as usize) {
-                if slot.is_none() {
-                    *slot = Some((xi, texref));
-                }
+            if let Some(slot) = first_ref.get_mut(texref.texture.0 as usize)
+                && slot.is_none()
+            {
+                *slot = Some((xi, texref));
             }
         }
     }
@@ -332,19 +332,18 @@ pub fn encode_scene_with_options(scene: &Scene3D, opts: &SceneEncodeOptions) -> 
             .extras
             .get("fbx:node_attribute_kind")
             .and_then(|v| v.as_str())
+            && (kind == "LimbNode" || kind == "Null")
         {
-            if kind == "LimbNode" || kind == "Null" {
-                let attr_id = alloc.next();
-                objects.children.push(node_attribute(
-                    attr_id,
-                    node,
-                    kind,
-                    attribute_raw_records(node),
-                ));
-                connections
-                    .children
-                    .push(connection_oo(attr_id, node_ids[ni]));
-            }
+            let attr_id = alloc.next();
+            objects.children.push(node_attribute(
+                attr_id,
+                node,
+                kind,
+                attribute_raw_records(node),
+            ));
+            connections
+                .children
+                .push(connection_oo(attr_id, node_ids[ni]));
         }
         // Geometry → Model attribute attachment.
         if let Some(mid) = node.mesh {
@@ -359,17 +358,16 @@ pub fn encode_scene_with_options(scene: &Scene3D, opts: &SceneEncodeOptions) -> 
         // full slot table on `extras["fbx:material_slots"]`
         // (round-tripped from a decoded mesh); single-binding
         // primitives contribute their lone `Primitive::material`.
-        if let Some(mid) = node.mesh {
-            if let Some(prim) = scene
+        if let Some(mid) = node.mesh
+            && let Some(prim) = scene
                 .meshes
                 .get(mid.0 as usize)
                 .and_then(|m| m.primitives.first())
-            {
-                for slot in material_slot_table(prim, scene.materials.len()) {
-                    connections
-                        .children
-                        .push(connection_oo(material_ids[slot], node_ids[ni]));
-                }
+        {
+            for slot in material_slot_table(prim, scene.materials.len()) {
+                connections
+                    .children
+                    .push(connection_oo(material_ids[slot], node_ids[ni]));
             }
         }
     }
@@ -904,17 +902,17 @@ fn build_takes(scene: &Scene3D) -> Option<FbxNode> {
             ("LocalTime", "local_time"),
             ("ReferenceTime", "reference_time"),
         ] {
-            if let Some(pair) = take.get(key).and_then(|v| v.as_array()) {
-                if let (Some(start), Some(stop)) = (
+            if let Some(pair) = take.get(key).and_then(|v| v.as_array())
+                && let (Some(start), Some(stop)) = (
                     pair.first().and_then(|v| v.as_i64()),
                     pair.get(1).and_then(|v| v.as_i64()),
-                ) {
-                    take_children.push(FbxNode {
-                        name: leaf.to_string(),
-                        properties: vec![FbxProperty::I64(start), FbxProperty::I64(stop)],
-                        children: Vec::new(),
-                    });
-                }
+                )
+            {
+                take_children.push(FbxNode {
+                    name: leaf.to_string(),
+                    properties: vec![FbxProperty::I64(start), FbxProperty::I64(stop)],
+                    children: Vec::new(),
+                });
             }
         }
         children.push(FbxNode {
@@ -2007,11 +2005,11 @@ const FBX_NODE_TEMPLATE: &[TRecord] = &[
 /// length / digit deviation.
 fn hex_to_bytes(s: &str) -> Option<Vec<u8>> {
     let b = s.as_bytes();
-    if b.len() % 2 != 0 {
+    if !b.len().is_multiple_of(2) {
         return None;
     }
     let mut out = Vec::with_capacity(b.len() / 2);
-    for chunk in b.chunks_exact(2) {
+    for chunk in b.as_chunks::<2>().0 {
         let hi = (chunk[0] as char).to_digit(16)?;
         let lo = (chunk[1] as char).to_digit(16)?;
         out.push(((hi << 4) | lo) as u8);
@@ -2103,13 +2101,12 @@ fn build_geometry(mesh: &Mesh, id: i64, opts: &SceneEncodeOptions) -> GeometryEm
         .first()
         .filter(|_| mesh.primitives.len() == 1)
         .and_then(WeldPlan::from_primitive)
+        && let Some(node) = build_welded_geometry(mesh, &mesh.primitives[0], &plan, id, opts)
     {
-        if let Some(node) = build_welded_geometry(mesh, &mesh.primitives[0], &plan, id, opts) {
-            return GeometryEmit {
-                node,
-                corner_to_vertex: Some(plan.corner_to_vertex),
-            };
-        }
+        return GeometryEmit {
+            node,
+            corner_to_vertex: Some(plan.corner_to_vertex),
+        };
     }
     GeometryEmit {
         node: build_expanded_geometry(mesh, id, opts),
@@ -2209,13 +2206,7 @@ impl WeldPlan {
     /// same polygon, wrapping at the closing corner —
     /// `fbx-edges-smoothing-layer.md` §1) is the undirected pair.
     fn slot_of_edge(&self, pair: [u32; 2]) -> Option<i32> {
-        let decode = |raw: i32| -> u32 {
-            if raw < 0 {
-                (!raw) as u32
-            } else {
-                raw as u32
-            }
-        };
+        let decode = |raw: i32| -> u32 { if raw < 0 { (!raw) as u32 } else { raw as u32 } };
         let mut polygon_start = 0usize;
         for (i, &raw) in self.pvi.iter().enumerate() {
             let next = if raw < 0 { polygon_start } else { i + 1 };
@@ -2285,7 +2276,9 @@ fn build_welded_geometry(
         .get("fbx:edges")
         .and_then(Value::as_array)
         .map(|a| {
-            a.chunks_exact(2)
+            a.as_chunks::<2>()
+                .0
+                .iter()
                 .filter_map(|c| Some([c[0].as_u64()? as u32, c[1].as_u64()? as u32]))
                 .collect()
         });
@@ -2314,15 +2307,15 @@ fn build_welded_geometry(
             .flat_map(|v| v.iter().map(|c| f64::from(*c)))
             .collect()
     };
-    if opts.emit_normals {
-        if let Some(buf) = prim_corner_vec3(prim, prim.normals.as_ref()) {
-            let slots = plan.to_slots(&buf)?;
-            children.push(layer_element_vec3(
-                "LayerElementNormal",
-                "Normals",
-                flat3(&slots),
-            ));
-        }
+    if opts.emit_normals
+        && let Some(buf) = prim_corner_vec3(prim, prim.normals.as_ref())
+    {
+        let slots = plan.to_slots(&buf)?;
+        children.push(layer_element_vec3(
+            "LayerElementNormal",
+            "Normals",
+            flat3(&slots),
+        ));
     }
     if opts.emit_uvs {
         let uv_names = prim
@@ -2351,20 +2344,20 @@ fn build_welded_geometry(
             children.push(layer_element_color(k, data));
         }
     }
-    if opts.emit_tangents {
-        if let Some(t) = &prim.tangents {
-            if t.len() != n_corners {
-                return None;
-            }
-            let slots = plan.to_slots(&expand_vec4(prim, t))?;
-            let mut xyz = Vec::with_capacity(slots.len() * 3);
-            let mut w = Vec::with_capacity(slots.len());
-            for [x, y, z, ww] in &slots {
-                xyz.extend([f64::from(*x), f64::from(*y), f64::from(*z)]);
-                w.push(f64::from(*ww));
-            }
-            children.push(layer_element_tangent(xyz, w));
+    if opts.emit_tangents
+        && let Some(t) = &prim.tangents
+    {
+        if t.len() != n_corners {
+            return None;
         }
+        let slots = plan.to_slots(&expand_vec4(prim, t))?;
+        let mut xyz = Vec::with_capacity(slots.len() * 3);
+        let mut w = Vec::with_capacity(slots.len());
+        for [x, y, z, ww] in &slots {
+            xyz.extend([f64::from(*x), f64::from(*y), f64::from(*z)]);
+            w.push(f64::from(*ww));
+        }
+        children.push(layer_element_tangent(xyz, w));
     }
     // Extra layers (flat per-corner buffers on extras) de-fanned the
     // same way, through a temporary expanded-form emission.
@@ -2454,15 +2447,15 @@ fn build_welded_geometry(
             }
         }
         Some("ByPolygon") => {
-            if let Some(per_corner) = prim.extras.get("fbx:smoothing").and_then(Value::as_array) {
-                if per_corner.len() == n_corners {
-                    let per_polygon: Vec<i64> = plan
-                        .polygon_first_corner
-                        .iter()
-                        .map(|&c| per_corner[c].as_i64().unwrap_or(0))
-                        .collect();
-                    children.push(layer_element_smoothing("ByPolygon", &per_polygon));
-                }
+            if let Some(per_corner) = prim.extras.get("fbx:smoothing").and_then(Value::as_array)
+                && per_corner.len() == n_corners
+            {
+                let per_polygon: Vec<i64> = plan
+                    .polygon_first_corner
+                    .iter()
+                    .map(|&c| per_corner[c].as_i64().unwrap_or(0))
+                    .collect();
+                children.push(layer_element_smoothing("ByPolygon", &per_polygon));
             }
         }
         _ => {}
@@ -2925,7 +2918,7 @@ fn emit_extra_layers(prim: &Primitive, n_corners: usize, children: &mut Vec<FbxN
     let split_xyzw = |flat: &[f64]| -> (Vec<f64>, Vec<f64>) {
         let mut xyz = Vec::with_capacity(flat.len() / 4 * 3);
         let mut w = Vec::with_capacity(flat.len() / 4);
-        for chunk in flat.chunks_exact(4) {
+        for chunk in flat.as_chunks::<4>().0 {
             xyz.extend_from_slice(&chunk[..3]);
             w.push(chunk[3]);
         }
@@ -4207,10 +4200,10 @@ fn uv_set_label(
         .and_then(|p| p.extras.get("fbx:uv_set_names"))
         .and_then(|v| v.as_array());
     if let Some(names) = names {
-        if let Some(n) = names.get(k).and_then(|v| v.as_str()) {
-            if !n.is_empty() {
-                return Some(n.to_owned());
-            }
+        if let Some(n) = names.get(k).and_then(|v| v.as_str())
+            && !n.is_empty()
+        {
+            return Some(n.to_owned());
         }
         return Some(format!("map{}", k + 1));
     }
@@ -4766,9 +4759,10 @@ mod tests {
         assert_eq!(d.properties.get(2).and_then(|p| p.as_str()), Some("Scene"));
         assert_eq!(d.child("RootNode").unwrap().properties[0].as_i64(), Some(0));
         let p70 = d.child("Properties70").unwrap();
-        assert!(p70
-            .children_named("P")
-            .any(|p| p.properties.first().and_then(|v| v.as_str()) == Some("SourceObject")));
+        assert!(
+            p70.children_named("P")
+                .any(|p| p.properties.first().and_then(|v| v.as_str()) == Some("SourceObject"))
+        );
         // No animations, no take extras — ActiveAnimStackName is
         // still written, as the empty string (the shape every staged
         // fixture without animation carries).
@@ -4969,11 +4963,13 @@ mod tests {
             ldefs.get("Material").unwrap().template_name.as_deref(),
             Some("FbxSurfaceLambert")
         );
-        assert!(ldefs
-            .template_for("Material")
-            .unwrap()
-            .as_number("ShininessExponent")
-            .is_none());
+        assert!(
+            ldefs
+                .template_for("Material")
+                .unwrap()
+                .as_number("ShininessExponent")
+                .is_none()
+        );
 
         // Model → FbxNode with zero pivots / identity Lcl defaults.
         let tpl = defs.template_for("Model").expect("Model template");

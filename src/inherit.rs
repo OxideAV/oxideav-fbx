@@ -385,8 +385,8 @@ fn transform_to_mat4(t: Transform) -> Mat4 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::node_transform::euler_to_quat;
     use crate::node_transform::RotationOrder;
+    use crate::node_transform::euler_to_quat;
 
     fn assert_mat_close(a: Mat4, b: Mat4, tol: f64) {
         for i in 0..4 {

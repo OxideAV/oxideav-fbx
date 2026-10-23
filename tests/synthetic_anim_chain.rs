@@ -12,9 +12,10 @@
 use std::collections::HashMap;
 
 use oxideav_fbx::{
+    FbxDecoder,
     animation::KTIME_TICKS_PER_SECOND,
     binary::{FbxDocument, FbxNode, FbxProperty},
-    write_document, FbxDecoder,
+    write_document,
 };
 use oxideav_mesh3d::{AnimationProperty, AnimationValues, Mesh3DDecoder};
 

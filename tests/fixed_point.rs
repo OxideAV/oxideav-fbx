@@ -352,18 +352,18 @@ fn census_walk(n: &FbxNode, path: &str, out: &mut BTreeMap<String, usize>) {
     } else {
         format!("{path}/{}", n.name)
     };
-    if n.name == "P" {
-        if let Some(FbxProperty::String(name)) = n.properties.first() {
-            here = format!("{here}:{}", String::from_utf8_lossy(name));
-        }
+    if n.name == "P"
+        && let Some(FbxProperty::String(name)) = n.properties.first()
+    {
+        here = format!("{here}:{}", String::from_utf8_lossy(name));
     }
     // Object headers: `Objects/Geometry` → append the subtype string
     // (third property) so `Geometry{Mesh}` and `Geometry{Shape}` are
     // distinct census rows.
-    if path == "Objects" || path == "Objects/" {
-        if let Some(FbxProperty::String(sub)) = n.properties.get(2) {
-            here = format!("{here}{{{}}}", String::from_utf8_lossy(sub));
-        }
+    if (path == "Objects" || path == "Objects/")
+        && let Some(FbxProperty::String(sub)) = n.properties.get(2)
+    {
+        here = format!("{here}{{{}}}", String::from_utf8_lossy(sub));
     }
     *out.entry(here.clone()).or_insert(0) += 1;
     for c in &n.children {

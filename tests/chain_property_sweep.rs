@@ -11,9 +11,10 @@
 use std::collections::HashMap;
 
 use oxideav_fbx::{
+    FbxDecoder, FbxEncoder,
     binary::{FbxDocument, FbxNode, FbxProperty},
-    node_transform::{euler_to_quat, RotationOrder, TransformChain},
-    write_document, FbxDecoder, FbxEncoder,
+    node_transform::{RotationOrder, TransformChain, euler_to_quat},
+    write_document,
 };
 use oxideav_mesh3d::{Mesh3DDecoder, Mesh3DEncoder, Transform};
 

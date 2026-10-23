@@ -32,7 +32,7 @@
 //! `Normals` / `NormalsIndex` shape follows
 //! `docs/3d/fbx/fbx-binary-properties70.md` §6.4.
 
-use oxideav_fbx::{FbxDecoder, FbxEncoder, FBX_MAGIC};
+use oxideav_fbx::{FBX_MAGIC, FbxDecoder, FbxEncoder};
 use oxideav_mesh3d::{Mesh3DDecoder, Mesh3DEncoder};
 
 const NULL_RECORD_BYTES_32: usize = 13;
@@ -302,7 +302,9 @@ fn two_normal_layers_first_canonical_rest_in_extras() {
     // ByVertex picks NORMALS_BY_VERTEX[shared_vertex]:
     //   v0=+X, v1=+Y, v2=-X, v3=-Y.
     let got: Vec<[f64; 3]> = layer0
-        .chunks_exact(3)
+        .as_chunks::<3>()
+        .0
+        .iter()
         .map(|c| {
             [
                 c[0].as_f64().unwrap(),

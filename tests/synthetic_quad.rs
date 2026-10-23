@@ -24,7 +24,7 @@
 //! - The Model node has its mesh attribute set to the Mesh.
 //! - The scene's roots vec contains the Model node.
 
-use oxideav_fbx::{FbxDecoder, FBX_MAGIC};
+use oxideav_fbx::{FBX_MAGIC, FbxDecoder};
 use oxideav_mesh3d::{Mesh3DDecoder, Topology};
 
 /// Pre-7500 layout: u32 EndOffset / u32 NumProps / u32 PropListLen.

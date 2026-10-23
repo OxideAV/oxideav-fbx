@@ -13,7 +13,7 @@
 //! trailer signature.
 
 use oxideav_fbx::{
-    parse_footer, write_document_with_options, FbxDecoder, WriterOptions, FOOTER_TRAILER,
+    FOOTER_TRAILER, FbxDecoder, WriterOptions, parse_footer, write_document_with_options,
 };
 use oxideav_mesh3d::{Mesh3DDecoder, Mesh3DEncoder};
 

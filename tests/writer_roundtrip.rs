@@ -14,8 +14,8 @@
 //! and post-7500 64-bit).
 
 use oxideav_fbx::{
-    write_document, write_document_with_options, FbxDecoder, FbxDocument, FbxNode, FbxProperty,
-    WriterOptions, FBX_VERSION_64BIT_THRESHOLD,
+    FBX_VERSION_64BIT_THRESHOLD, FbxDecoder, FbxDocument, FbxNode, FbxProperty, WriterOptions,
+    write_document, write_document_with_options,
 };
 use oxideav_mesh3d::{Mesh3DDecoder, Topology};
 

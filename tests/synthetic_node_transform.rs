@@ -23,8 +23,9 @@
 use std::collections::HashMap;
 
 use oxideav_fbx::{
+    FbxDecoder,
     binary::{FbxDocument, FbxNode, FbxProperty},
-    write_document, FbxDecoder,
+    write_document,
 };
 use oxideav_mesh3d::{Mesh3DDecoder, Transform};
 

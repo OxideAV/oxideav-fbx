@@ -22,7 +22,7 @@
 //!   index broadcast over each triangle.
 //! - `Primitive::extras["fbx:material_mapping"]` is `"ByPolygon"`.
 
-use oxideav_fbx::{FbxDecoder, FBX_MAGIC};
+use oxideav_fbx::{FBX_MAGIC, FbxDecoder};
 use oxideav_mesh3d::Mesh3DDecoder;
 
 const NULL_RECORD_BYTES_32: usize = 13;

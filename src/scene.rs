@@ -387,10 +387,10 @@ pub fn build_scene(doc: &FbxDocument) -> Result<Scene3D> {
     // mesh that any OO-connected Material binds to.
     let mut model_to_mesh: HashMap<i64, oxideav_mesh3d::MeshId> = HashMap::new();
     for (&model_fid, &node_id) in &model_nodes {
-        if let Some(node) = scene.nodes.get(node_id.0 as usize) {
-            if let Some(mid) = node.mesh {
-                model_to_mesh.insert(model_fid, mid);
-            }
+        if let Some(node) = scene.nodes.get(node_id.0 as usize)
+            && let Some(mid) = node.mesh
+        {
+            model_to_mesh.insert(model_fid, mid);
         }
     }
     extract_materials(doc, &mut scene, &model_to_mesh, &model_nodes);

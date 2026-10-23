@@ -8,8 +8,8 @@
 //! `Connections` lists with the new element kinds.
 
 use oxideav_fbx::{
-    animation::{euler_xyz_to_quat, KTIME_TICKS_PER_SECOND},
-    FbxDecoder, FBX_MAGIC,
+    FBX_MAGIC, FbxDecoder,
+    animation::{KTIME_TICKS_PER_SECOND, euler_xyz_to_quat},
 };
 use oxideav_mesh3d::{AnimationProperty, AnimationValues, Interpolation, Mesh3DDecoder};
 

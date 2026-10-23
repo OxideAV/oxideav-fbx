@@ -175,16 +175,16 @@ pub fn extract_lights_and_cameras(
         };
         let (light, kind_tag, extras) = decode_light(node);
         let lid = scene.add_light(light);
-        if let Some(&node_id) = model_nodes.get(&model_fid) {
-            if let Some(n) = scene.nodes.get_mut(node_id.0 as usize) {
-                n.light = Some(lid);
-                if let Some(tag) = kind_tag {
-                    n.extras
-                        .insert("fbx:light_type".to_string(), Value::String(tag));
-                }
-                for (k, v) in extras {
-                    n.extras.insert(k, v);
-                }
+        if let Some(&node_id) = model_nodes.get(&model_fid)
+            && let Some(n) = scene.nodes.get_mut(node_id.0 as usize)
+        {
+            n.light = Some(lid);
+            if let Some(tag) = kind_tag {
+                n.extras
+                    .insert("fbx:light_type".to_string(), Value::String(tag));
+            }
+            for (k, v) in extras {
+                n.extras.insert(k, v);
             }
         }
     }
@@ -196,12 +196,12 @@ pub fn extract_lights_and_cameras(
         };
         let (camera, extras) = decode_camera(node);
         let cid = scene.add_camera(camera);
-        if let Some(&node_id) = model_nodes.get(&model_fid) {
-            if let Some(n) = scene.nodes.get_mut(node_id.0 as usize) {
-                n.camera = Some(cid);
-                for (k, v) in extras {
-                    n.extras.insert(k, v);
-                }
+        if let Some(&node_id) = model_nodes.get(&model_fid)
+            && let Some(n) = scene.nodes.get_mut(node_id.0 as usize)
+        {
+            n.camera = Some(cid);
+            for (k, v) in extras {
+                n.extras.insert(k, v);
             }
         }
     }

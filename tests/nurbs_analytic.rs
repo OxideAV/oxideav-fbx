@@ -290,10 +290,11 @@ fn curve_tessellation_survives_extreme_but_legal_shapes() {
     let prim = c.tessellate(1).expect("tessellates");
     assert_eq!(prim.topology, Topology::LineStrip);
     assert_eq!(prim.positions.len(), 2);
-    assert!(prim
-        .positions
-        .iter()
-        .all(|p| p.iter().all(|c| c.is_finite())));
+    assert!(
+        prim.positions
+            .iter()
+            .all(|p| p.iter().all(|c| c.is_finite()))
+    );
 }
 
 // ---------------------------------------------------------------------
@@ -418,10 +419,11 @@ fn generative_curve_sweep_is_total() {
             _ => 8,
         };
         assert_eq!(prim.positions.len(), expect, "iter {iter}");
-        assert!(prim
-            .positions
-            .iter()
-            .all(|p| p.iter().all(|c| c.is_finite())));
+        assert!(
+            prim.positions
+                .iter()
+                .all(|p| p.iter().all(|c| c.is_finite()))
+        );
     }
 }
 
@@ -557,10 +559,11 @@ fn check_constructed_curve(c: &NurbsCurve, iter: usize) {
         );
     }
     let prim = c.tessellate(4).expect("in-cap resolution");
-    assert!(prim
-        .positions
-        .iter()
-        .all(|p| p.iter().all(|v| v.is_finite())));
+    assert!(
+        prim.positions
+            .iter()
+            .all(|p| p.iter().all(|v| v.is_finite()))
+    );
 }
 
 #[test]

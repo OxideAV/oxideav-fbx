@@ -9,8 +9,9 @@
 use std::collections::HashMap;
 
 use oxideav_fbx::{
+    FbxDecoder, FbxEncoder, FbxOutputForm,
     binary::{FbxDocument, FbxNode, FbxProperty},
-    write_document, FbxDecoder, FbxEncoder, FbxOutputForm,
+    write_document,
 };
 use oxideav_mesh3d::{Mesh3DDecoder, Mesh3DEncoder, Node, Scene3D, Transform};
 

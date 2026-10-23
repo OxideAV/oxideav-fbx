@@ -381,7 +381,7 @@ fn deflate_compressed_binary_round_trips() {
         prim.positions.push([f, f * 2.0, f * 3.0]);
     }
     // Pad to a multiple of 3 corners.
-    while prim.positions.len() % 3 != 0 {
+    while !prim.positions.len().is_multiple_of(3) {
         prim.positions.push([0.0, 0.0, 0.0]);
     }
     let mut mesh = Mesh::new(Some("Big".to_string()));
@@ -1771,13 +1771,14 @@ fn malformed_or_absent_bind_pose_extras_emit_no_pose_element() {
     clean.roots.push(n2);
     let bytes2 = encode_binary(&clean);
     let doc2 = oxideav_fbx::binary::parse(&bytes2).expect("parses");
-    assert!(doc2
-        .root
-        .child("Objects")
-        .expect("Objects")
-        .children_named("Pose")
-        .next()
-        .is_none());
+    assert!(
+        doc2.root
+            .child("Objects")
+            .expect("Objects")
+            .children_named("Pose")
+            .next()
+            .is_none()
+    );
 }
 
 /// The §7c trailing Model-body leaves (`Shading: T` /

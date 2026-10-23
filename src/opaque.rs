@@ -18,7 +18,7 @@
 use std::collections::HashMap;
 
 use oxideav_mesh3d::{NodeId, Scene3D};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::binary::{FbxDocument, FbxNode, FbxProperty};
 

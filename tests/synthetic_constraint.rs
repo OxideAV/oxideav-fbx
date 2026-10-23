@@ -14,8 +14,9 @@
 //! `"object"`-typed slots (doc §3's load-bearing structural fact).
 
 use oxideav_fbx::{
+    FbxDecoder,
     binary::{FbxDocument, FbxNode, FbxProperty},
-    write_ascii_document, write_document, FbxDecoder,
+    write_ascii_document, write_document,
 };
 use oxideav_mesh3d::Mesh3DDecoder;
 

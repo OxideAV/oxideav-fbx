@@ -6,7 +6,7 @@
 //! pipeline (sniff → parse → scene::build_scene) end-to-end on a real
 //! exporter-produced file.
 
-use oxideav_fbx::{is_ascii_fbx, FbxDecoder};
+use oxideav_fbx::{FbxDecoder, is_ascii_fbx};
 use oxideav_mesh3d::Mesh3DDecoder;
 
 const FIXTURE: &[u8] = include_bytes!("fixtures/cubes-ascii-v7500.fbx");
@@ -463,7 +463,9 @@ fn ascii_fixture_cube_edges_decode_to_the_documented_pairs() {
     // The §2 worked-decode table, in Edges-array order.
     assert_eq!(
         flat,
-        vec![0, 1, 1, 3, 3, 2, 2, 0, 3, 5, 5, 4, 4, 2, 5, 7, 7, 6, 6, 4, 7, 1, 0, 6]
+        vec![
+            0, 1, 1, 3, 3, 2, 2, 0, 3, 5, 5, 4, 4, 2, 5, 7, 7, 6, 6, 4, 7, 1, 0, 6
+        ]
     );
 }
 
@@ -542,7 +544,9 @@ fn ascii_fixture_subdivided_cube_edges_all_decode_distinct() {
         .map(|v| v.as_i64().unwrap())
         .collect();
     let mut set: Vec<(i64, i64)> = flat
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|p| (p[0].min(p[1]), p[0].max(p[1])))
         .collect();
     for &(a, b) in &set {
@@ -599,13 +603,7 @@ fn ascii_fixture_edges_arrays_are_the_complete_deduplicated_edge_sets() {
                 oxideav_fbx::FbxProperty::I32Array(a) => a.clone(),
                 other => panic!("PolygonVertexIndex not i32: {other:?}"),
             };
-            let decode = |raw: i32| -> i64 {
-                if raw < 0 {
-                    (!raw) as i64
-                } else {
-                    raw as i64
-                }
-            };
+            let decode = |raw: i32| -> i64 { if raw < 0 { (!raw) as i64 } else { raw as i64 } };
             let mut set = Vec::new();
             let mut start = 0usize;
             for (k, &raw) in pvi.iter().enumerate() {
@@ -638,7 +636,9 @@ fn ascii_fixture_edges_arrays_are_the_complete_deduplicated_edge_sets() {
                 .map(|x| x.as_i64().unwrap())
                 .collect();
             let mut set: Vec<(i64, i64)> = flat
-                .chunks_exact(2)
+                .as_chunks::<2>()
+                .0
+                .iter()
                 .map(|p| (p[0].min(p[1]), p[0].max(p[1])))
                 .collect();
             let n = set.len();

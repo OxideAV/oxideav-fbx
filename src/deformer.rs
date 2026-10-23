@@ -405,10 +405,10 @@ pub fn extract_deformers(
         }
 
         // Find the node bearing this mesh and tag it with the skin id.
-        if let Some(&node_id) = geometry_to_node.get(geom_id) {
-            if let Some(node) = scene.nodes.get_mut(node_id.0 as usize) {
-                node.skin = Some(skin_id);
-            }
+        if let Some(&node_id) = geometry_to_node.get(geom_id)
+            && let Some(node) = scene.nodes.get_mut(node_id.0 as usize)
+        {
+            node.skin = Some(skin_id);
         }
     }
 
@@ -523,35 +523,35 @@ pub fn extract_deformers(
                 .map_or(0.0f32, |v| (v / DEFORM_PERCENT_SCALE) as f32);
 
             let mesh = &mut scene.meshes[mesh_id.0 as usize];
-            if let Some(prim) = mesh.primitives.first_mut() {
-                if prim.positions.len() == n_corners {
-                    // This channel's positional morph-target slot.
-                    let target_index = prim.targets.len();
-                    prim.targets.push(tgt);
-                    mesh.weights.push(static_weight);
-                    slot_names.push(channel_node.and_then(display_name).unwrap_or_default());
+            if let Some(prim) = mesh.primitives.first_mut()
+                && prim.positions.len() == n_corners
+            {
+                // This channel's positional morph-target slot.
+                let target_index = prim.targets.len();
+                prim.targets.push(tgt);
+                mesh.weights.push(static_weight);
+                slot_names.push(channel_node.and_then(display_name).unwrap_or_default());
 
-                    // Record this BlendShapeChannel's animation target so
-                    // `extract_animations` can wire DeformPercent curves,
-                    // and mirror the static weight per node so unanimated
-                    // slots of a multi-target sampler hold their rest
-                    // value.
-                    if let Some(&node_id) = geometry_to_node.get(geom_id) {
-                        out.channel_targets.insert(
-                            channel_id,
-                            MorphChannelBinding {
-                                target: AnimationTarget {
-                                    node: node_id,
-                                    property: AnimationProperty::MorphWeights,
-                                },
-                                target_index,
+                // Record this BlendShapeChannel's animation target so
+                // `extract_animations` can wire DeformPercent curves,
+                // and mirror the static weight per node so unanimated
+                // slots of a multi-target sampler hold their rest
+                // value.
+                if let Some(&node_id) = geometry_to_node.get(geom_id) {
+                    out.channel_targets.insert(
+                        channel_id,
+                        MorphChannelBinding {
+                            target: AnimationTarget {
+                                node: node_id,
+                                property: AnimationProperty::MorphWeights,
                             },
-                        );
-                        out.node_morph_statics
-                            .entry(node_id)
-                            .or_default()
-                            .push(static_weight);
-                    }
+                            target_index,
+                        },
+                    );
+                    out.node_morph_statics
+                        .entry(node_id)
+                        .or_default()
+                        .push(static_weight);
                 }
             }
         }

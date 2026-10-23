@@ -23,7 +23,7 @@
 //! - The material's `base_color_texture` slot points at that texture.
 //! - The Model node's mesh primitive carries `material = Some(0)`.
 
-use oxideav_fbx::{FbxDecoder, FBX_MAGIC};
+use oxideav_fbx::{FBX_MAGIC, FbxDecoder};
 use oxideav_mesh3d::Mesh3DDecoder;
 
 const NULL_RECORD_BYTES_32: usize = 13;

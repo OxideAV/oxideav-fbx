@@ -19,8 +19,8 @@
 use oxideav_mesh3d::{Mesh3DEncoder, Result, Scene3D};
 
 use crate::ascii_writer::write_ascii_document;
-use crate::scene_writer::{encode_scene_with_options, SceneEncodeOptions};
-use crate::writer::{write_document_with_options, WriterOptions};
+use crate::scene_writer::{SceneEncodeOptions, encode_scene_with_options};
+use crate::writer::{WriterOptions, write_document_with_options};
 
 /// Which textual / binary form the encoder emits.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -98,15 +98,14 @@ impl Mesh3DEncoder for FbxEncoder {
                 // footer block unless the caller set an explicit
                 // non-zero id on `writer_options`.
                 let mut opts = self.writer_options.clone();
-                if opts.footer_id == [0u8; 16] {
-                    if let Some(id) = scene
+                if opts.footer_id == [0u8; 16]
+                    && let Some(id) = scene
                         .extras
                         .get("fbx:footer_id")
                         .and_then(|v| v.as_str())
                         .and_then(crate::binary::FbxFooter::id_from_hex)
-                    {
-                        opts.footer_id = id;
-                    }
+                {
+                    opts.footer_id = id;
                 }
                 write_document_with_options(&doc, &opts)
             }

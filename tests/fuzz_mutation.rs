@@ -262,7 +262,7 @@ fn structured_document_write_parse_closure_holds() {
     // our binary writer must re-parse to the identical tree. This is a
     // writer/reader closure check over shapes no fixture covers
     // (random names, every property variant, mixed nesting).
-    use oxideav_fbx::{write_document, FbxDocument, FbxNode, FbxProperty};
+    use oxideav_fbx::{FbxDocument, FbxNode, FbxProperty, write_document};
 
     fn random_property(rng: &mut Rng) -> FbxProperty {
         match rng.below(11) {

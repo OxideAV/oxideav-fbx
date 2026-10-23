@@ -284,7 +284,7 @@ impl FbxFooter {
             return None;
         }
         let mut id = [0u8; 16];
-        for (i, chunk) in bytes.chunks_exact(2).enumerate() {
+        for (i, chunk) in bytes.as_chunks::<2>().0.iter().enumerate() {
             let hi = (chunk[0] as char).to_digit(16)?;
             let lo = (chunk[1] as char).to_digit(16)?;
             id[i] = ((hi << 4) | lo) as u8;
@@ -347,7 +347,7 @@ pub fn parse_footer(bytes: &[u8]) -> Option<FbxFooter> {
     cur += 16;
     // Zero padding to the next 16-byte boundary (0..15 bytes; the
     // fixture shows 3). A non-zero pad byte breaks the shape.
-    while cur % 16 != 0 {
+    while !cur.is_multiple_of(16) {
         if *bytes.get(cur)? != 0 {
             return None;
         }
@@ -555,7 +555,7 @@ fn read_property(bytes: &[u8], off: usize) -> Result<(FbxProperty, usize)> {
             let (data, next) = read_array_payload(bytes, p, 4)?;
             p = next;
             let mut out = Vec::with_capacity(data.len() / 4);
-            for chunk in data.chunks_exact(4) {
+            for chunk in data.as_chunks::<4>().0 {
                 out.push(f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
             }
             FbxProperty::F32Array(out)
@@ -564,7 +564,7 @@ fn read_property(bytes: &[u8], off: usize) -> Result<(FbxProperty, usize)> {
             let (data, next) = read_array_payload(bytes, p, 8)?;
             p = next;
             let mut out = Vec::with_capacity(data.len() / 8);
-            for chunk in data.chunks_exact(8) {
+            for chunk in data.as_chunks::<8>().0 {
                 out.push(f64::from_le_bytes([
                     chunk[0], chunk[1], chunk[2], chunk[3], chunk[4], chunk[5], chunk[6], chunk[7],
                 ]));
@@ -575,7 +575,7 @@ fn read_property(bytes: &[u8], off: usize) -> Result<(FbxProperty, usize)> {
             let (data, next) = read_array_payload(bytes, p, 8)?;
             p = next;
             let mut out = Vec::with_capacity(data.len() / 8);
-            for chunk in data.chunks_exact(8) {
+            for chunk in data.as_chunks::<8>().0 {
                 out.push(i64::from_le_bytes([
                     chunk[0], chunk[1], chunk[2], chunk[3], chunk[4], chunk[5], chunk[6], chunk[7],
                 ]));
@@ -586,7 +586,7 @@ fn read_property(bytes: &[u8], off: usize) -> Result<(FbxProperty, usize)> {
             let (data, next) = read_array_payload(bytes, p, 4)?;
             p = next;
             let mut out = Vec::with_capacity(data.len() / 4);
-            for chunk in data.chunks_exact(4) {
+            for chunk in data.as_chunks::<4>().0 {
                 out.push(i32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
             }
             FbxProperty::I32Array(out)
@@ -670,7 +670,9 @@ fn read_array_payload(bytes: &[u8], off: usize, elem_bytes: usize) -> Result<(Ve
             if inflated.len() != raw_size {
                 return Err(Error::invalid(format!(
                     "binary FBX: inflated array length mismatch — header said {} elements ({} bytes), got {} bytes",
-                    array_length, raw_size, inflated.len()
+                    array_length,
+                    raw_size,
+                    inflated.len()
                 )));
             }
             (inflated, payload_off + comp_length)
@@ -891,14 +893,14 @@ mod tests {
         } else {
             13
         };
-        out.extend(std::iter::repeat(0u8).take(null_bytes));
+        out.extend(std::iter::repeat_n(0u8, null_bytes));
         out.extend_from_slice(&id);
-        while out.len() % 16 != 0 {
+        while !out.len().is_multiple_of(16) {
             out.push(0);
         }
         out.extend_from_slice(&[0u8; 4]);
         out.extend_from_slice(&version.to_le_bytes());
-        out.extend(std::iter::repeat(0u8).take(120));
+        out.extend(std::iter::repeat_n(0u8, 120));
         out.extend_from_slice(&FOOTER_TRAILER);
     }
 
@@ -1020,12 +1022,12 @@ mod tests {
         buf.extend_from_slice(&id); // id 40..56
         assert_ne!(buf.len() % 16, 0, "test premise: padding exists");
         let pad_at = buf.len();
-        while buf.len() % 16 != 0 {
+        while !buf.len().is_multiple_of(16) {
             buf.push(0);
         }
         buf.extend_from_slice(&[0u8; 4]);
         buf.extend_from_slice(&7400u32.to_le_bytes());
-        buf.extend(std::iter::repeat(0u8).take(120));
+        buf.extend(std::iter::repeat_n(0u8, 120));
         buf.extend_from_slice(&FOOTER_TRAILER);
         assert!(parse_footer(&buf).is_some(), "well-formed shape decodes");
         buf[pad_at] = 1;

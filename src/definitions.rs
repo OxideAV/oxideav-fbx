@@ -551,9 +551,10 @@ mod tests {
             .template_named("Constraint", "FbxConstraintAim")
             .expect("Aim template");
         assert_eq!(aim_tpl.as_enum("WorldUpType"), Some(0));
-        assert!(defs
-            .template_named("Constraint", "FbxConstraintParent")
-            .is_none());
+        assert!(
+            defs.template_named("Constraint", "FbxConstraintParent")
+                .is_none()
+        );
     }
 
     #[test]

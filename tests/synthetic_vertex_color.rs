@@ -12,7 +12,7 @@
 //! The colour layer's on-disk record name is `LayerElementColor`,
 //! matching the `LayerElementUV` / `LayerElementNormal` family.
 
-use oxideav_fbx::{FbxDecoder, FBX_MAGIC};
+use oxideav_fbx::{FBX_MAGIC, FbxDecoder};
 use oxideav_mesh3d::{Mesh3DDecoder, Topology};
 
 const NULL_RECORD_BYTES_32: usize = 13;

@@ -18,7 +18,7 @@
 //! only), and the inverse-bind is approximated from it when the
 //! cluster lacks an explicit link matrix.
 
-use oxideav_fbx::{FbxDecoder, FBX_MAGIC};
+use oxideav_fbx::{FBX_MAGIC, FbxDecoder};
 use oxideav_mesh3d::Mesh3DDecoder;
 
 const NULL_RECORD_BYTES_32: usize = 13;

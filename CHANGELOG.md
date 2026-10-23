@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- edition 2024, MSRV 1.95.
+
 ### Added
 
 - `tests/fixed_point.rs` — decode → encode → decode **fixed-point

@@ -23,7 +23,7 @@
 //! `docs/3d/fbx/fbx-binary-properties70.md` §"LayerElement*
 //! sub-discriminator (within Geometry)".
 
-use oxideav_fbx::{FbxDecoder, FBX_MAGIC};
+use oxideav_fbx::{FBX_MAGIC, FbxDecoder};
 use oxideav_mesh3d::{Mesh3DDecoder, Topology};
 
 const NULL_RECORD_BYTES_32: usize = 13;
@@ -269,7 +269,9 @@ fn single_uv_set_matches_cubes_ascii_fixture() {
     // Sanity: every emitted UV pair is one of the 14 unique entries
     // in CUBE_UV_RAW (no out-of-range remap).
     let unique_uvs: std::collections::HashSet<(u32, u32)> = CUBE_UV_RAW
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|c| (c[0].to_bits() as u32, c[1].to_bits() as u32))
         .collect();
     for &[u, v] in uv {

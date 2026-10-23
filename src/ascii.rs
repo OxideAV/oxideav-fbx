@@ -59,7 +59,7 @@
 
 use oxideav_mesh3d::{Error, Result};
 
-use crate::binary::{FbxDocument, FbxNode, FbxProperty, FBX_VERSION_64BIT_THRESHOLD};
+use crate::binary::{FBX_VERSION_64BIT_THRESHOLD, FbxDocument, FbxNode, FbxProperty};
 
 /// `true` when `bytes` *looks like* an ASCII FBX file (starts with the
 /// `; FBX` banner comment, optionally after a UTF-8 BOM and

@@ -12,7 +12,7 @@
 use oxideav_mesh3d::{Error, Mesh3DDecoder, Result, Scene3D};
 
 use crate::ascii;
-use crate::binary::{self, FbxDocument, FBX_MAGIC};
+use crate::binary::{self, FBX_MAGIC, FbxDocument};
 use crate::scene;
 
 /// FBX decoder — implements [`Mesh3DDecoder`].

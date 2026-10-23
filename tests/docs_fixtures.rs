@@ -32,7 +32,7 @@
 use std::path::PathBuf;
 
 use oxideav_fbx::binary::{FbxDocument, FbxNode};
-use oxideav_fbx::{parse_footer, write_document_with_options, FbxDecoder, WriterOptions};
+use oxideav_fbx::{FbxDecoder, WriterOptions, parse_footer, write_document_with_options};
 use oxideav_mesh3d::{Axis, Mesh3DDecoder, Scene3D, Transform};
 
 /// Locate `docs/3d/fbx/fixtures/`. Env override first, then the
@@ -922,9 +922,11 @@ fn welded_geometry_round_trips_control_points_polygons_and_edges() {
             assert!(g.child("GeometryVersion").is_some());
             let layers: Vec<&FbxNode> = g.children.iter().filter(|c| c.name == "Layer").collect();
             assert!(!layers.is_empty(), "{form:?}: Layer binding block");
-            assert!(layers[0]
-                .children_named("LayerElement")
-                .any(|le| leaf_str(le, "Type") == Some("LayerElementSmoothing")));
+            assert!(
+                layers[0]
+                    .children_named("LayerElement")
+                    .any(|le| leaf_str(le, "Type") == Some("LayerElementSmoothing"))
+            );
             // The second decode sees the identical typed mesh + edge set.
             let scene2 = decode(&out);
             let (p1, p2) = (
@@ -1048,11 +1050,11 @@ fn opaque_objects_and_texture_video_pose_leaves_survive_re_encode() {
             let video = objects.children.iter().find(|o| o.name == "Video").unwrap();
             assert!(video.child("Type").is_some());
             let p70 = video.child("Properties70").expect("Video records");
-            assert!(p70.children.iter().any(|p| p
-                .properties
-                .first()
-                .and_then(FbxProperty::as_str)
-                == Some("Path")));
+            assert!(
+                p70.children
+                    .iter()
+                    .any(|p| p.properties.first().and_then(FbxProperty::as_str) == Some("Path"))
+            );
             let defs = oxideav_fbx::definitions::Definitions::from_document(&doc);
             assert_eq!(
                 defs.get("CollectionExclusive")

@@ -284,17 +284,17 @@ pub mod writer;
 
 pub use ascii::is_ascii_fbx;
 pub use ascii_writer::{
-    write_ascii_document, write_ascii_document_with_options, AsciiWriterOptions,
+    AsciiWriterOptions, write_ascii_document, write_ascii_document_with_options,
 };
 pub use binary::{
-    parse_footer, FbxDocument, FbxFooter, FbxNode, FbxProperty, FBX_MAGIC,
-    FBX_VERSION_64BIT_THRESHOLD, FOOTER_TRAILER,
+    FBX_MAGIC, FBX_VERSION_64BIT_THRESHOLD, FOOTER_TRAILER, FbxDocument, FbxFooter, FbxNode,
+    FbxProperty, parse_footer,
 };
-pub use decoder::{is_binary_fbx, FbxDecoder};
+pub use decoder::{FbxDecoder, is_binary_fbx};
 pub use encoder::{FbxEncoder, FbxOutputForm};
 pub use nurbs::{NurbsCurve, NurbsForm, NurbsSurface, TessellationOptions};
-pub use scene_writer::{encode_scene, encode_scene_with_options, SceneEncodeOptions};
-pub use writer::{write_document, write_document_with_options, WriterOptions};
+pub use scene_writer::{SceneEncodeOptions, encode_scene, encode_scene_with_options};
+pub use writer::{WriterOptions, write_document, write_document_with_options};
 
 /// Format-id string used in the [`oxideav_mesh3d::Mesh3DRegistry`].
 pub const FORMAT_ID: &str = "fbx";

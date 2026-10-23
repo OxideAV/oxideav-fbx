@@ -39,7 +39,7 @@
 //! surfaces every well-known P-record onto `Scene3D::extras` under the
 //! `"fbx:*"` snake_case key convention.
 
-use oxideav_fbx::{FbxDecoder, FBX_MAGIC};
+use oxideav_fbx::{FBX_MAGIC, FbxDecoder};
 use oxideav_mesh3d::{Mesh3DDecoder, Unit};
 
 const NULL_RECORD_BYTES_32: usize = 13;

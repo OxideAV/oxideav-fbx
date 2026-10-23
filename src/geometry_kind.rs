@@ -285,9 +285,11 @@ mod tests {
         extract_geometry_kinds(&doc, &mut scene, &model_nodes);
 
         let nid = model_nodes[&801];
-        assert!(!scene.nodes[nid.0 as usize]
-            .extras
-            .contains_key("fbx:geometry_kind"));
+        assert!(
+            !scene.nodes[nid.0 as usize]
+                .extras
+                .contains_key("fbx:geometry_kind")
+        );
     }
 
     #[test]
@@ -303,9 +305,11 @@ mod tests {
         extract_geometry_kinds(&doc, &mut scene, &model_nodes);
 
         let nid = model_nodes[&802];
-        assert!(!scene.nodes[nid.0 as usize]
-            .extras
-            .contains_key("fbx:geometry_kind"));
+        assert!(
+            !scene.nodes[nid.0 as usize]
+                .extras
+                .contains_key("fbx:geometry_kind")
+        );
     }
 
     #[test]
@@ -336,9 +340,11 @@ mod tests {
         extract_geometry_kinds(&doc, &mut scene, &model_nodes);
 
         let nid = model_nodes[&804];
-        assert!(!scene.nodes[nid.0 as usize]
-            .extras
-            .contains_key("fbx:geometry_kind"));
+        assert!(
+            !scene.nodes[nid.0 as usize]
+                .extras
+                .contains_key("fbx:geometry_kind")
+        );
     }
 
     #[test]
@@ -385,9 +391,11 @@ mod tests {
         extract_geometry_kinds(&doc, &mut scene, &model_nodes);
 
         let nid = model_nodes[&806];
-        assert!(!scene.nodes[nid.0 as usize]
-            .extras
-            .contains_key("fbx:geometry_kind"));
+        assert!(
+            !scene.nodes[nid.0 as usize]
+                .extras
+                .contains_key("fbx:geometry_kind")
+        );
     }
 
     #[test]

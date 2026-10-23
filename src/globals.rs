@@ -186,10 +186,10 @@ pub fn extract_global_settings(doc: &FbxDocument, scene: &mut Scene3D) -> usize 
     // centimetres (the de-facto default), factor 1 → metres. Any other
     // value leaves `scene.unit` at the [`Scene3D::new`] default; the
     // raw factor stays on extras.
-    if let Some(f) = props.as_f64("UnitScaleFactor") {
-        if let Some(unit) = unit_from_scale_factor(f) {
-            scene.unit = unit;
-        }
+    if let Some(f) = props.as_f64("UnitScaleFactor")
+        && let Some(unit) = unit_from_scale_factor(f)
+    {
+        scene.unit = unit;
     }
 
     // Axis convention → typed `Scene3D::up_axis` / `front_axis` per
@@ -869,9 +869,11 @@ mod tests {
         ]);
         let mut scene = Scene3D::new();
         extract_global_settings(&doc, &mut scene);
-        assert!(!scene
-            .extras
-            .contains_key("fbx:axis_convention_inconsistent"));
+        assert!(
+            !scene
+                .extras
+                .contains_key("fbx:axis_convention_inconsistent")
+        );
         assert_eq!(scene.up_axis, Axis::PosY);
         assert_eq!(scene.front_axis, Axis::PosZ);
     }

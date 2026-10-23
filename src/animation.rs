@@ -81,7 +81,7 @@ use oxideav_mesh3d::{
 };
 
 use crate::binary::{FbxDocument, FbxNode, FbxProperty};
-use crate::deformer::{MorphChannelBinding, DEFORM_PERCENT_SCALE};
+use crate::deformer::{DEFORM_PERCENT_SCALE, MorphChannelBinding};
 use crate::node_transform::TransformChain;
 
 /// FBX KTime constant — number of fixed-point ticks per real-world
@@ -160,13 +160,12 @@ pub fn extract_animations(
         for child in &objects.children {
             match child.name.as_str() {
                 "AnimationStack" => {
-                    if let Some(id) = element_id(child) {
-                        if stacks
+                    if let Some(id) = element_id(child)
+                        && stacks
                             .insert(id, element_name(child).unwrap_or_default())
                             .is_none()
-                        {
-                            stack_order.push(id);
-                        }
+                    {
+                        stack_order.push(id);
                     }
                 }
                 "AnimationLayer" => {
@@ -180,10 +179,10 @@ pub fn extract_animations(
                     }
                 }
                 "AnimationCurve" => {
-                    if let Some(id) = element_id(child) {
-                        if let Some(c) = read_curve(child) {
-                            curves.insert(id, c);
-                        }
+                    if let Some(id) = element_id(child)
+                        && let Some(c) = read_curve(child)
+                    {
+                        curves.insert(id, c);
                     }
                 }
                 _ => {}
@@ -309,15 +308,16 @@ pub fn extract_animations(
         // we bucket the curve under that slot here so every channel
         // of a multi-target mesh contributes to one strided
         // MorphWeights sampler below.
-        if target_prop == TARGET_DEFORM_PERCENT && axis_tag == "d|DeformPercent" {
-            if let Some(binding) = deformer_targets.get(target_id) {
-                per_stack_morph
-                    .entry(stack_id)
-                    .or_default()
-                    .entry(binding.target.node)
-                    .or_default()
-                    .insert(binding.target_index, curve.clone());
-            }
+        if target_prop == TARGET_DEFORM_PERCENT
+            && axis_tag == "d|DeformPercent"
+            && let Some(binding) = deformer_targets.get(target_id)
+        {
+            per_stack_morph
+                .entry(stack_id)
+                .or_default()
+                .entry(binding.target.node)
+                .or_default()
+                .insert(binding.target_index, curve.clone());
         }
     }
 
@@ -363,12 +363,11 @@ pub fn extract_animations(
                     }
                     _ => {
                         for (tag, comps) in [(0u8, t_c), (1, r_c), (2, s_c)] {
-                            if let Some(comps) = comps {
-                                if let Some(channel) =
+                            if let Some(comps) = comps
+                                && let Some(channel) =
                                     build_channel(node_id, prop_from_tag(tag), comps)
-                                {
-                                    anim.channels.push(channel);
-                                }
+                            {
+                                anim.channels.push(channel);
                             }
                         }
                     }
@@ -710,10 +709,10 @@ pub fn extract_key_attr_catalogue(doc: &FbxDocument) -> Option<serde_json::Value
                     entry.insert("target".into(), serde_json::Value::String(name.clone()));
                 }
             }
-            if let Some(stack_id) = node_to_layer.get(cn_id).and_then(|l| layer_to_stack.get(l)) {
-                if let Some(name) = stacks.get(stack_id) {
-                    entry.insert("stack".into(), serde_json::Value::String(name.clone()));
-                }
+            if let Some(stack_id) = node_to_layer.get(cn_id).and_then(|l| layer_to_stack.get(l))
+                && let Some(name) = stacks.get(stack_id)
+            {
+                entry.insert("stack".into(), serde_json::Value::String(name.clone()));
             }
         }
         let key_count = node

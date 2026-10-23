@@ -72,8 +72,8 @@
 use oxideav_mesh3d::{Error, Result};
 
 use crate::binary::{
-    FbxDocument, FbxNode, FbxProperty, FBX_HEADER_BYTES, FBX_MAGIC, FBX_MAGIC_TAIL,
-    FBX_VERSION_64BIT_THRESHOLD, FOOTER_TRAILER,
+    FBX_HEADER_BYTES, FBX_MAGIC, FBX_MAGIC_TAIL, FBX_VERSION_64BIT_THRESHOLD, FOOTER_TRAILER,
+    FbxDocument, FbxNode, FbxProperty,
 };
 
 /// Tunable knobs for [`write_document_with_options`].
@@ -197,7 +197,7 @@ pub fn write_document_with_options(doc: &FbxDocument, opts: &WriterOptions) -> R
     // Final NULL-record sentinel for the top-level list. The header
     // size matches the file's 32-bit-vs-64-bit Node Record layout.
     let null_record_bytes = if use_64bit { 25 } else { 13 };
-    out.extend(std::iter::repeat(0u8).take(null_record_bytes));
+    out.extend(std::iter::repeat_n(0u8, null_record_bytes));
     // Trailing footer block — the observer-derived shape documented on
     // `binary::FOOTER_TRAILER` (16-byte id, zero pad to the next
     // 16-byte file-offset boundary, 4 zeros, version echo, 120 zeros,
@@ -211,7 +211,7 @@ pub fn write_document_with_options(doc: &FbxDocument, opts: &WriterOptions) -> R
         }
         out.extend_from_slice(&[0u8; 4]);
         out.extend_from_slice(&doc.version.to_le_bytes());
-        out.extend(std::iter::repeat(0u8).take(120));
+        out.extend(std::iter::repeat_n(0u8, 120));
         out.extend_from_slice(&FOOTER_TRAILER);
     }
     Ok(out)
@@ -275,7 +275,7 @@ fn write_node(
             write_node(child, out, use_64bit, opts)?;
         }
         let null_record_bytes = if use_64bit { 25 } else { 13 };
-        out.extend(std::iter::repeat(0u8).take(null_record_bytes));
+        out.extend(std::iter::repeat_n(0u8, null_record_bytes));
     }
 
     // Back-patch the EndOffset + PropertyListLen now that we know the
@@ -818,12 +818,16 @@ mod tests {
         let end2 = u32::from_le_bytes([record2[0], record2[1], record2[2], record2[3]]) as usize;
         assert_eq!(end2, 27 + 13 + 4 + 5, "no nested list on a leaf");
         // Both parse back to the same logical shape they came from.
-        assert!(binary::parse(&bytes).unwrap().root.children[0]
-            .children
-            .is_empty());
-        assert!(binary::parse(&bytes2).unwrap().root.children[0]
-            .children
-            .is_empty());
+        assert!(
+            binary::parse(&bytes).unwrap().root.children[0]
+                .children
+                .is_empty()
+        );
+        assert!(
+            binary::parse(&bytes2).unwrap().root.children[0]
+                .children
+                .is_empty()
+        );
     }
 
     #[test]

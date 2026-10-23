@@ -127,10 +127,10 @@ pub fn extract_header_info(doc: &FbxDocument, scene: &mut Scene3D) -> usize {
     }
 
     // `CreationTimeStamp` sub-node → ISO-ish composed string.
-    if let Some(ts) = ext.child("CreationTimeStamp") {
-        if let Some(stamp) = creation_timestamp(ts) {
-            inserted += insert(scene, "fbx:creation_time", Value::String(stamp));
-        }
+    if let Some(ts) = ext.child("CreationTimeStamp")
+        && let Some(stamp) = creation_timestamp(ts)
+    {
+        inserted += insert(scene, "fbx:creation_time", Value::String(stamp));
     }
 
     // `SceneInfo` body: document `MetaData` + `Original|*` provenance.
@@ -288,11 +288,10 @@ fn extract_metadata(scene_info: &FbxNode, scene: &mut Scene3D) -> usize {
             .child(field)
             .and_then(|n| n.properties.first())
             .and_then(|p| p.as_str())
+            && !val.is_empty()
         {
-            if !val.is_empty() {
-                let key = format!("fbx:meta_{}", field.to_ascii_lowercase());
-                inserted += insert(scene, &key, Value::String(val.to_owned()));
-            }
+            let key = format!("fbx:meta_{}", field.to_ascii_lowercase());
+            inserted += insert(scene, &key, Value::String(val.to_owned()));
         }
     }
     inserted
@@ -320,10 +319,10 @@ fn extract_application_provenance(scene_info: &FbxNode, scene: &mut Scene3D) -> 
         ("Original|ApplicationVersion", "fbx:application_version"),
         ("DocumentUrl", "fbx:document_url"),
     ] {
-        if let Some(val) = props.as_str(p_name) {
-            if !val.is_empty() {
-                inserted += insert(scene, key, Value::String(val.to_owned()));
-            }
+        if let Some(val) = props.as_str(p_name)
+            && !val.is_empty()
+        {
+            inserted += insert(scene, key, Value::String(val.to_owned()));
         }
     }
     inserted

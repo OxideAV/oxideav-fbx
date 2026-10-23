@@ -53,7 +53,7 @@ fn value(c: u8) -> Option<u32> {
 /// binary is never mis-read as base64). Empty input decodes to an
 /// empty vector.
 pub fn decode(text: &[u8]) -> Option<Vec<u8>> {
-    if text.len() % 4 != 0 {
+    if !text.len().is_multiple_of(4) {
         return None;
     }
     let mut out = Vec::with_capacity(text.len() / 4 * 3);

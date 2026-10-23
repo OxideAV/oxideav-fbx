@@ -1445,18 +1445,20 @@ mod tests {
         )
         .unwrap();
         assert!(s.tessellate(&TessellationOptions::uniform(0)).is_err());
-        assert!(s
-            .tessellate(&TessellationOptions {
+        assert!(
+            s.tessellate(&TessellationOptions {
                 resolution_u: 1 << 16,
                 resolution_v: 1 << 16,
             })
-            .is_err());
+            .is_err()
+        );
         // Overflow-shaped product must error, not wrap.
-        assert!(s
-            .tessellate(&TessellationOptions {
+        assert!(
+            s.tessellate(&TessellationOptions {
                 resolution_u: u32::MAX,
                 resolution_v: u32::MAX,
             })
-            .is_err());
+            .is_err()
+        );
     }
 }
