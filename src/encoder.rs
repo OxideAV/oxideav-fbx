@@ -35,6 +35,7 @@ pub enum FbxOutputForm {
 
 /// FBX encoder — implements [`Mesh3DEncoder`].
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct FbxEncoder {
     /// Scene → document build knobs (version, layer emission).
     pub scene_options: SceneEncodeOptions,
@@ -42,6 +43,24 @@ pub struct FbxEncoder {
     pub writer_options: WriterOptions,
     /// Binary vs ASCII output.
     pub form: FbxOutputForm,
+}
+
+impl FbxEncoder {
+    /// Builder-style setter for [`scene_options`](Self::scene_options).
+    pub fn with_scene_options(mut self, scene_options: SceneEncodeOptions) -> Self {
+        self.scene_options = scene_options;
+        self
+    }
+    /// Builder-style setter for [`writer_options`](Self::writer_options).
+    pub fn with_writer_options(mut self, writer_options: WriterOptions) -> Self {
+        self.writer_options = writer_options;
+        self
+    }
+    /// Builder-style setter for [`form`](Self::form).
+    pub fn with_form(mut self, form: FbxOutputForm) -> Self {
+        self.form = form;
+        self
+    }
 }
 
 impl Default for FbxEncoder {

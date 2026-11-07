@@ -99,6 +99,7 @@ use crate::binary::{FbxDocument, FbxNode, FbxProperty};
 /// the binary writer's [`crate::writer::WriterOptions`] shape, so
 /// callers can switch encodings at the entry point without restructuring.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct AsciiWriterOptions {
     /// When `true`, prepend the two-line banner
     ///
@@ -113,6 +114,14 @@ pub struct AsciiWriterOptions {
     /// ASCII-vs-binary sniffer ([`crate::ascii::is_ascii_fbx`]
     /// requires the banner to recognise the file). Default `true`.
     pub emit_banner: bool,
+}
+
+impl AsciiWriterOptions {
+    /// Builder-style setter for [`emit_banner`](Self::emit_banner).
+    pub fn with_emit_banner(mut self, emit_banner: bool) -> Self {
+        self.emit_banner = emit_banner;
+        self
+    }
 }
 
 impl Default for AsciiWriterOptions {

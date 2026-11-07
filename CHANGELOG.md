@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `with_<field>` builder setters on `AsciiWriterOptions`,
+  `WriterOptions`, `SceneEncodeOptions`, `TessellationOptions` and
+  `FbxEncoder`, so callers build them from `Default` / `new()`
+  without struct literals.
+
+### Changed
+
+- `#[non_exhaustive]` on the option records `AsciiWriterOptions`,
+  `WriterOptions`, `SceneEncodeOptions`, `TessellationOptions`,
+  `FbxEncoder`, the decoded records `ObjectTypeDefinition` and
+  `PRecord`, and the `PValue` enum. Left exhaustive (format-fixed):
+  `FbxProperty`, `FbxOutputForm`, `InheritType`, `RotationOrder`,
+  `NurbsForm`, and the node-tree records `FbxNode` / `FbxDocument` /
+  `FbxFooter`, `TransformChain`, `ParentFrame`.
+- `#[doc(hidden)]` on the scene-builder stage modules `anim_writer`,
+  `animation`, `constraint`, `deformer`, `documents`, `geometry`,
+  `geometry_kind`, `globals`, `header_info`, `lights_cameras`,
+  `material`, `node_attribute`, `opaque`, `pose`, `takes`.
+
 ## [0.0.4](https://github.com/OxideAV/oxideav-fbx/compare/v0.0.3...v0.0.4) - 2026-11-07
 
 ### Fixed

@@ -58,6 +58,7 @@ use crate::properties70::PropertyMap;
 /// `PropertyTemplate` (template name + decoded default
 /// `Properties70`).
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct ObjectTypeDefinition {
     /// Class name string — `"Geometry"`, `"Material"`, `"Model"`, …
     /// (the `ObjectType: "<class>"` value per docs §7b).

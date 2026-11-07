@@ -93,6 +93,7 @@ const ID_BASE: i64 = 1_000_000;
 
 /// Tunable knobs for [`encode_scene_with_options`].
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct SceneEncodeOptions {
     /// File-format version written into the header + used to pick the
     /// 32-bit vs 64-bit Node Record layout. Defaults to
@@ -121,6 +122,39 @@ pub struct SceneEncodeOptions {
     /// ASCII fixture carries exactly the eight §7 sections — so the
     /// ASCII encoder path turns this off. Default `true`.
     pub binary_provenance: bool,
+}
+
+impl SceneEncodeOptions {
+    /// Builder-style setter for [`version`](Self::version).
+    pub fn with_version(mut self, version: u32) -> Self {
+        self.version = version;
+        self
+    }
+    /// Builder-style setter for [`emit_normals`](Self::emit_normals).
+    pub fn with_emit_normals(mut self, emit_normals: bool) -> Self {
+        self.emit_normals = emit_normals;
+        self
+    }
+    /// Builder-style setter for [`emit_uvs`](Self::emit_uvs).
+    pub fn with_emit_uvs(mut self, emit_uvs: bool) -> Self {
+        self.emit_uvs = emit_uvs;
+        self
+    }
+    /// Builder-style setter for [`emit_colors`](Self::emit_colors).
+    pub fn with_emit_colors(mut self, emit_colors: bool) -> Self {
+        self.emit_colors = emit_colors;
+        self
+    }
+    /// Builder-style setter for [`emit_tangents`](Self::emit_tangents).
+    pub fn with_emit_tangents(mut self, emit_tangents: bool) -> Self {
+        self.emit_tangents = emit_tangents;
+        self
+    }
+    /// Builder-style setter for [`binary_provenance`](Self::binary_provenance).
+    pub fn with_binary_provenance(mut self, binary_provenance: bool) -> Self {
+        self.binary_provenance = binary_provenance;
+        self
+    }
 }
 
 impl Default for SceneEncodeOptions {

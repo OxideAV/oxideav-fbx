@@ -515,9 +515,23 @@ impl NurbsSurface {
 /// segment counts per direction (so a surface emits `(resolution_u +
 /// 1) * (resolution_v + 1)` grid vertices); both default to 16.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct TessellationOptions {
     pub resolution_u: u32,
     pub resolution_v: u32,
+}
+
+impl TessellationOptions {
+    /// Builder-style setter for [`resolution_u`](Self::resolution_u).
+    pub fn with_resolution_u(mut self, resolution_u: u32) -> Self {
+        self.resolution_u = resolution_u;
+        self
+    }
+    /// Builder-style setter for [`resolution_v`](Self::resolution_v).
+    pub fn with_resolution_v(mut self, resolution_v: u32) -> Self {
+        self.resolution_v = resolution_v;
+        self
+    }
 }
 
 impl Default for TessellationOptions {

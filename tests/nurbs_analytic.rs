@@ -67,10 +67,11 @@ fn cylinder_patch_is_exactly_cylindrical() {
     .expect("valid cylinder");
 
     let prim = s
-        .tessellate(&TessellationOptions {
-            resolution_u: 48,
-            resolution_v: 4,
-        })
+        .tessellate(
+            &TessellationOptions::default()
+                .with_resolution_u(48)
+                .with_resolution_v(4),
+        )
         .expect("tessellates");
     assert_eq!(prim.topology, Topology::Triangles);
     assert_eq!(prim.positions.len(), 49 * 5);
@@ -263,10 +264,11 @@ fn periodic_tube_seam_is_watertight() {
     }
 
     let prim = s
-        .tessellate(&TessellationOptions {
-            resolution_u: 12,
-            resolution_v: 2,
-        })
+        .tessellate(
+            &TessellationOptions::default()
+                .with_resolution_u(12)
+                .with_resolution_v(2),
+        )
         .expect("tessellates");
     // Row stride 13: first and last vertex of every row coincide.
     for row in 0..=2usize {

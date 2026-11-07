@@ -39,6 +39,7 @@ use crate::binary::{FbxNode, FbxProperty};
 /// triple) plus the wire type codes documented in the same file's §3
 /// (binary) and `fbx-ascii-grammar.md` §5 (ASCII).
 #[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub enum PValue {
     /// No value field — `type == "Compound"` (or any value-less P).
     Compound,
@@ -70,6 +71,7 @@ pub enum PValue {
 /// typed payload assembled from the trailing `(NumProperties − 4)`
 /// value props.
 #[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub struct PRecord {
     pub type_name: String,
     pub label: String,

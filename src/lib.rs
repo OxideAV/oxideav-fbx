@@ -196,7 +196,9 @@
 
 /// Animation-curve emission for the [`scene_writer`] encoder — the
 /// inverse of [`animation::extract_animations`] (round 377).
+#[doc(hidden)]
 pub mod anim_writer;
+#[doc(hidden)]
 pub mod animation;
 pub mod ascii;
 pub mod ascii_writer;
@@ -208,12 +210,14 @@ pub mod binary;
 /// `Constraint` object grammar — decode onto
 /// `Scene3D::extras["fbx:constraints"]` + lossless re-encode, per
 /// `docs/3d/fbx/fbx-constraint-grammar.md` (round 439).
+#[doc(hidden)]
 pub mod constraint;
 pub mod decoder;
 /// `Definitions` section decoder — per-class instance counts +
 /// `PropertyTemplate` default `Properties70` blocks resolved against
 /// each object's own records (round 280).
 pub mod definitions;
+#[doc(hidden)]
 pub mod deformer;
 /// Deformer emission for the encoder — `Skin` / `Cluster` /
 /// `BlendShape` / `BlendShapeChannel` / `Geometry{Shape}` object
@@ -224,26 +228,31 @@ pub(crate) mod deformer_writer;
 /// [`oxideav_mesh3d::Scene3D::extras`] per the §7 top-level section
 /// list in `docs/3d/fbx/fbx-ascii-grammar.md` + the staged
 /// cubes-ascii-v7500.fbx fixture body (round 413).
+#[doc(hidden)]
 pub mod documents;
 /// [`encoder::FbxEncoder`] — `Scene3D`-in, FBX bytes-out
 /// ([`oxideav_mesh3d::Mesh3DEncoder`]). The symmetric counterpart to
 /// [`decoder::FbxDecoder`] (round 377).
 pub mod encoder;
+#[doc(hidden)]
 pub mod geometry;
 /// `Geometry` non-`Mesh` subtype-discriminator surfacing
 /// (`NurbsCurve` / `NurbsSurface` / `Boundary` / `TrimNurbsSurface` /
 /// `Line`) onto the owning Model's `Node::extras["fbx:geometry_kind"]`
 /// (round 271).
+#[doc(hidden)]
 pub mod geometry_kind;
 /// `GlobalSettings` element decoder — scene-wide axis / unit / time /
 /// ambient settings surfaced onto [`oxideav_mesh3d::Scene3D`] (round
 /// 219).
+#[doc(hidden)]
 pub mod globals;
 /// `FBXHeaderExtension` decoder — file-level authoring metadata
 /// (Creator / CreationTimeStamp / SceneInfo MetaData + Original|*
 /// application provenance) surfaced onto
 /// [`oxideav_mesh3d::Scene3D::extras`] per
 /// `docs/3d/fbx/fbx-ascii-grammar.md` §7a (round 335).
+#[doc(hidden)]
 pub mod header_info;
 /// `InheritType` world-transform composition — the three documented
 /// parent-scale propagation rules
@@ -252,8 +261,11 @@ pub mod header_info;
 pub mod inherit;
 /// `NodeAttribute` (`Light` / `Camera`) surfacing onto [`oxideav_mesh3d`]
 /// (round 207).
+#[doc(hidden)]
 pub mod lights_cameras;
+#[doc(hidden)]
 pub mod material;
+#[doc(hidden)]
 pub mod node_attribute;
 pub mod node_transform;
 /// B-spline / NURBS evaluation + tessellation engine (Cox–de Boor
@@ -266,7 +278,9 @@ pub mod nurbs;
 /// Opaque `Objects` passthrough — elements of a class this crate has
 /// no typed home for (`CollectionExclusive` display layers, …), carried
 /// verbatim and re-emitted with their typed-endpoint connections.
+#[doc(hidden)]
 pub mod opaque;
+#[doc(hidden)]
 pub mod pose;
 pub mod properties70;
 pub mod scene;
@@ -279,6 +293,7 @@ pub mod scene_writer;
 /// `ReferenceTime` KTime pairs) surfaced onto
 /// [`oxideav_mesh3d::Scene3D::extras`] per
 /// `docs/3d/fbx/fbx-ascii-grammar.md` §7e.
+#[doc(hidden)]
 pub mod takes;
 pub mod writer;
 

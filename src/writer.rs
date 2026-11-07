@@ -82,6 +82,7 @@ use crate::binary::{
 /// spec they map to; defaults match [`write_document`] (every array
 /// uncompressed, footer emitted with an all-zero id).
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct WriterOptions {
     /// If `Some(threshold)`, array properties whose **raw** payload
     /// (`ArrayLength * elemSize`) is at least `threshold` bytes are
@@ -119,6 +120,29 @@ pub struct WriterOptions {
     /// value); byte-faithful re-encoders pass the id captured by
     /// [`crate::binary::parse_footer`].
     pub footer_id: [u8; 16],
+}
+
+impl WriterOptions {
+    /// Builder-style setter for [`compress_arrays`](Self::compress_arrays).
+    pub fn with_compress_arrays(mut self, compress_arrays: Option<usize>) -> Self {
+        self.compress_arrays = compress_arrays;
+        self
+    }
+    /// Builder-style setter for [`compression_level`](Self::compression_level).
+    pub fn with_compression_level(mut self, compression_level: u8) -> Self {
+        self.compression_level = compression_level;
+        self
+    }
+    /// Builder-style setter for [`emit_footer`](Self::emit_footer).
+    pub fn with_emit_footer(mut self, emit_footer: bool) -> Self {
+        self.emit_footer = emit_footer;
+        self
+    }
+    /// Builder-style setter for [`footer_id`](Self::footer_id).
+    pub fn with_footer_id(mut self, footer_id: [u8; 16]) -> Self {
+        self.footer_id = footer_id;
+        self
+    }
 }
 
 impl Default for WriterOptions {
