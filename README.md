@@ -1037,4 +1037,4 @@ decoder API stays available and the `Error` alias falls back to
 
 ## License
 
-Apache-2.0 — see [LICENSE](LICENSE).
+MIT — see [LICENSE](LICENSE).

@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Licence metadata corrected to MIT (the crate's licence): `Cargo.toml` `license` field and README now agree with `LICENSE`, which is replaced with the MIT text.
 - edition 2024, MSRV 1.95.
 
 ### Added
