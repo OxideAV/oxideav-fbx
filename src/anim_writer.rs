@@ -71,13 +71,27 @@ pub(crate) struct AnimEmit {
 /// `DeformPercent` OP targets for MorphWeights channels — one curve
 /// per target slot). `alloc` hands out fresh FBX ids for the
 /// animation elements.
+/// Scene-id → FBX-element resolvers the curve emitter wires its
+/// `OP` edges through.
+pub(crate) struct AnimEndpoints<'a> {
+    /// A node's `Model` element id.
+    pub node_fbx_id: &'a dyn Fn(NodeId) -> Option<i64>,
+    /// The `Geometry` element id of a node's mesh.
+    pub node_geometry_id: &'a dyn Fn(NodeId) -> Option<i64>,
+    /// A node's `BlendShapeChannel` ids in morph-target order.
+    pub morph_channel_ids: &'a dyn Fn(NodeId) -> Option<Vec<i64>>,
+    /// A node's authored transform chain (when it carries one).
+    pub node_chain: &'a dyn Fn(NodeId) -> Option<TransformChain>,
+}
+
 pub(crate) fn build_animation_objects(
     scene: &Scene3D,
-    node_fbx_id: impl Fn(NodeId) -> Option<i64>,
-    morph_channel_ids: impl Fn(NodeId) -> Option<Vec<i64>>,
-    node_chain: impl Fn(NodeId) -> Option<TransformChain>,
+    ends: AnimEndpoints<'_>,
     mut alloc: impl FnMut() -> i64,
 ) -> AnimEmit {
+    let node_fbx_id = ends.node_fbx_id;
+    let morph_channel_ids = ends.morph_channel_ids;
+    let node_chain = ends.node_chain;
     let animations = &scene.animations;
     let mut objects = Vec::new();
     let mut connections = Vec::new();
@@ -188,12 +202,29 @@ pub(crate) fn build_animation_objects(
                     let Some(frames) = ch.sampler.morph_weight_frames() else {
                         continue;
                     };
+                    // Channel display names (the deformer writer's
+                    // `Target{slot}` fallback for unnamed slots) — the
+                    // key-attribute catalogue's join target.
+                    let slot_names: Vec<String> = scene
+                        .nodes
+                        .get(ch.target.node.0 as usize)
+                        .and_then(|n| n.mesh)
+                        .and_then(|m| scene.meshes.get(m.0 as usize))
+                        .map(|m| m.target_names.clone())
+                        .unwrap_or_default();
                     for (slot, channel_fbx) in channel_fbxs.into_iter().enumerate().take(stride) {
                         // 0..1 weights → 0..100 DeformPercent wire values.
                         let slot_vals: Vec<f32> = frames
                             .iter()
                             .map(|frame| (f64::from(frame[slot]) * DEFORM_PERCENT_SCALE) as f32)
                             .collect();
+                        let join = CurveJoin {
+                            stack: &stack_name,
+                            target: Some(match slot_names.get(slot) {
+                                Some(n) if !n.is_empty() => n.clone(),
+                                _ => format!("Target{slot}"),
+                            }),
+                        };
                         let curve_node_id = alloc();
                         objects.push(element(
                             "AnimationCurveNode",
@@ -210,7 +241,28 @@ pub(crate) fn build_animation_objects(
                         // AnimationCurveNode -> AnimationLayer OO.
                         connections.push(conn_oo(curve_node_id, layer_id));
                         let curve_id = alloc();
-                        objects.push(build_curve(curve_id, times, &slot_vals, None));
+                        let curve = match key_attrs.verbatim_curve(
+                            &join,
+                            "DeformPercent",
+                            "d|DeformPercent",
+                            times,
+                            &slot_vals,
+                        ) {
+                            Some(mut original) => {
+                                original.properties[0] = FbxProperty::I64(curve_id);
+                                original
+                            }
+                            None => {
+                                let attrs = key_attrs.leaves(
+                                    &join,
+                                    "DeformPercent",
+                                    "d|DeformPercent",
+                                    times.len(),
+                                );
+                                build_curve(curve_id, times, &slot_vals, Some(attrs))
+                            }
+                        };
+                        objects.push(curve);
                         connections.push(conn_op(curve_id, curve_node_id, "d|DeformPercent"));
                     }
                     continue;
@@ -340,14 +392,21 @@ pub(crate) fn build_animation_objects(
             "",
             props70(records_of(aux)),
         ));
-        if let (Some(nid), Some(prop)) = (
-            aux.get("target")
-                .and_then(|t| t.get("node"))
+        let target = aux.get("target");
+        let endpoint = match (
+            target.and_then(|t| t.get("node")).and_then(Value::as_u64),
+            target
+                .and_then(|t| t.get("geometry_of"))
                 .and_then(Value::as_u64),
-            aux.get("property").and_then(Value::as_str),
-        ) && let Some(model_id) = node_fbx_id(NodeId(nid as u32))
+        ) {
+            (Some(nid), _) => node_fbx_id(NodeId(nid as u32)),
+            (None, Some(nid)) => (ends.node_geometry_id)(NodeId(nid as u32)),
+            _ => None,
+        };
+        if let (Some(endpoint), Some(prop)) =
+            (endpoint, aux.get("property").and_then(Value::as_str))
         {
-            connections.push(conn_op(cn_id, model_id, prop));
+            connections.push(conn_op(cn_id, endpoint, prop));
         }
         let stack = aux.get("stack").and_then(Value::as_str);
         let layer = aux.get("layer").and_then(Value::as_str);
@@ -590,7 +649,19 @@ impl<'a> KeyAttrs<'a> {
             .entry(join, prop, axis)
             .filter(|e| e.get("key_count").and_then(Value::as_u64) == Some(n_keys as u64))
         else {
-            return Vec::new();
+            // A scene with no round-tripped attribute catalogue (built
+            // through the API, or decoded from a file whose curves
+            // carry none): every curve is one this writer sampled, so
+            // it carries the sampled-curve block (see
+            // [`sampled_key_attr_leaves`]). Under a catalogue, a curve
+            // it does not cover keeps none — either the source curve
+            // carried none, or its grid changed and the per-key table
+            // cannot be stretched without the unpinned semantics.
+            return if self.entries.is_empty() {
+                sampled_key_attr_leaves(n_keys)
+            } else {
+                Vec::new()
+            };
         };
         let ints = |key: &str| -> Option<Vec<i32>> {
             e.get(key)?
@@ -633,6 +704,54 @@ impl<'a> KeyAttrs<'a> {
         }
         out
     }
+}
+
+/// The `KeyAttrFlags` / `KeyAttrDataFloat` / `KeyAttrRefCount`
+/// block for a curve of `n_keys` sampled keys: one attribute entry
+/// whose reference count covers every key, with the flag word and the
+/// four data words of
+/// [`crate::animation::SAMPLED_KEY_ATTR_FLAGS`] /
+/// [`crate::animation::SAMPLED_KEY_ATTR_DATA_BITS`].
+///
+/// That is the block `docs/3d/fbx/blender-export-sweeps-2026-09.md`
+/// §2.1 pins byte-for-byte on every curve of the staged sampled-curve
+/// exports (nine interpolation / tangent / extrapolation modes, the
+/// blend-shape weight curves, and all 90 curves of
+/// `fixtures/skin-anim-binary-v7400.fbx`), whose per-key samples
+/// carry the whole curve shape — exactly what this writer emits (one
+/// key per sample, read back linearly). No bit of the flag word is
+/// interpreted (§2.4: the bit assignment is unpinned); the block is
+/// reproduced as the observed constant.
+fn sampled_key_attr_leaves(n_keys: usize) -> Vec<FbxNode> {
+    if n_keys == 0 {
+        return Vec::new();
+    }
+    vec![
+        FbxNode {
+            name: "KeyAttrFlags".to_string(),
+            properties: vec![FbxProperty::I32Array(vec![
+                crate::animation::SAMPLED_KEY_ATTR_FLAGS,
+            ])],
+            children: Vec::new(),
+        },
+        FbxNode {
+            name: "KeyAttrDataFloat".to_string(),
+            properties: vec![FbxProperty::F32Array(
+                crate::animation::SAMPLED_KEY_ATTR_DATA_BITS
+                    .iter()
+                    .map(|b| f32::from_bits(*b))
+                    .collect(),
+            )],
+            children: Vec::new(),
+        },
+        FbxNode {
+            name: "KeyAttrRefCount".to_string(),
+            properties: vec![FbxProperty::I32Array(vec![
+                i32::try_from(n_keys).unwrap_or(i32::MAX),
+            ])],
+            children: Vec::new(),
+        },
+    ]
 }
 
 /// Emit one `AnimationCurveNode` + three per-axis `AnimationCurve`s
@@ -984,7 +1103,17 @@ fn p_ktime(name: &str, v: i64) -> FbxNode {
 /// Build a generic `Objects` element record with the `[id, name+class,
 /// subtype]` property tuple.
 fn element(node_name: &str, id: i64, name: &str, subtype: &str, extra: Vec<FbxNode>) -> FbxNode {
-    let class = node_name;
+    // The animation classes' tag differs from the node name
+    // (`docs/3d/fbx/fbx-binary-properties70.md` §6 point 2: `AnimStack`,
+    // `AnimLayer`; every staged curve node / curve carries
+    // `AnimCurveNode` / `AnimCurve`).
+    let class = match node_name {
+        "AnimationStack" => "AnimStack",
+        "AnimationLayer" => "AnimLayer",
+        "AnimationCurveNode" => "AnimCurveNode",
+        "AnimationCurve" => "AnimCurve",
+        other => other,
+    };
     FbxNode {
         name: node_name.to_string(),
         properties: vec![

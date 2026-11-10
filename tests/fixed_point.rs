@@ -63,6 +63,12 @@ const ALL_FIXTURES: &[&str] = &[
     "cubes-ascii-v7500.fbx",
     "cubes-pivots-ascii-v7500.fbx",
     "texture-video-ascii-v7500.fbx",
+    "blender-keyattr-sweep/keyattr-sweep-binary-v7400.fbx",
+    "blender-texture-placement/texture-placement-binary-v7400.fbx",
+    "blender-blendshape/blendshape-channels-binary-v7400.fbx",
+    "blender-blendshape/blendshape-anim-binary-v7400.fbx",
+    "blender-nurbs-export/nurbs-as-mesh-binary-v7400.fbx",
+    "nurbs-curves-ascii-v7200/nurbs-curves-ascii-v7200.fbx",
 ];
 
 // ---------------------------------------------------------------------
@@ -291,6 +297,7 @@ fn fingerprint(s: &Scene3D) -> Fingerprint {
             oxideav_mesh3d::ImageData::External { uri, mime } => {
                 format!("External uri={uri:?} mime={mime:?}")
             }
+            #[cfg(feature = "registry")]
             oxideav_mesh3d::ImageData::Embedded(f) => format!("Embedded planes={}", f.planes.len()),
             oxideav_mesh3d::ImageData::Source(src) => {
                 format!("Source mime={:?} size={:?}", src.mime(), src.size_hint())

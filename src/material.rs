@@ -82,6 +82,7 @@ use std::collections::HashMap;
 
 use oxideav_mesh3d::{
     AlphaMode, Material, MaterialId, MeshId, NodeId, Scene3D, Texture, TextureId, TextureTransform,
+    WrapMode,
 };
 
 use crate::binary::{FbxDocument, FbxNode, FbxProperty};
@@ -251,6 +252,10 @@ pub fn extract_materials(
         // (surfaced on `Scene3D::extras["fbx:texture_records"]`, keyed
         // by the scene texture index, for lossless re-encode).
         let mut props = decode_texture_props(tex_node, texture_template);
+        if let Some(t) = scene.textures.get_mut(tex_id.0 as usize) {
+            t.sampler.wrap_s = props.wrap_s;
+            t.sampler.wrap_t = props.wrap_t;
+        }
         // Path leaves on the Texture / Video elements that the typed
         // image cannot carry ride raw too: an embedded texture has no
         // typed path at all, yet the producer's `RelativeFilename` /
@@ -549,6 +554,34 @@ struct TextureProps {
     /// Raw untypable authored records, re-emitted verbatim by the
     /// encoder via `Scene3D::extras["fbx:texture_records"]`.
     raw: serde_json::Map<String, serde_json::Value>,
+    /// Typed sampler wrap per axis (see [`wrap_mode_from_fbx`]).
+    wrap_s: WrapMode,
+    wrap_t: WrapMode,
+}
+
+/// `WrapModeU` / `WrapModeV` → the typed sampler wrap. The staged
+/// sweep (`docs/3d/fbx/blender-export-sweeps-2026-09.md` §3.1) pins
+/// two values: `0` (the template default, absent record) for a
+/// repeating texture, `1` for every non-repeating extension the
+/// producer offers (edge-extend, clip and mirror all write `1`). `1`
+/// therefore types as [`WrapMode::ClampToEdge`] — the non-repeating
+/// mode closest to the whole class it stands for. Any other value has
+/// no staged meaning and types as the default [`WrapMode::Repeat`]
+/// (the raw integer still rides on `fbx:texture_records`).
+pub fn wrap_mode_from_fbx(v: i32) -> WrapMode {
+    match v {
+        1 => WrapMode::ClampToEdge,
+        _ => WrapMode::Repeat,
+    }
+}
+
+/// Inverse of [`wrap_mode_from_fbx`] for the writer: `0` for
+/// [`WrapMode::Repeat`], `1` for every non-repeating mode.
+pub fn wrap_mode_to_fbx(m: WrapMode) -> i32 {
+    match m {
+        WrapMode::Repeat => 0,
+        _ => 1,
+    }
 }
 
 /// Decode one `Texture` element's `Properties70` block per the
@@ -565,10 +598,11 @@ struct TextureProps {
 ///
 /// - `Translation` third component `0` (→ `offset`, literal),
 /// - `Rotation` first two components `0` (the in-plane rotation is
-///   the third component; FBX angles are degrees — the convention
-///   every staged rotation record uses, cf.
-///   `docs/3d/fbx/fbx-node-transform-chain.md` §3 — converted to
-///   radians),
+///   the third component, read in **radians**: the only staged
+///   texture `Rotation` records —
+///   `docs/3d/fbx/blender-export-sweeps-2026-09.md` §3.1, 30° about
+///   Z written as `-0.5235987901687622` — carry radians, unlike the
+///   degree-valued node-transform records),
 /// - `Scaling` third component `1` (→ `scale`, literal),
 /// - `TextureRotationPivot` / `TextureScalingPivot` zero (their
 ///   composition order with the placement TRS is pinned by no staged
@@ -577,9 +611,9 @@ struct TextureProps {
 ///   likewise unpinned).
 ///
 /// Everything else — non-zero pivots, out-of-plane components,
-/// `UVSwap`, and the enum-typed `WrapModeU` / `WrapModeV` (whose
-/// value table beyond the observed default `0` is a staged-docs gap)
-/// plus `UseMipMap` — surfaces raw so re-encode is lossless.
+/// `UVSwap`, `UseMipMap` — surfaces raw so re-encode is lossless.
+/// `WrapModeU` / `WrapModeV` type onto the texture's sampler
+/// ([`wrap_mode_from_fbx`]) and their authored integers ride raw too.
 fn decode_texture_props(node: &FbxNode, template: Option<&PropertyMap>) -> TextureProps {
     let own = PropertyMap::from_element(node);
     let resolved = match template {
@@ -608,7 +642,7 @@ fn decode_texture_props(node: &FbxNode, template: Option<&PropertyMap>) -> Textu
             t.offset = [tr[0] as f32, tr[1] as f32];
         }
         if let Some(r) = rotation {
-            t.rotation = (r[2] as f32).to_radians();
+            t.rotation = r[2] as f32;
         }
         if let Some(s) = scaling {
             t.scale = [s[0] as f32, s[1] as f32];
@@ -619,6 +653,36 @@ fn decode_texture_props(node: &FbxNode, template: Option<&PropertyMap>) -> Textu
     };
 
     let mut raw = serde_json::Map::new();
+    // The authored placement triples at full f64 precision, alongside
+    // the f32 typed transform — the writer re-emits exactly these
+    // records while the typed transform still equals their reading.
+    if transform.is_some() {
+        let mut placed = serde_json::Map::new();
+        for (key, val) in [
+            ("translation", translation),
+            ("rotation", rotation),
+            ("scaling", scaling),
+        ] {
+            if let Some(v) = val {
+                placed.insert(
+                    key.to_string(),
+                    serde_json::Value::Array(vec![v[0].into(), v[1].into(), v[2].into()]),
+                );
+            }
+        }
+        raw.insert("placement".to_string(), serde_json::Value::Object(placed));
+    }
+    // The element's own `P` records verbatim: the writer keeps each
+    // one (its typeName / label / flags shape and value encoding —
+    // producers differ, e.g. `Vector` + `A` vs `Vector3D` + `Vector`
+    // for the placement triples, `C` vs `I` for `bool`) whenever the
+    // record it would write carries the same value.
+    let records = crate::properties70::own_records_json(node);
+    if !records.is_empty() {
+        raw.insert("records".to_string(), serde_json::Value::Array(records));
+    }
+    let wrap_s = wrap_mode_from_fbx(resolved.as_i32("WrapModeU").unwrap_or(0));
+    let wrap_t = wrap_mode_from_fbx(resolved.as_i32("WrapModeV").unwrap_or(0));
     if let Some(v) = own.as_i32("WrapModeU") {
         raw.insert("wrap_mode_u".to_string(), v.into());
     }
@@ -675,6 +739,8 @@ fn decode_texture_props(node: &FbxNode, template: Option<&PropertyMap>) -> Textu
         uv_set_name,
         transform,
         raw,
+        wrap_s,
+        wrap_t,
     }
 }
 

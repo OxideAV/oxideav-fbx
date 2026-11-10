@@ -140,8 +140,22 @@ clean-room from third-party documentation:
   per-corner buffers), deformers walked in document order so
   morph-target slots are deterministic across multiple `BlendShape`
   deformers on one geometry. Each channel's **static**
-  `DeformPercent` record (0..100) decodes ÷100 into the matching
-  `Mesh::weights` slot (rest blend state), and the channels' authored
+  `DeformPercent` (0..100 — the `DeformPercent: D` body leaf the
+  staged blend-shape fixtures carry, or a `Properties70` record)
+  decodes ÷100 into the matching `Mesh::weights` slot (rest blend
+  state). Each channel's `FullWeights` array (`d[len(Indexes)]`,
+  percent, element *k* paired with `Indexes[k]` —
+  `docs/3d/fbx/blender-export-sweeps-2026-09.md` §4.1) rides per slot
+  on `Primitive::extras["fbx:blend_full_weights"]` (`{indexes,
+  weights}`); the writer re-emits it against the index set it writes
+  (100 for indexes without a recorded weight) with the staged channel
+  body `Version: 100` / `DeformPercent: D` / `FullWeights: d`, the
+  `Version: 100` BlendShape leaf and the Shape's empty
+  `Properties70` + `Version: 100` (byte pins checked on our binary
+  output: one `d` array, encoding 0, no null-record terminator), and
+  `SubDeformer` class tags on channels and clusters. Chained relative
+  keys arrive as separate channels (each Shape stores its delta
+  against its own reference key). The channels' authored
   display names land in slot order on the typed `Mesh::target_names`
   (`find_target("Smile")` → weight-slot index). The merged
   `MorphWeights` channel is built through
@@ -182,17 +196,29 @@ clean-room from third-party documentation:
   - **`Translation` / `Rotation` / `Scaling` →
     `TextureRef::transform`** (typed `KHR_texture_transform`-style
     placement), literal reading: offset = translation x/y, rotation
-    = the third component degrees → radians, scale = scaling x/y.
+    = the third component **in radians** (the unit of every staged
+    texture `Rotation` record, sweep doc §3.1 — 30° written as
+    `-0.5235987901687622`), scale = scaling x/y. The authored f64
+    triples and the element's own `P` records ride raw too, so an
+    unedited texture re-encodes value- and shape-exact (both the
+    `Vector` + `A` and the `Vector3D` + `Vector` record shapes, `C`
+    or `I` booleans). Which direction the placement maps (texture →
+    UV or UV → texture) is not pinned by any staged doc; the literal
+    reading is kept as-is.
     Template defaults are the identity, so authored-vs-absent equals
     own-record presence (`None` = "no transform declared"; an
     authored identity stays `Some(IDENTITY)`). Typed only when the
     placement is purely 2D and pivot-free; non-zero
     `TextureRotationPivot` / `TextureScalingPivot` (composition
     order unstaged) or `UVSwap` keep the placement raw-only.
-  - **Raw untypable records** (`WrapModeU` / `WrapModeV` — the
-    wrap-enum value table beyond the observed default `0` is a
-    staged-docs gap, so the typed `Sampler` keeps its default
-    repeat / filters-undefined state — plus `UVSwap`, `UseMipMap`,
+  - **`WrapModeU` / `WrapModeV` → `Sampler::wrap_s` / `wrap_t`** —
+    the staged sweep pins two values (§3.1): `0` (template default)
+    for a repeating texture → `Repeat`, `1` for every non-repeating
+    extension (edge-extend, clip and mirror all write `1`) →
+    `ClampToEdge`; the writer emits `0` / `1` back (any non-repeat
+    typed wrap → `1`). Other integers keep the default and ride raw.
+  - **Raw untypable records** (the authored wrap integers, plus
+    `UVSwap`, `UseMipMap`,
     `TextureTypeUse` / `CurrentMappingType` /
     `CurrentTextureBlendMode` / `PremultiplyAlpha` / `UseMaterial` /
     `Texture alpha`, pivots, and unrepresentable placements)
@@ -582,12 +608,29 @@ clean-room from third-party documentation:
   `Geometry -> Model` `OO` connection, so a consumer can detect that a
   non-tessellated NURBS / line geometry exists and what kind it is
   without re-walking the `FbxDocument`. Coexists on a distinct key from
-  the `"fbx:node_attribute_kind"` key. The per-subtype control-point
-  / knot-vector grammar that a real curve / surface evaluation would
-  need is absent from the staged docs (only the subtype *names* are
-  enumerated), so the decode-side join is a follow-up gated on that
-  grammar being staged — the evaluation engine itself is in place
-  (next bullet).
+  the `"fbx:node_attribute_kind"` key.
+- **`NurbsCurve` geometry** (`nurbs_geometry` module) — the record set
+  staged with `docs/3d/fbx/fixtures/nurbs-curves-ascii-v7200/`
+  (`GeometryVersion` / `Type` / `NurbsCurveVersion` / `Order` /
+  `Dimension` / `Form` / `Rational` / `Points` as `x,y,z,w` 4-tuples /
+  `KnotVector`) parses into the typed `FbxNurbsCurve`
+  (`#[non_exhaustive]`, `new` / `with_*`). The staged knot-count
+  relations (`Open` K = n + order, `Closed` n + order + 1, `Periodic`
+  n + 2·order − 1) fix the evaluated control array (`K − order`
+  points): `Closed` closes the authored array with its first point,
+  `Periodic` wraps its first `degree` points — the engine's periodic
+  form. `to_curve()` joins the evaluation engine (weights = `w` when
+  `Rational`); the scene model gets one mesh per curve whose
+  primitive is the curve sampled at 16 segments per knot span
+  (`LineStrip`, `LineLoop` for `Periodic`) carrying the wire records
+  on `extras["fbx:nurbs_curve"]`, so the encoder writes a
+  `Geometry{NurbsCurve}` back (records value-exact in both forms) under
+  the `NurbsCurve` Model subtype. On the staged sample all five curves
+  validate: clamped `Open` curves hit their end points, the `Closed`
+  curve starts and ends on its first point, both `Periodic` curves
+  meet at the seam. `FbxNurbsCurve::to_mesh` builds the same surface
+  from the API. `NurbsSurface` / `TrimNurbsSurface` / `Line` /
+  `Boundary` payloads stay unstaged (discriminator only).
 - **B-spline / NURBS evaluation + tessellation engine** (`nurbs`
   module) — the format-independent half of NURBS support, implemented
   from the textbook definition of the B-spline basis (Cox–de Boor
@@ -857,8 +900,34 @@ list for an edited mesh. Skins round-trip from the fixture's
 `Model → Cluster` edge direction, `CollectionExclusive` display layers
 and custom-property curve nodes (`mr displacement …`) pass through
 opaque, and the ASCII form carries embedded `Video.Content` as base64.
-No third-party FBX consumer is installed on the round's machine, so the
-crate's own reader is the black-box oracle.
+
+The corpus includes the six 2026-09 export-sweep fixtures
+(`fixtures/blender-*/`, `nurbs-curves-ascii-v7200/`) under the same
+three laws (`IndexToDirect` normal pools and authored-empty
+`NodeAttribute` `Properties70` blocks are re-emitted as found), and
+`tests/export_sweeps.rs` checks each against its `notes.md`.
+
+**Third-party importer check** (`tests/export_sweeps.rs`, skips when
+no `blender` binary is present; `OXIDEAV_FBX_BLENDER` overrides the
+path): each binary sweep fixture and our binary re-encode of
+it are imported headless by the `blender` binary as a black box, and
+the two imports must agree — objects, mesh sizes, shape-key names and
+values, animation presence, image-texture extension and mapping-node
+values. The `NurbsCurve` sample (ASCII, which that importer does not
+read) is imported from our binary re-encode, all six Models present.
+Getting there fixed four interop bugs the in-tree oracle could not see:
+the animation element class tags (`AnimStack` / `AnimLayer` /
+`AnimCurveNode` / `AnimCurve`, `docs/3d/fbx/fbx-binary-properties70.md`
+§6 point 2) and the `SubDeformer` tag on clusters / channels; the
+`GlobalSettings` double shape (`"double", "Number", ""` per §4, not
+the animatable `"", "A"`); ASCII object names — the parser now surfaces
+`"ClassTag::Name"` headers (and the `SceneInfo` / `TextureName` /
+`Media` strings) in the binary `Name\x00\x01ClassTag` shape and the
+ASCII writer renders them back, so decoded names no longer carry a
+`Model::` prefix and ASCII output never carries raw NUL bytes; and
+whole-valued doubles in ASCII `P` records of a float typeName
+(`double` / `Number` / `Vector*` / `Color*` / `Lcl *` / `Visibility`),
+which lex as integers, widen back to `D`.
 
 ## Decode
 
@@ -935,7 +1004,17 @@ the partial-support edges and the not-yet-implemented surfaces.
   id from `parse_footer` / `fbx:footer_id` is reproduced verbatim).
 - Animation: per-layer compositing weights and `KeyAttrFlags` cubic /
   step / TCB interpolation modes remain uninterpreted — linear
-  sampling between keyframes only. The raw payloads are not dropped:
+  sampling between keyframes only. The staged sampled-curve block
+  (`KeyAttrFlags {24836}`, `KeyAttrDataFloat` words
+  `{0, 0, 0x0F3F0F3F, 0}`, `KeyAttrRefCount {key count}` — every
+  curve of the 2026-09 sweep, nine interpolation / tangent /
+  extrapolation modes alike, sweep doc §2) is recognised:
+  `animation::is_sampled_key_attr_block`, and
+  `"sampled_block": true` on its catalogue entry — read as nothing
+  more than "the producer sampled the curve". The writer puts exactly
+  that block on every curve it samples itself in a scene with no
+  round-tripped catalogue (API-built scenes), and source curves keep
+  theirs verbatim (blend-shape `DeformPercent` curves included). The raw payloads are not dropped:
   every `AnimationCurve` carrying `KeyAttrFlags` / `KeyAttrDataFloat`
   / `KeyAttrRefCount` contributes one entry to
   `Scene3D::extras["fbx:key_attrs"]` (stack / target / property /
@@ -961,15 +1040,15 @@ the partial-support edges and the not-yet-implemented surfaces.
 - Skin: `SKINNING_METHOD_DUAL_QUATERNION` / `BLENDED_DQ_LINEAR`
   surface as plain LBS buffers (the doc notes this is safe to ignore
   unless the renderer specifically needs it).
-- BlendShape: in-between shapes are collapsed to the most-recent
-  `Shape` per channel, and `MorphTarget::inbetweens` (mesh3d 0.0.6)
-  is left empty in both directions. The in-between-shape grammar (a
-  channel with several `Shape` targets and the station-weight table
-  that would give each its `Inbetween::weight`) is pinned by no
-  staged doc — `docs/3d/fbx/fbx-binary-properties70.md` §6 only
-  names the `"Shape"` subtype and `fbx-property-templates.md` §4.1
-  leaves the `FbxBlendShapeChannel` body unobserved — so no
-  interpretation is attempted: a docs acquisition item.
+- BlendShape in-betweens: `MorphTarget::inbetweens` is left empty in
+  both directions. The staged sweep (§4) shows one `Shape` per
+  channel from its producer (chained keys → separate channels), a
+  per-vertex `FullWeights` (`len(Indexes)` percent values), and an
+  importer that rejects multi-`Shape` channels; no staged file has a
+  multi-`Shape` channel, so the station weight each extra `Shape`
+  would get (and whether `FullWeights` then becomes a per-`Shape`
+  table) is unpinned — a docs acquisition item. A channel with
+  several `Shape`s decodes its most recent one.
 - Specular workflow — FBX `Specular` / `SpecularFactor` aren't
   surfaced because the glTF metallic-roughness target has no separate
   specular colour channel. The values still round-trip through the
@@ -989,18 +1068,13 @@ the partial-support edges and the not-yet-implemented surfaces.
   per-corner attribute buffers (positions / normals / UVs / skin /
   morph) into N parts is the consumer's job — the slot table + the
   per-corner index buffer are the only inputs that decision needs.
-- **NURBS wire decode** — the `nurbs` module carries the complete
-  evaluation + tessellation engine, but the FBX wire payload grammar
-  for the non-`Mesh` geometry subtypes (`"NurbsCurve"` /
-  `"NurbsSurface"` / `"TrimNurbsSurface"` / `"Boundary"` / `"Line"`)
-  is a staged-docs gap: `docs/3d/fbx/fbx-binary-properties70.md` §6
-  point 3 enumerates only the subtype *names*, and no staged fixture
-  contains such a geometry, so the record names + layouts for knot
-  vectors, control points, orders, forms and weights cannot be pinned
-  from staged bytes. Until that grammar lands, the scene walker
-  surfaces the subtype discriminator on
-  `Node::extras["fbx:geometry_kind"]` and the payload rides the
-  `FbxDocument` untyped.
+- **NURBS beyond `NurbsCurve`** — `NurbsSurface` /
+  `TrimNurbsSurface` / `Line` / `Boundary` payloads and any binary
+  `NurbsCurve` sample are unstaged (sweep §5.3); those subtypes keep
+  the `Node::extras["fbx:geometry_kind"]` discriminator and ride the
+  `FbxDocument` untyped. On `NurbsCurve`: whether a rational curve's
+  `x, y, z` are pre-multiplied by `w` is unobservable on the staged
+  sample (every `w = 1`); they are read as Cartesian.
 - Coordinate-system / unit-scale **auto-conversion** —
   `GlobalSettings` is *decoded* (see "GlobalSettings"
   above) so the file's authored axis convention + unit factor land

@@ -411,6 +411,36 @@ pub const ANIM_STACKS_KEY: &str = "fbx:anim_stacks";
 /// bodies (every leaf, `KeyAttr*` included).
 pub const AUX_CURVE_NODES_KEY: &str = "fbx:aux_curve_nodes";
 
+/// `KeyAttrFlags` word of the sampled-curve attribute block
+/// (`docs/3d/fbx/blender-export-sweeps-2026-09.md` §2.1: `24836` =
+/// `0x00006104`, one element, on every curve of the staged
+/// sampled-curve exports). Uninterpreted — the bit assignment is the
+/// open `KeyAttrFlags` docs gap.
+pub const SAMPLED_KEY_ATTR_FLAGS: i32 = 24836;
+
+/// `KeyAttrDataFloat` words of the same block, as raw little-endian
+/// IEEE-754 bit patterns (`00000000 00000000 3f0f3f0f 00000000` on
+/// the wire; the third word is a bit pattern, not a meaningful
+/// float).
+pub const SAMPLED_KEY_ATTR_DATA_BITS: [u32; 4] = [0, 0, 0x0F3F_0F3F, 0];
+
+/// `true` when a curve's attribute arrays are exactly the
+/// sampled-curve block: flags `{`[`SAMPLED_KEY_ATTR_FLAGS`]`}`, data
+/// words [`SAMPLED_KEY_ATTR_DATA_BITS`], and a single reference count
+/// covering all `key_count` keys. Per the sweep's §2.4 verdict, the
+/// only reading this licenses is "the producer sampled the curve" —
+/// the per-key values carry its whole shape.
+pub fn is_sampled_key_attr_block(
+    flags: &[i64],
+    data_bits: &[u32],
+    ref_count: &[i64],
+    key_count: usize,
+) -> bool {
+    flags == [i64::from(SAMPLED_KEY_ATTR_FLAGS)]
+        && data_bits == SAMPLED_KEY_ATTR_DATA_BITS
+        && ref_count == [key_count as i64]
+}
+
 /// Surface the [`ANIM_STACKS_KEY`] and [`AUX_CURVE_NODES_KEY`]
 /// catalogues (see each key's docs). Nothing is interpreted; the
 /// writer re-emits both verbatim so a decode → encode → decode keeps
@@ -430,12 +460,16 @@ pub fn extract_anim_catalogue(
     let mut curve_node_ids: HashMap<i64, ()> = HashMap::new();
     let mut curves: HashMap<i64, &FbxNode> = HashMap::new();
     let mut element_names: HashMap<i64, String> = HashMap::new();
+    let mut geometries: HashMap<i64, ()> = HashMap::new();
     for child in &objects.children {
         let Some(id) = element_id(child) else {
             continue;
         };
         element_names.insert(id, element_name(child).unwrap_or_default());
         match child.name.as_str() {
+            "Geometry" => {
+                geometries.insert(id, ());
+            }
             "AnimationStack" => stacks.push((id, child)),
             "AnimationLayer" => {
                 layers.insert(id, child);
@@ -460,6 +494,9 @@ pub fn extract_anim_catalogue(
     let mut node_to_layer: HashMap<i64, i64> = HashMap::new();
     let mut node_to_target: HashMap<i64, (i64, String)> = HashMap::new();
     let mut curves_of_node: HashMap<i64, Vec<(i64, String)>> = HashMap::new();
+    // Geometry element → owning Model (`OO`), so a curve node driving
+    // a geometry property re-wires onto the re-encoded geometry.
+    let mut geometry_owner: HashMap<i64, i64> = HashMap::new();
     let stack_ids: HashMap<i64, ()> = stacks.iter().map(|(id, _)| (*id, ())).collect();
     if let Some(conns) = doc.root.child("Connections") {
         for c in conns.children_named("C") {
@@ -472,7 +509,9 @@ pub fn extract_anim_catalogue(
             };
             match (kind, prop) {
                 ("OO", _) => {
-                    if layers.contains_key(&child_id) && stack_ids.contains_key(&parent_id) {
+                    if geometries.contains_key(&child_id) && model_nodes.contains_key(&parent_id) {
+                        geometry_owner.entry(child_id).or_insert(parent_id);
+                    } else if layers.contains_key(&child_id) && stack_ids.contains_key(&parent_id) {
                         layers_of_stack.entry(parent_id).or_default().push(child_id);
                     } else if curve_node_ids.contains_key(&child_id)
                         && layers.contains_key(&parent_id)
@@ -550,9 +589,13 @@ pub fn extract_anim_catalogue(
         let layer_id = node_to_layer.get(cid).copied();
         let stack_id = layer_id.and_then(|l| layer_stack.get(&l).copied());
         let target_json = match target {
-            Some((tid, _)) => match model_nodes.get(tid) {
-                Some(nid) => serde_json::json!({ "node": nid.0 }),
-                None => serde_json::json!({
+            Some((tid, _)) => match (
+                model_nodes.get(tid),
+                geometry_owner.get(tid).and_then(|m| model_nodes.get(m)),
+            ) {
+                (Some(nid), _) => serde_json::json!({ "node": nid.0 }),
+                (None, Some(nid)) => serde_json::json!({ "geometry_of": nid.0 }),
+                (None, None) => serde_json::json!({
                     "object": element_names.get(tid).cloned().unwrap_or_default()
                 }),
             },
@@ -645,7 +688,10 @@ pub fn extract_key_attr_catalogue(doc: &FbxDocument) -> Option<serde_json::Value
                 curve_nodes.insert(id, ());
             }
             "AnimationCurve" => curve_elements.push((id, child)),
-            "Model" => {
+            // Curve-node endpoints the join names: Models, and the
+            // `BlendShapeChannel` deformers `DeformPercent` curves
+            // drive (the writer re-joins those by channel name).
+            "Model" | "Deformer" => {
                 model_names.insert(id, element_name(child).unwrap_or_default());
             }
             _ => {}
@@ -756,6 +802,26 @@ pub fn extract_key_attr_catalogue(doc: &FbxDocument) -> Option<serde_json::Value
             .and_then(FbxProperty::as_i64)
         {
             entry.insert("key_ver".into(), serde_json::json!(k));
+        }
+        let ints = |v: &Option<serde_json::Value>| -> Vec<i64> {
+            v.as_ref()
+                .and_then(serde_json::Value::as_array)
+                .map(|a| a.iter().filter_map(serde_json::Value::as_i64).collect())
+                .unwrap_or_default()
+        };
+        let words: Vec<u32> = data_bits
+            .as_ref()
+            .and_then(serde_json::Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_u64().and_then(|b| u32::try_from(b).ok()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        if let Some(n) = key_count
+            && is_sampled_key_attr_block(&ints(&flags), &words, &ints(&ref_count), n)
+        {
+            entry.insert("sampled_block".into(), serde_json::Value::Bool(true));
         }
         if let Some(v) = flags {
             entry.insert("flags".into(), v);

@@ -63,6 +63,12 @@ use oxideav_mesh3d::{Error, Mesh, Primitive, Result, Topology};
 
 use crate::binary::{FbxNode, FbxProperty};
 
+/// `Primitive::extras` key: `"IndexToDirect"` when the canonical
+/// `LayerElementNormal` was a pooled `Normals` + `NormalsIndex` pair
+/// (absent for the `Direct` form). The welded writer then emits the
+/// same pooled form (bit-exact deduplicated pool, per-slot index).
+pub const NORMALS_REFERENCE_KEY: &str = "fbx:normals_reference";
+
 /// Build an `oxideav-mesh3d` [`Mesh`] from an FBX `Geometry` node.
 ///
 /// Convenience wrapper around [`extract_geometry_mesh_with_corners`]
@@ -135,6 +141,22 @@ pub fn extract_geometry_mesh_with_corners(
         };
         if prim.normals.is_none() {
             prim.normals = Some(normals);
+            // The canonical layer's reference form, when it is the
+            // pooled `IndexToDirect` one (a `Normals` pool + per-slot
+            // `NormalsIndex`, the form the staged 2026-09 sweep
+            // fixtures write) — the writer re-pools on re-encode.
+            if layer
+                .child("ReferenceInformationType")
+                .and_then(|n| n.properties.first())
+                .and_then(FbxProperty::as_str)
+                == Some("IndexToDirect")
+                && layer.child("NormalsIndex").is_some()
+            {
+                prim.extras.insert(
+                    NORMALS_REFERENCE_KEY.to_string(),
+                    Value::String("IndexToDirect".to_string()),
+                );
+            }
         } else {
             // Additional normal layer — flatten its per-corner
             // buffer into `extras`. Record the layer's `TypedIndex`

@@ -28,7 +28,7 @@
 //!   index, and re-emit verbatim on encode.
 
 use oxideav_fbx::{FbxDecoder, FbxEncoder};
-use oxideav_mesh3d::{Mesh3DDecoder, Mesh3DEncoder, Sampler, TextureTransform};
+use oxideav_mesh3d::{Mesh3DDecoder, Mesh3DEncoder, Sampler, TextureTransform, WrapMode};
 
 /// Minimal ASCII document: a quad with two named UV channels, one
 /// material, one texture bound to `DiffuseColor` with the given
@@ -123,21 +123,31 @@ fn unknown_uvset_label_keeps_default_channel() {
 fn planar_placement_decodes_to_typed_transform() {
     let scene = decode(&ascii_doc(
         r#"			P: "Translation", "Vector", "", "A",0.25,0.5,0
-			P: "Rotation", "Vector", "", "A",0,0,90
+			P: "Rotation", "Vector", "", "A",0,0,1.5707963267948966
 			P: "Scaling", "Vector", "", "A",2,3,1"#,
     ));
     let texref = scene.materials[0].base_color_texture.expect("binding");
     let t = texref.transform.expect("typed transform attached");
     assert_eq!(t.offset, [0.25, 0.5]);
+    // Texture `Rotation` reads in radians (the unit of every staged
+    // texture rotation record, sweep doc §3.1).
     assert!(
         (t.rotation - std::f32::consts::FRAC_PI_2).abs() < 1e-6,
-        "90 deg -> pi/2 rad, got {}",
+        "pi/2 rad, got {}",
         t.rotation
     );
     assert_eq!(t.scale, [2.0, 3.0]);
     assert_eq!(t.uv_set, None);
-    // Fully representable → nothing left to surface raw.
-    assert!(!scene.extras.contains_key("fbx:texture_records"));
+    // Fully representable → the raw side carries only the exact f64
+    // placement and the source records verbatim (their wire shape).
+    let rec = scene.extras["fbx:texture_records"]["0"]
+        .as_object()
+        .expect("texture record");
+    assert_eq!(rec.keys().collect::<Vec<_>>(), ["placement", "records"]);
+    assert_eq!(
+        rec["placement"]["rotation"][2].as_f64(),
+        Some(std::f64::consts::FRAC_PI_2)
+    );
 }
 
 #[test]
@@ -197,7 +207,7 @@ fn out_of_plane_rotation_blocks_typed_transform() {
 }
 
 #[test]
-fn wrap_swap_mip_records_surface_raw_and_sampler_stays_default() {
+fn wrap_swap_mip_records_surface_raw_and_wrap_types_onto_the_sampler() {
     let scene = decode(&ascii_doc(
         r#"			P: "WrapModeU", "enum", "", "",1
 			P: "WrapModeV", "enum", "", "",0
@@ -209,10 +219,13 @@ fn wrap_swap_mip_records_surface_raw_and_sampler_stays_default() {
     assert_eq!(rec["wrap_mode_v"].as_i64(), Some(0));
     assert_eq!(rec["uv_swap"].as_bool(), Some(true));
     assert_eq!(rec["use_mip_map"].as_bool(), Some(true));
-    // The wrap-enum value table beyond the observed default 0 is a
-    // staged-docs gap — the typed sampler keeps the default state
-    // (repeat wrapping, filters undefined) rather than guessing.
-    assert_eq!(scene.textures[0].sampler, Sampler::default_sampler());
+    // Sweep doc §3.1: `0` = repeating, `1` = every non-repeating
+    // extension → ClampToEdge; filters stay undefined.
+    let sampler = scene.textures[0].sampler;
+    assert_eq!(sampler.wrap_s, WrapMode::ClampToEdge);
+    assert_eq!(sampler.wrap_t, WrapMode::Repeat);
+    assert_eq!(sampler.mag_filter, Sampler::default_sampler().mag_filter);
+    assert_eq!(sampler.min_filter, Sampler::default_sampler().min_filter);
 }
 
 #[test]

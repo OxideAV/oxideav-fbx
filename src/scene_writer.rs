@@ -301,6 +301,13 @@ pub fn encode_scene_with_options(scene: &Scene3D, opts: &SceneEncodeOptions) -> 
             .extras
             .get("fbx:texture_records")
             .and_then(|v| v.get(tex_idx.to_string()));
+        // A decoded texture that authored no `UVSet` and samples the
+        // default channel keeps omitting the record (the template's
+        // `"default"` resolves to channel 0 either way).
+        let uv_label = uv_label.filter(|_| {
+            !(texref.effective_uv_set() == 0
+                && raw_records.is_some_and(|r| r.get("uv_set").is_none()))
+        });
         let (tex_node, video_node) = build_texture(
             tex,
             texture_ids[tex_idx],
@@ -511,11 +518,22 @@ pub fn encode_scene_with_options(scene: &Scene3D, opts: &SceneEncodeOptions) -> 
                 .get(nid.0 as usize)
                 .and_then(crate::node_transform::chain_from_extras)
         };
+        // The `Geometry` element a node's mesh was written as — the
+        // OP endpoint of curve nodes animating a geometry property
+        // (the per-shape-key `Number` slots the staged blend-shape
+        // fixture keys alongside each channel's `DeformPercent`).
+        let geometry_for = |nid: oxideav_mesh3d::NodeId| -> Option<i64> {
+            let mid = scene.nodes.get(nid.0 as usize)?.mesh?;
+            mesh_ids.get(mid.0 as usize).copied()
+        };
         let anim_emit = crate::anim_writer::build_animation_objects(
             scene,
-            node_to_fbx,
-            morph_channels_for,
-            chain_for,
+            crate::anim_writer::AnimEndpoints {
+                node_fbx_id: &node_to_fbx,
+                node_geometry_id: &geometry_for,
+                morph_channel_ids: &morph_channels_for,
+                node_chain: &chain_for,
+            },
             || alloc.next(),
         );
         objects.children.extend(anim_emit.objects);
@@ -1064,7 +1082,7 @@ fn build_global_settings(scene: &Scene3D) -> FbxNode {
         ("fbx:custom_frame_rate", "CustomFrameRate"),
     ] {
         if let Some(v) = scene.extras.get(key).and_then(|v| v.as_f64()) {
-            ps.push(p_double(name, v));
+            ps.push(p_global_double(name, v));
         }
     }
     if let Some(s) = scene
@@ -1107,7 +1125,7 @@ fn build_global_settings(scene: &Scene3D) -> FbxNode {
         // metres-per-unit → centimetres-per-unit.
         other => other.to_metres() as f64 * 100.0,
     });
-    ps.push(p_double("UnitScaleFactor", scale_factor));
+    ps.push(p_global_double("UnitScaleFactor", scale_factor));
 
     // Round-tripped raw set (`fbx:global_settings_records`) with the
     // typed records merged in by name — keeps the producer's order and
@@ -2130,6 +2148,23 @@ struct GeometryEmit {
 /// structure (`fbx:shared_positions` / `fbx:polygon_vertex_index`),
 /// else the expanded disconnected-triangle form.
 fn build_geometry(mesh: &Mesh, id: i64, opts: &SceneEncodeOptions) -> GeometryEmit {
+    // A decoded / API-built `NurbsCurve` geometry: its record set
+    // rides on the (single) sampled-line primitive.
+    if let Some(record) = mesh
+        .primitives
+        .first()
+        .and_then(|p| p.extras.get(crate::nurbs_geometry::NURBS_CURVE_KEY))
+        && let Some(node) = crate::nurbs_geometry::element_from_extras(
+            record,
+            id,
+            mesh.name.as_deref().unwrap_or(""),
+        )
+    {
+        return GeometryEmit {
+            node,
+            corner_to_vertex: None,
+        };
+    }
     if let Some(plan) = mesh
         .primitives
         .first()
@@ -2345,11 +2380,20 @@ fn build_welded_geometry(
         && let Some(buf) = prim_corner_vec3(prim, prim.normals.as_ref())
     {
         let slots = plan.to_slots(&buf)?;
-        children.push(layer_element_vec3(
-            "LayerElementNormal",
-            "Normals",
-            flat3(&slots),
-        ));
+        if prim
+            .extras
+            .get(crate::geometry::NORMALS_REFERENCE_KEY)
+            .and_then(Value::as_str)
+            == Some("IndexToDirect")
+        {
+            children.push(layer_element_normal_indexed(&slots));
+        } else {
+            children.push(layer_element_vec3(
+                "LayerElementNormal",
+                "Normals",
+                flat3(&slots),
+            ));
+        }
     }
     if opts.emit_uvs {
         let uv_names = prim
@@ -2637,6 +2681,39 @@ fn layer_element_uv_indexed(index: usize, name: Option<&str>, slots: &[[f32; 2]]
             },
         ],
     }
+}
+
+/// `LayerElementNormal` in the pooled `IndexToDirect` form: a
+/// bit-exact deduplicated `Normals` pool + a per-polygon-corner
+/// `NormalsIndex` (see [`crate::geometry::NORMALS_REFERENCE_KEY`]).
+fn layer_element_normal_indexed(slots: &[[f32; 3]]) -> FbxNode {
+    let mut pool: Vec<[f32; 3]> = Vec::new();
+    let mut lookup: std::collections::HashMap<[u32; 3], i32> = std::collections::HashMap::new();
+    let mut index: Vec<i32> = Vec::with_capacity(slots.len());
+    for n in slots {
+        let key = [n[0].to_bits(), n[1].to_bits(), n[2].to_bits()];
+        let i = *lookup.entry(key).or_insert_with(|| {
+            pool.push(*n);
+            (pool.len() - 1) as i32
+        });
+        index.push(i);
+    }
+    let data: Vec<f64> = pool
+        .iter()
+        .flat_map(|v| v.iter().map(|c| f64::from(*c)))
+        .collect();
+    let mut node = layer_element_vec3("LayerElementNormal", "Normals", data);
+    for c in &mut node.children {
+        if c.name == "ReferenceInformationType" {
+            c.properties = vec![FbxProperty::String(b"IndexToDirect".to_vec())];
+        }
+    }
+    node.children.push(FbxNode {
+        name: "NormalsIndex".to_string(),
+        properties: vec![FbxProperty::I32Array(index)],
+        children: Vec::new(),
+    });
+    node
 }
 
 /// `LayerElementMaterial` under an explicit mapping mode
@@ -3958,7 +4035,7 @@ fn node_attribute(id: i64, node: &Node, subtype: &str, ps: Vec<FbxNode>) -> FbxN
         .and_then(|v| v.as_str())
         .unwrap_or("");
     let mut children = Vec::new();
-    if !ps.is_empty() {
+    if !ps.is_empty() || node.extras.contains_key("fbx:node_attribute_records") {
         children.push(FbxNode {
             name: "Properties70".to_string(),
             properties: Vec::new(),
@@ -4279,6 +4356,40 @@ fn raw_vec3(raw: &serde_json::Value, key: &str) -> Option<[f64; 3]> {
     ])
 }
 
+/// The `FbxFileTexture` record names [`build_texture`] writes from
+/// typed / raw state — a source record of one of these names that the
+/// writer did not emit is stale and is not carried over.
+const TEXTURE_OWNED_RECORDS: &[&str] = &[
+    "UVSet",
+    "Translation",
+    "Rotation",
+    "Scaling",
+    "TextureRotationPivot",
+    "TextureScalingPivot",
+    "WrapModeU",
+    "WrapModeV",
+    "UVSwap",
+    "UseMipMap",
+    "TextureTypeUse",
+    "CurrentMappingType",
+    "CurrentTextureBlendMode",
+    "PremultiplyAlpha",
+    "UseMaterial",
+    "Texture alpha",
+];
+
+/// `true` when the round-tripped f64 placement triples decode to
+/// exactly `t` (the decode side's planar reading, f32-rounded).
+fn placement_reads_as(placed: &serde_json::Value, t: &oxideav_mesh3d::TextureTransform) -> bool {
+    let tr = raw_vec3(placed, "translation");
+    let rot = raw_vec3(placed, "rotation");
+    let sc = raw_vec3(placed, "scaling");
+    let offset = tr.map_or([0.0, 0.0], |v| [v[0] as f32, v[1] as f32]);
+    let rotation = rot.map_or(0.0, |v| v[2] as f32);
+    let scale = sc.map_or([1.0, 1.0], |v| [v[0] as f32, v[1] as f32]);
+    t.offset == offset && t.rotation == rotation && t.scale == scale && t.uv_set.is_none()
+}
+
 fn build_texture(
     tex: &oxideav_mesh3d::Texture,
     tex_id: i64,
@@ -4313,7 +4424,7 @@ fn build_texture(
 
     // Properties70 — the `FbxFileTexture` records this crate types
     // (`docs/3d/fbx/fbx-property-templates.md` §3.1): the `UVSet`
-    // channel label, the typed placement transform (offset → degrees
+    // channel label, the typed placement transform (offset → radians
     // → `Translation`/`Rotation`/`Scaling` `Vector` records, the
     // inverse of the decode-side literal reading), and the raw
     // untypable records round-tripped verbatim from
@@ -4329,26 +4440,60 @@ fn build_texture(
         p_records.push(p_kstring("UVSet", label));
     }
     if let Some(t) = &texref.transform {
-        p_records.push(p_vector(
-            "Translation",
-            [f64::from(t.offset[0]), f64::from(t.offset[1]), 0.0],
-        ));
-        p_records.push(p_vector(
-            "Rotation",
-            [0.0, 0.0, f64::from(t.rotation).to_degrees()],
-        ));
-        p_records.push(p_vector(
-            "Scaling",
-            [f64::from(t.scale[0]), f64::from(t.scale[1]), 1.0],
-        ));
+        // The authored f64 triples verbatim while the typed transform
+        // still reads back from them (decoded, unedited); else the
+        // typed fields (rotation in radians — see the decode side).
+        match raw_records
+            .and_then(|r| r.get("placement"))
+            .filter(|p| placement_reads_as(p, t))
+        {
+            Some(placed) => {
+                for (key, name) in [
+                    ("translation", "Translation"),
+                    ("rotation", "Rotation"),
+                    ("scaling", "Scaling"),
+                ] {
+                    if let Some(v) = raw_vec3(placed, key) {
+                        p_records.push(p_vector(name, v));
+                    }
+                }
+            }
+            None => {
+                p_records.push(p_vector(
+                    "Translation",
+                    [f64::from(t.offset[0]), f64::from(t.offset[1]), 0.0],
+                ));
+                p_records.push(p_vector("Rotation", [0.0, 0.0, f64::from(t.rotation)]));
+                p_records.push(p_vector(
+                    "Scaling",
+                    [f64::from(t.scale[0]), f64::from(t.scale[1]), 1.0],
+                ));
+            }
+        }
+    }
+    // `WrapModeU` / `WrapModeV`: the authored integer while it still
+    // types as the sampler's wrap, else the typed wrap's code (`0` —
+    // the template default — omitted).
+    for (key, name, mode) in [
+        ("wrap_mode_u", "WrapModeU", tex.sampler.wrap_s),
+        ("wrap_mode_v", "WrapModeV", tex.sampler.wrap_t),
+    ] {
+        let authored = raw_records
+            .and_then(|r| r.get(key))
+            .and_then(|v| v.as_i64())
+            .and_then(|v| i32::try_from(v).ok())
+            .filter(|v| crate::material::wrap_mode_from_fbx(*v) == mode);
+        match authored {
+            Some(v) => p_records.push(p_enum(name, v)),
+            None => {
+                let code = crate::material::wrap_mode_to_fbx(mode);
+                if code != 0 {
+                    p_records.push(p_enum(name, code));
+                }
+            }
+        }
     }
     if let Some(raw) = raw_records {
-        if let Some(v) = raw.get("wrap_mode_u").and_then(|v| v.as_i64()) {
-            p_records.push(p_enum("WrapModeU", v as i32));
-        }
-        if let Some(v) = raw.get("wrap_mode_v").and_then(|v| v.as_i64()) {
-            p_records.push(p_enum("WrapModeV", v as i32));
-        }
         if let Some(v) = raw.get("uv_swap").and_then(|v| v.as_bool()) {
             p_records.push(p_bool("UVSwap", v));
         }
@@ -4391,6 +4536,29 @@ fn build_texture(
             p_records.push(p_vector3d("TextureScalingPivot", v));
         }
     }
+    // Merge onto the source's own records (`records`): a written
+    // record whose value the source record already carries keeps the
+    // source's shape; a source record of a name this writer owns but
+    // chose not to write (an edited-away placement / wrap) is dropped;
+    // records of names it does not know ride along untouched.
+    let p_records = match raw_records
+        .and_then(|r| r.get("records"))
+        .and_then(|v| v.as_array())
+    {
+        Some(src) => {
+            let written: Vec<String> = p_records.iter().map(p_record_name).collect();
+            let kept: Vec<FbxNode> = src
+                .iter()
+                .filter_map(crate::properties70::json_to_p_record)
+                .filter(|r| {
+                    let n = p_record_name(r);
+                    !TEXTURE_OWNED_RECORDS.contains(&n.as_str()) || written.contains(&n)
+                })
+                .collect();
+            merge_by_name(kept, p_records, p_record_name)
+        }
+        None => p_records,
+    };
     if !p_records.is_empty() {
         tex_children.push(FbxNode {
             name: "Properties70".to_string(),
@@ -4595,6 +4763,18 @@ fn p_number(name: &str, v: f64) -> FbxNode {
 /// shape (`Opacity`).
 fn p_double(name: &str, v: f64) -> FbxNode {
     p_scalar(name, "double", v)
+}
+
+/// `P: "<name>", "double", "Number", "", v` — the `GlobalSettings`
+/// double shape `docs/3d/fbx/fbx-binary-properties70.md` §4 records
+/// verbatim (`UnitScaleFactor`, `OriginalUnitScaleFactor`,
+/// `CustomFrameRate`; label `Number`, no flags). A reader that keys on
+/// the documented shape rejects the animatable `"", "A"` variant.
+fn p_global_double(name: &str, v: f64) -> FbxNode {
+    let mut p = p_scalar(name, "double", v);
+    p.properties[2] = FbxProperty::String(b"Number".to_vec());
+    p.properties[3] = FbxProperty::String(Vec::new());
+    p
 }
 
 /// `P: "<name>", "enum", "", "", v` — the `enum`-typed scalar shape

@@ -191,7 +191,10 @@ pub fn extract_node_attribute_records(
             continue;
         }
         let records = crate::properties70::own_records_json(attr);
-        if !records.is_empty() {
+        // An authored-but-empty `Properties70` block (the staged
+        // sampled-curve fixture's `Null` attributes carry one) is
+        // surfaced as an empty list so the block survives re-encode.
+        if !records.is_empty() || attr.child("Properties70").is_some() {
             n.extras.insert(
                 "fbx:node_attribute_records".to_string(),
                 Value::Array(records),

@@ -9,12 +9,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `nurbs_geometry` module + `FbxNurbsCurve`: `Geometry{NurbsCurve}`
+  records (`Order` / `Dimension` / `Form` / `Rational` / `Points` /
+  `KnotVector`, per the staged `nurbs-curves-ascii-v7200` sample) decode
+  to a typed record, join the B-spline engine through the staged
+  knot-count relations (`Closed` closes on its first point, `Periodic`
+  wraps), surface as a sampled `LineStrip` / `LineLoop` mesh carrying
+  the records on `extras["fbx:nurbs_curve"]`, and re-encode as
+  `NurbsCurve` geometry.
+- Blend shapes: `DeformPercent` body leaves decode (the staged form);
+  `FullWeights` per slot on `Primitive::extras["fbx:blend_full_weights"]`;
+  writer emits the staged channel / Shape / BlendShape bodies
+  (`Version`, `DeformPercent: D`, `FullWeights: d[len(Indexes)]`, empty
+  Shape `Properties70`) with ascending Shape `Indexes`.
+- Sampled-curve `KeyAttr*` block: `animation::SAMPLED_KEY_ATTR_FLAGS` /
+  `SAMPLED_KEY_ATTR_DATA_BITS` / `is_sampled_key_attr_block`,
+  `"sampled_block"` on `fbx:key_attrs` entries; the writer puts the
+  block on curves it samples in catalogue-free scenes and keeps
+  `DeformPercent` curves verbatim.
+- Texture `WrapModeU/V` type onto `Sampler::wrap_s` / `wrap_t`
+  (`0` → `Repeat`, `1` → `ClampToEdge`) and back.
+- Curve nodes driving a geometry property re-wire onto the re-encoded
+  geometry (`"geometry_of"` aux targets).
+- `IndexToDirect` normal layers re-encode pooled
+  (`fbx:normals_reference`); authored-empty `NodeAttribute`
+  `Properties70` blocks survive.
+- `tests/export_sweeps.rs` over the six 2026-09 sweep fixtures, with a
+  skip-if-absent headless `blender` import comparison.
+
 - `with_<field>` builder setters on `AsciiWriterOptions`,
   `WriterOptions`, `SceneEncodeOptions`, `TessellationOptions` and
   `FbxEncoder`, so callers build them from `Default` / `new()`
   without struct literals.
 
 ### Changed
+
+- Texture placement `Rotation` reads / writes in radians (the unit of
+  every staged texture rotation record); the writer keeps the source's
+  own `Properties70` record shapes when values are unchanged.
+- ASCII parser surfaces `"ClassTag::Name"` object names (and the
+  `SceneInfo` / `TextureName` / `Media` strings) as
+  `Name\x00\x01ClassTag`; the ASCII writer renders them back. Decoded
+  ASCII names lose their `Model::` / `Material::` prefix.
+- ASCII `P` records of a float typeName widen integer-lexed values to
+  `D`.
 
 - `#[non_exhaustive]` on the option records `AsciiWriterOptions`,
   `WriterOptions`, `SceneEncodeOptions`, `TessellationOptions`,
@@ -27,6 +65,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `animation`, `constraint`, `deformer`, `documents`, `geometry`,
   `geometry_kind`, `globals`, `header_info`, `lights_cameras`,
   `material`, `node_attribute`, `opaque`, `pose`, `takes`.
+
+### Fixed
+
+- Animation elements carry the `AnimStack` / `AnimLayer` /
+  `AnimCurveNode` / `AnimCurve` class tags; clusters and blend-shape
+  channels carry `SubDeformer`.
+- `GlobalSettings` doubles use the documented `"double", "Number", ""`
+  shape.
+- A decoded texture that authored no `UVSet` no longer gains one on
+  re-encode.
 
 ## [0.0.4](https://github.com/OxideAV/oxideav-fbx/compare/v0.0.3...v0.0.4) - 2026-11-07
 

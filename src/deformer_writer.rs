@@ -54,26 +54,26 @@
 //!   crate's own decoder produces) round-trip exactly, and the decode
 //!   side re-sorts each corner's joints by descending weight.
 //!
-//! # Static morph weights
+//! # Static morph weights and the channel body
 //!
-//! Each emitted `BlendShapeChannel` carries a `Properties70` block
-//! with the channel's static `DeformPercent` record — the matching
-//! `Mesh::weights` slot × [`DEFORM_PERCENT_SCALE`] (mesh3d 0..1 blend
-//! factors → FBX 0..100 percentages), which the decode side divides
-//! back, closing the static-rest-blend round trip. The record uses
-//! the `"Number"` typeName + `"A"` (animatable) flag — the same shape
-//! this crate's other animatable scalar factors take (see
-//! `crate::properties70::PropertyMap::as_number`); the
-//! `FbxBlendShapeChannel` template body is a staged-docs residual
-//! (`docs/3d/fbx/fbx-property-templates.md` §5), so the exact
-//! producer-written form is provisional pending a staged blend-shape
-//! fixture. Decode is typeName-agnostic (generic scalar read) either
-//! way.
+//! Each emitted `BlendShapeChannel` carries the body the staged
+//! blend-shape fixtures show (`docs/3d/fbx/fixtures/blender-blendshape/notes.md`,
+//! byte pins in `docs/3d/fbx/blender-export-sweeps-2026-09.md` §4.1):
+//! `Version: 100`, `DeformPercent: D` — the matching `Mesh::weights`
+//! slot × [`DEFORM_PERCENT_SCALE`] (mesh3d 0..1 blend factors → FBX
+//! 0..100 percentages), which the decode side divides back — and
+//! `FullWeights: d[len(Indexes)]`, one percent value per Shape index
+//! in `Indexes` order (round-tripped from [`FULL_WEIGHTS_KEY`], `100`
+//! for an index without a recorded weight). The `BlendShape` deformer
+//! carries `Version: 100`; each `Geometry{Shape}` carries an empty
+//! `Properties70` and `Version: 100` ahead of its `Indexes` /
+//! `Vertices` / `Normals`. One Shape per channel: the in-between
+//! (multi-Shape channel) grammar is not staged.
 
 use oxideav_mesh3d::{NodeId, Scene3D};
 
 use crate::binary::{FbxNode, FbxProperty};
-use crate::deformer::DEFORM_PERCENT_SCALE;
+use crate::deformer::{DEFORM_PERCENT_SCALE, FULL_WEIGHTS_KEY};
 
 /// Output of the deformer emission passes: element records for
 /// `Objects` + connection records for `Connections`.
@@ -161,8 +161,9 @@ pub(crate) fn build_deformer_objects<'a>(
                 continue;
             }
             let blend_fbx = alloc();
-            out.objects
-                .push(deformer_element(blend_fbx, "", "BlendShape"));
+            let mut blend = deformer_element(blend_fbx, "", "BlendShape");
+            blend.children.push(leaf_i32("Version", 100));
+            out.objects.push(blend);
             out.connections.push(conn_oo(blend_fbx, geom_fbx));
             // Authored per-slot channel names round-tripped by the
             // decode side: the typed `Mesh::target_names` first, the
@@ -207,15 +208,31 @@ pub(crate) fn build_deformer_objects<'a>(
                     .and_then(|w| w.get(ti))
                     .copied()
                     .unwrap_or_else(|| mesh.weights.get(ti).copied().unwrap_or(0.0));
-                channel.children.push(properties70_deform_percent(
-                    f64::from(static_weight) * DEFORM_PERCENT_SCALE,
-                ));
+                let shape_fbx = alloc();
+                let (shape, shape_indexes) =
+                    shape_geometry(shape_fbx, &slot_name, target, vertex_of);
+                channel.children.push(leaf_i32("Version", 100));
+                channel.children.push(FbxNode {
+                    name: "DeformPercent".to_string(),
+                    properties: vec![FbxProperty::F64(
+                        f64::from(static_weight) * DEFORM_PERCENT_SCALE,
+                    )],
+                    children: Vec::new(),
+                });
+                channel.children.push(FbxNode {
+                    name: "FullWeights".to_string(),
+                    properties: vec![FbxProperty::F64Array(full_weights(
+                        prim.extras
+                            .get(FULL_WEIGHTS_KEY)
+                            .and_then(|v| v.as_array())
+                            .and_then(|a| a.get(ti)),
+                        &shape_indexes,
+                    ))],
+                    children: Vec::new(),
+                });
                 out.objects.push(channel);
                 out.connections.push(conn_oo(channel_fbx, blend_fbx));
-
-                let shape_fbx = alloc();
-                out.objects
-                    .push(shape_geometry(shape_fbx, &slot_name, target, vertex_of));
+                out.objects.push(shape);
                 out.connections.push(conn_oo(shape_fbx, channel_fbx));
                 channel_ids.push(channel_fbx);
             }
@@ -341,7 +358,7 @@ fn shape_geometry(
     name: &str,
     target: &oxideav_mesh3d::MorphTarget,
     vertex_of: Option<&[u32]>,
-) -> FbxNode {
+) -> (FbxNode, Vec<i32>) {
     let empty: Vec<[f32; 3]> = Vec::new();
     let pos = target.position.as_ref().unwrap_or(&empty);
 
@@ -355,6 +372,7 @@ fn shape_geometry(
     let has_normals = target.normal.is_some();
     let n = pos.len().max(target.normal.as_ref().map_or(0, Vec::len));
     let mut seen: std::collections::HashSet<u32> = std::collections::HashSet::new();
+    let mut rows: Vec<(i32, [f32; 3], [f32; 3])> = Vec::new();
     for i in 0..n {
         let p = pos.get(i).copied().unwrap_or([0.0; 3]);
         let nrm = target
@@ -378,7 +396,12 @@ fn shape_geometry(
         if !seen.insert(index) {
             continue;
         }
-        indexes.push(index as i32);
+        rows.push((index as i32, p, nrm));
+    }
+    // Ascending `Indexes` (the order the staged Shape bodies carry).
+    rows.sort_by_key(|r| r.0);
+    for (index, p, nrm) in rows {
+        indexes.push(index);
         vertices.extend(p.iter().map(|&c| c as f64));
         if has_normals {
             normals.extend(nrm.iter().map(|&c| c as f64));
@@ -387,8 +410,14 @@ fn shape_geometry(
 
     let mut children = vec![
         FbxNode {
+            name: "Properties70".to_string(),
+            properties: Vec::new(),
+            children: Vec::new(),
+        },
+        leaf_i32("Version", 100),
+        FbxNode {
             name: "Indexes".to_string(),
-            properties: vec![FbxProperty::I32Array(indexes)],
+            properties: vec![FbxProperty::I32Array(indexes.clone())],
             children: Vec::new(),
         },
         FbxNode {
@@ -405,48 +434,62 @@ fn shape_geometry(
         });
     }
 
-    FbxNode {
-        name: "Geometry".to_string(),
-        properties: vec![
-            FbxProperty::I64(id),
-            FbxProperty::String(name_class(name, "Geometry")),
-            FbxProperty::String(b"Shape".to_vec()),
-        ],
-        children,
-    }
+    (
+        FbxNode {
+            name: "Geometry".to_string(),
+            properties: vec![
+                FbxProperty::I64(id),
+                FbxProperty::String(name_class(name, "Geometry")),
+                FbxProperty::String(b"Shape".to_vec()),
+            ],
+            children,
+        },
+        indexes,
+    )
 }
 
-/// `Properties70 { P: "DeformPercent", "Number", "", "A", <v> }` —
-/// the channel's static weight record (0..100 wire percentage). See
-/// the "Static morph weights" module note for the typeName / flag
-/// choice.
-fn properties70_deform_percent(v: f64) -> FbxNode {
-    FbxNode {
-        name: "Properties70".to_string(),
-        properties: Vec::new(),
-        children: vec![FbxNode {
-            name: "P".to_string(),
-            properties: vec![
-                FbxProperty::String(b"DeformPercent".to_vec()),
-                FbxProperty::String(b"Number".to_vec()),
-                FbxProperty::String(Vec::new()),
-                FbxProperty::String(b"A".to_vec()),
-                FbxProperty::F64(v),
-            ],
-            children: Vec::new(),
-        }],
+/// A channel's `FullWeights` array for the Shape `indexes` being
+/// written: each index's round-tripped weight (the slot's
+/// [`FULL_WEIGHTS_KEY`] entry, matched by vertex index), else `100.0`
+/// — the full-influence value of the pinned percent scale.
+fn full_weights(entry: Option<&serde_json::Value>, indexes: &[i32]) -> Vec<f64> {
+    let mut table: std::collections::HashMap<i64, f64> = std::collections::HashMap::new();
+    if let Some(e) = entry
+        && let (Some(ix), Some(w)) = (
+            e.get("indexes").and_then(|v| v.as_array()),
+            e.get("weights").and_then(|v| v.as_array()),
+        )
+    {
+        for (i, w) in ix.iter().zip(w) {
+            if let (Some(i), Some(w)) = (i.as_i64(), w.as_f64()) {
+                table.entry(i).or_insert(w);
+            }
+        }
     }
+    indexes
+        .iter()
+        .map(|i| table.get(&i64::from(*i)).copied().unwrap_or(100.0))
+        .collect()
 }
 
 /// Build a `Deformer` element record with the given subtype
 /// discriminator (`"Skin"` / `"Cluster"` / `"BlendShape"` /
 /// `"BlendShapeChannel"` — the prop2 string the decode side matches).
 fn deformer_element(id: i64, name: &str, subtype: &str) -> FbxNode {
+    // Class tag: `SubDeformer` for the per-bone / per-shape children
+    // (`Cluster`, `BlendShapeChannel`), `Deformer` for their parents —
+    // the tags every staged deformer carries
+    // (`fixtures/skin-anim-binary-v7400.fbx`,
+    // `fixtures/blender-blendshape/`, sweep doc §4.1).
+    let class = match subtype {
+        "Cluster" | "BlendShapeChannel" => "SubDeformer",
+        _ => "Deformer",
+    };
     FbxNode {
         name: "Deformer".to_string(),
         properties: vec![
             FbxProperty::I64(id),
-            FbxProperty::String(name_class(name, "Deformer")),
+            FbxProperty::String(name_class(name, class)),
             FbxProperty::String(subtype.as_bytes().to_vec()),
         ],
         children: Vec::new(),

@@ -31,7 +31,9 @@
 //!     | (OO)
 //!     |
 //! Deformer (subtype "BlendShapeChannel")  --(OO)-->  shape Geometry (named "Shape")
-//!     - DeformPercent : property holding the static weight (0..100)
+//!     - DeformPercent : static weight (0..100) — a body leaf `D`
+//!                       (staged fixtures) or a `Properties70` record
+//!     - FullWeights   : d[len(Indexes)] per-vertex percent weights
 //! Geometry (subtype "Shape")
 //!     - Indexes : i32 array — vertex indices to offset
 //!     - Vertices : f64 array — position-delta per indexed vertex
@@ -40,7 +42,8 @@
 //!
 //! Each `BlendShapeChannel` becomes one [`oxideav_mesh3d::MorphTarget`]
 //! on the bound mesh's primitive, and the channel's **static**
-//! `DeformPercent` `Properties70` record (0..100) decodes — divided by
+//! `DeformPercent` (0..100; the body leaf, or a `Properties70` record
+//! when one is present) decodes — divided by
 //! [`DEFORM_PERCENT_SCALE`] — into the matching
 //! `oxideav_mesh3d::Mesh::weights` slot, so an authored rest blend
 //! state survives into the typed scene (mesh3d weights are the direct
@@ -60,13 +63,18 @@
 //!   the **top 4 weights** per vertex (the
 //!   [`oxideav_mesh3d::Primitive::weights`] / `joints` slots are
 //!   `[f32; 4]` / `[u16; 4]`).
-//! - In-between shapes (`MorphTarget::inbetweens`) are not decoded:
-//!   the multi-`Shape`-per-channel activation grammar (the station
-//!   weight table that would give each extra `Shape` its
-//!   `Inbetween::weight`) is pinned by no staged doc, so one
-//!   [`oxideav_mesh3d::MorphTarget`] is emitted per
-//!   `BlendShapeChannel`, sourced from the most recent `Shape`
-//!   connection, with `inbetweens` empty.
+//! - In-between shapes (`MorphTarget::inbetweens`) are not decoded.
+//!   The staged blend-shape fixtures
+//!   (`docs/3d/fbx/blender-export-sweeps-2026-09.md` §4) carry exactly
+//!   one `Shape` per channel — chained relative keys are written as
+//!   separate channels, each storing its delta against its own
+//!   reference key — and their `FullWeights` is the per-vertex array
+//!   [`FULL_WEIGHTS_KEY`] carries (`len(Indexes)` percent values), not
+//!   a per-`Shape` station table. No staged file has a multi-`Shape`
+//!   channel, so the station weight each extra `Shape` would get is
+//!   unpinned; one [`oxideav_mesh3d::MorphTarget`] is emitted per
+//!   channel, sourced from the most recent `Shape` connection, with
+//!   `inbetweens` empty.
 //! - Skinning method (`SKINNING_METHOD_*`) is not surfaced; we always
 //!   produce LBS-compatible weight buffers.
 
@@ -84,6 +92,21 @@ use crate::properties70::PropertyMap;
 /// glTF-style §3.7.2.2 blend factors (`1.0` = fully applied target).
 /// Divide on decode, multiply on encode.
 pub const DEFORM_PERCENT_SCALE: f64 = 100.0;
+
+/// `Primitive::extras` key: one entry per morph-target slot (aligned
+/// with `Primitive::targets`) holding the slot's `BlendShapeChannel`
+/// `FullWeights` array as `{ "indexes": [i32…], "weights": [f64…] }`
+/// — `weights[k]` paired with the Shape's `indexes[k]`, in percent —
+/// or `null` for a channel without the record. Absent when no channel
+/// carries one.
+///
+/// Byte pins (`docs/3d/fbx/blender-export-sweeps-2026-09.md` §4.1):
+/// typecode `d`, length = `len(Indexes)`, `Indexes` order, percent
+/// scale (100 = full, a vertex-group weight × 100 otherwise). The
+/// staged producer's rendition is per-vertex; whether other producers
+/// give the array a per-`Shape` (in-between station) meaning is not
+/// pinned, so the values are carried, not applied to the deltas.
+pub const FULL_WEIGHTS_KEY: &str = "fbx:blend_full_weights";
 
 /// One `BlendShapeChannel`'s animation binding: which scene node's
 /// `MorphWeights` property its `DeformPercent` curves drive, and which
@@ -518,9 +541,21 @@ pub fn extract_deformers(
             // a staged-docs residual).
             let channel_node = blend_channels.get(&channel_id).copied();
             let static_weight = channel_node
-                .map(PropertyMap::from_element)
-                .and_then(|p| p.as_f64("DeformPercent"))
+                .and_then(static_deform_percent)
                 .map_or(0.0f32, |v| (v / DEFORM_PERCENT_SCALE) as f32);
+            // `FullWeights` (`d[len(Indexes)]`, element k paired with
+            // `Indexes[k]`, percent) — kept per slot, keyed by the
+            // Shape's own `Indexes`, so the writer re-emits it against
+            // whatever index set it writes.
+            let full_weights = channel_node
+                .and_then(|c| read_f64_array(c, "FullWeights"))
+                .map(|w| {
+                    serde_json::json!({
+                        "indexes": indexes,
+                        "weights": w,
+                    })
+                })
+                .unwrap_or(serde_json::Value::Null);
 
             let mesh = &mut scene.meshes[mesh_id.0 as usize];
             if let Some(prim) = mesh.primitives.first_mut()
@@ -529,6 +564,18 @@ pub fn extract_deformers(
                 // This channel's positional morph-target slot.
                 let target_index = prim.targets.len();
                 prim.targets.push(tgt);
+                // Per-slot `FullWeights` table, aligned with
+                // `targets` (null for a channel without the record;
+                // the key is dropped again below when every slot is
+                // null).
+                let fw = prim
+                    .extras
+                    .entry(FULL_WEIGHTS_KEY.to_string())
+                    .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+                if let Some(arr) = fw.as_array_mut() {
+                    arr.resize(target_index, serde_json::Value::Null);
+                    arr.push(full_weights);
+                }
                 mesh.weights.push(static_weight);
                 slot_names.push(channel_node.and_then(display_name).unwrap_or_default());
 
@@ -567,9 +614,36 @@ pub fn extract_deformers(
                 .target_names
                 .extend(slot_names);
         }
+        if let Some(prim) = scene.meshes[mesh_id.0 as usize].primitives.first_mut()
+            && prim
+                .extras
+                .get(FULL_WEIGHTS_KEY)
+                .and_then(serde_json::Value::as_array)
+                .is_some_and(|a| a.iter().all(serde_json::Value::is_null))
+        {
+            prim.extras.remove(FULL_WEIGHTS_KEY);
+        }
     }
 
     out
+}
+
+/// A channel's static `DeformPercent` (0..100): the `Properties70`
+/// record when present, else the body leaf `DeformPercent: D` — the
+/// form the staged blend-shape fixtures carry
+/// (`docs/3d/fbx/fixtures/blender-blendshape/notes.md`, "`BlendShapeChannel`
+/// body": `Version: 100`, `DeformPercent: D`, `FullWeights: d[…]`, no
+/// `Properties70`).
+fn static_deform_percent(channel: &FbxNode) -> Option<f64> {
+    PropertyMap::from_element(channel)
+        .as_f64("DeformPercent")
+        .or_else(
+            || match channel.child("DeformPercent")?.properties.first()? {
+                FbxProperty::F64(v) => Some(*v),
+                FbxProperty::F32(v) => Some(f64::from(*v)),
+                p => p.as_i64().map(|v| v as f64),
+            },
+        )
 }
 
 /// The element's authored display name — the object-header name

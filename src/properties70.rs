@@ -1138,6 +1138,14 @@ pub fn body_json(element: &FbxNode) -> Vec<Value> {
                         FbxProperty::F32Array(a) => {
                             json!({ "f": a.iter().map(|x| x.to_bits()).collect::<Vec<u32>>() })
                         }
+                        // The ASCII reader widens every float array
+                        // to `d`; a `…Float` record (`KeyValueFloat`,
+                        // `KeyAttrDataFloat`) is `f` on the binary
+                        // wire, so it narrows back to its f32 values
+                        // and both front-ends surface one shape.
+                        FbxProperty::F64Array(a) if c.name.ends_with("Float") => {
+                            json!({ "f": a.iter().map(|x| (*x as f32).to_bits()).collect::<Vec<u32>>() })
+                        }
                         FbxProperty::F64Array(a) => json!({ "D": a }),
                         FbxProperty::BoolArray(a) => json!({ "b": a }),
                         _ => return None,
