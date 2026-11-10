@@ -259,7 +259,13 @@ pub(crate) fn build_animation_objects(
                                     "d|DeformPercent",
                                     times.len(),
                                 );
-                                build_curve(curve_id, times, &slot_vals, Some(attrs))
+                                build_curve(
+                                    curve_id,
+                                    times,
+                                    &slot_vals,
+                                    Some(attrs),
+                                    Some(&key_attrs.source_ticks(&join)),
+                                )
                             }
                         };
                         objects.push(curve);
@@ -540,6 +546,33 @@ impl<'a> KeyAttrs<'a> {
         }
     }
 
+    /// Source `KeyTime` ticks of every catalogued curve on `join`'s
+    /// stack + target, keyed by the f32-seconds image the decoder
+    /// gave them — a synthesized curve sampled on the same union grid
+    /// reuses the exact source tick instead of the f32 round trip's
+    /// approximation.
+    fn source_ticks(&self, join: &CurveJoin<'_>) -> std::collections::HashMap<u32, i64> {
+        let mut out = std::collections::HashMap::new();
+        for e in &self.entries {
+            if e.get("stack").and_then(Value::as_str) != Some(join.stack)
+                || e.get("target").and_then(Value::as_str) != join.target.as_deref()
+            {
+                continue;
+            }
+            for t in e
+                .get("key_times")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_i64)
+            {
+                let secs = (t as f64 / KTIME_TICKS_PER_SECOND) as f32;
+                out.entry(secs.to_bits()).or_insert(t);
+            }
+        }
+        out
+    }
+
     fn entry(&self, join: &CurveJoin<'_>, prop: &str, axis: &str) -> Option<&'a Value> {
         self.entries.iter().copied().find(|e| {
             e.get("stack").and_then(Value::as_str) == Some(join.stack)
@@ -807,7 +840,13 @@ fn emit_trs_curves(
             }
             None => {
                 let attrs = key_attrs.leaves(join, target_prop, axis_tag, times.len());
-                build_curve(curve_id, times, values, Some(attrs))
+                build_curve(
+                    curve_id,
+                    times,
+                    values,
+                    Some(attrs),
+                    Some(&key_attrs.source_ticks(join)),
+                )
             }
         };
         objects.push(curve);
@@ -1027,10 +1066,15 @@ fn build_curve(
     times_secs: &[f32],
     values: &[f32],
     key_attrs: Option<Vec<FbxNode>>,
+    source_ticks: Option<&std::collections::HashMap<u32, i64>>,
 ) -> FbxNode {
     let key_times: Vec<i64> = times_secs
         .iter()
-        .map(|t| (*t as f64 * KTIME_TICKS_PER_SECOND).round() as i64)
+        .map(|t| {
+            source_ticks
+                .and_then(|m| m.get(&t.to_bits()).copied())
+                .unwrap_or_else(|| (*t as f64 * KTIME_TICKS_PER_SECOND).round() as i64)
+        })
         .collect();
     // Body shape observed on every staged curve: `Default` (the
     // curve's first value), `KeyVer: 4008`, then the key arrays and —

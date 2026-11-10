@@ -75,6 +75,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   shape.
 - A decoded texture that authored no `UVSet` no longer gains one on
   re-encode.
+- Curves the writer synthesizes next to catalogued source curves reuse
+  the source `KeyTime` ticks instead of the f32-seconds approximation
+  (frame-exact ticks on the sweep fixtures).
 
 ## [0.0.4](https://github.com/OxideAV/oxideav-fbx/compare/v0.0.3...v0.0.4) - 2026-11-07
 

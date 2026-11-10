@@ -197,6 +197,34 @@ fn keyattr_sweep_block_survives_re_encode() {
     }
 }
 
+/// Curves the writer synthesizes alongside the source ones (the
+/// unanimated Y / Z components of each `Lcl Translation` node) reuse
+/// the source key ticks: every `KeyTime` of the re-encode sits exactly
+/// on the fixture's frame grid (frame f = f × 1 924 423 250 ticks).
+#[test]
+fn keyattr_sweep_re_encode_keeps_exact_frame_ticks() {
+    let Some(bytes) = fixture(KEYATTR) else {
+        return;
+    };
+    let scene = decode(&bytes);
+    for form in [FbxOutputForm::Binary, FbxOutputForm::Ascii] {
+        let doc = parse_any(&encode(&scene, form));
+        let mut n = 0;
+        for c in objects(&doc).children_named("AnimationCurve") {
+            let ticks: Vec<i64> = match &c.child("KeyTime").unwrap().properties[0] {
+                FbxProperty::I64Array(a) => a.clone(),
+                FbxProperty::I32Array(a) => a.iter().map(|v| i64::from(*v)).collect(),
+                other => panic!("{other:?}"),
+            };
+            for t in ticks {
+                assert_eq!(t % 1_924_423_250, 0, "{form:?}: tick {t}");
+                n += 1;
+            }
+        }
+        assert!(n >= 27 * 5, "{form:?}: {n} keys");
+    }
+}
+
 /// A scene built through the API (no attribute catalogue) gets the
 /// sampled-curve block on every curve the writer emits.
 #[test]
