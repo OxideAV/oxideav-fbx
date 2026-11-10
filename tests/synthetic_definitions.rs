@@ -60,7 +60,7 @@ fn material_template_defaults_resolve_into_scene_materials() {
 
     // Materials materialise in sorted-FBX-id order: 300 then 301.
     let backed = &scene.materials[0];
-    assert_eq!(backed.name.as_deref(), Some("Material::TemplateBacked"));
+    assert_eq!(backed.name.as_deref(), Some("TemplateBacked"));
     // Own DiffuseColor (0,1,0) wins over the template's (0.8,0.8,0.8);
     // the template's DiffuseFactor 0.5 (not re-stated by the object)
     // multiplies in.
@@ -82,7 +82,7 @@ fn material_template_defaults_resolve_into_scene_materials() {
     );
 
     let defaults = &scene.materials[1];
-    assert_eq!(defaults.name.as_deref(), Some("Material::AllDefaults"));
+    assert_eq!(defaults.name.as_deref(), Some("AllDefaults"));
     // No Properties70 at all: every channel is the §7b class default.
     // DiffuseColor (0.8,0.8,0.8) x DiffuseFactor 0.5 = 0.4.
     for c in &defaults.base_color[..3] {

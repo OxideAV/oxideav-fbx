@@ -141,8 +141,12 @@ fn ascii_fixture_takes_surface_to_scene_extras() {
         .get(1)
         .and_then(|p| p.as_str())
         .unwrap();
+    // The ASCII `AnimStack::Take 001` header surfaces in the binary
+    // `Take 001\x00\x01AnimStack` shape; the display name is the
+    // part before the join.
+    let stack_name = stack_name.split('\u{0}').next().unwrap_or(stack_name);
     assert!(
-        stack_name.ends_with("Take 001"),
+        stack_name == "Take 001",
         "AnimationStack display name should match the take name, got {stack_name:?}"
     );
 }
@@ -415,7 +419,7 @@ fn ascii_fixture_definitions_decode_with_material_template() {
     let green = scene
         .materials
         .iter()
-        .find(|m| m.name.as_deref() == Some("Material::Mat_Green"))
+        .find(|m| m.name.as_deref() == Some("Mat_Green"))
         .expect("Mat_Green decoded");
     assert!((green.base_color[0] - 0.0).abs() < 1e-6);
     assert!((green.base_color[1] - 0.8).abs() < 1e-6);

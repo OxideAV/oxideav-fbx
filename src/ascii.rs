@@ -254,7 +254,11 @@ impl<'a> Parser<'a> {
                 children: Vec::new(),
             });
         }
-        let properties = self.parse_value_list()?;
+        let mut properties = self.parse_value_list()?;
+        normalize_object_name(&name, &mut properties);
+        if name == "P" {
+            widen_float_typed_values(&mut properties);
+        }
         // Decide leaf vs body. The grammar uses `{` to open a body; if
         // we see `{` (possibly after horizontal-whitespace or a
         // trailing comment but on the same logical line per §3a's
@@ -675,6 +679,80 @@ pub fn document_layout_is_64bit(doc: &FbxDocument) -> bool {
     doc.version >= FBX_VERSION_64BIT_THRESHOLD
 }
 
+/// `P` record typeNames whose values are doubles on the binary wire
+/// (`docs/3d/fbx/fbx-binary-properties70.md` §4: `double` / `Number`
+/// → `D`, `ColorRGB` / `Color` / `Vector3D` → three `D`; the `Vector`
+/// and `Lcl *` / `Visibility` typeNames carry `D` values in every
+/// staged binary fixture; `Visibility Inheritance` carries `I` there
+/// and is left alone).
+const FLOAT_TYPED_P: &[&str] = &[
+    "double",
+    "Number",
+    "ColorRGB",
+    "Color",
+    "Vector3D",
+    "Vector",
+    "Lcl Translation",
+    "Lcl Rotation",
+    "Lcl Scaling",
+    "Visibility",
+];
+
+/// The ASCII form writes a whole-valued double without a fraction
+/// (`P: "Lcl Translation", …, "A",0,3.38,0`), which lexes as an
+/// integer; a `P` record of a float typeName gets its integer values
+/// widened back to the `D` the binary form carries, so both
+/// front-ends surface one shape.
+fn widen_float_typed_values(properties: &mut [FbxProperty]) {
+    if !properties
+        .get(1)
+        .and_then(FbxProperty::as_str)
+        .is_some_and(|t| FLOAT_TYPED_P.contains(&t))
+    {
+        return;
+    }
+    for v in properties.iter_mut().skip(4) {
+        match *v {
+            FbxProperty::I32(n) => *v = FbxProperty::F64(f64::from(n)),
+            FbxProperty::I64(n) => *v = FbxProperty::F64(n as f64),
+            _ => {}
+        }
+    }
+}
+
+/// Object-record headers (`<id>, "ClassTag::Name", "SubType"`,
+/// `docs/3d/fbx/fbx-ascii-grammar.md` / `fbx-binary-properties70.md`
+/// §5 value 2) carry the class tag before `::` in the ASCII form and
+/// after a `\x00\x01` join in the binary form. The parser surfaces the
+/// binary shape (`Name\x00\x01ClassTag`, split at the first `::`) so
+/// every consumer reads one representation; the ASCII writer renders
+/// it back as `ClassTag::Name`. Only a record whose first value is an
+/// integer id and whose second is such a string is touched — plus the
+/// `SceneInfo: "SceneInfo::GlobalInfo", "UserData"` header (§7a) and
+/// the `TextureName` / `Media` leaves, whose name+class string leads
+/// the value list.
+fn normalize_object_name(node: &str, properties: &mut [FbxProperty]) {
+    let slot = match properties {
+        [FbxProperty::I32(_) | FbxProperty::I64(_), second, ..] => second,
+        // `SceneInfo` header, and the `TextureName` / `Media` leaves
+        // naming a texture / its video (`Texture::…` / `Video::…` in
+        // the staged ASCII texture fixture, `…\x00\x01Texture` /
+        // `…\x00\x01Video` in the binary ones).
+        [first, ..] if matches!(node, "SceneInfo" | "TextureName" | "Media") => first,
+        _ => return,
+    };
+    let FbxProperty::String(raw) = slot else {
+        return;
+    };
+    let Some(at) = raw.windows(2).position(|w| w == b"::") else {
+        return;
+    };
+    let mut joined = raw[at + 2..].to_vec();
+    joined.extend_from_slice(b"\x00\x01");
+    joined.extend_from_slice(&raw[..at]);
+    *raw = joined;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -733,7 +811,11 @@ mod tests {
         let mat = objs.child("Material").unwrap();
         assert_eq!(mat.properties.len(), 3);
         assert_eq!(mat.properties[0].as_i64(), Some(2359823919504));
-        assert_eq!(mat.properties[1].as_str(), Some("Material::Mat_Green"));
+        // `ClassTag::Name` surfaces in the binary `Name\x00\x01ClassTag` shape.
+        assert_eq!(
+            mat.properties[1].as_str(),
+            Some("Mat_Green\u{0}\u{1}Material")
+        );
         assert_eq!(mat.properties[2].as_str(), Some(""));
         assert_eq!(
             mat.child("Version").unwrap().properties[0].as_i64(),

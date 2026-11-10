@@ -1793,7 +1793,7 @@ fn model_shading_and_culling_leaves_round_trip() {
     let cube = scene_fx
         .nodes
         .iter()
-        .find(|n| n.name.as_deref() == Some("Model::Cube2"))
+        .find(|n| n.name.as_deref() == Some("Cube2"))
         .expect("fixture Cube2 node");
     assert_eq!(
         cube.extras.get("fbx:shading").and_then(|v| v.as_bool()),

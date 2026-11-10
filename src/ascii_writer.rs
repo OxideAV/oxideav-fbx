@@ -388,7 +388,17 @@ fn write_scalar(p: &FbxProperty, out: &mut Vec<u8>) -> Result<()> {
         FbxProperty::F32(v) => write_f64(*v as f64, out),
         FbxProperty::F64(v) => write_f64(*v, out),
         FbxProperty::Bool(v) => out.push(if *v { b'T' } else { b'F' }),
-        FbxProperty::String(bytes) => write_string(bytes, out)?,
+        // The binary `Name\x00\x01ClassTag` object-name join renders as
+        // the ASCII `ClassTag::Name` (the parser's inverse).
+        FbxProperty::String(bytes) => match bytes.windows(2).position(|w| w == b"\x00\x01") {
+            Some(at) => {
+                let mut ascii = bytes[at + 2..].to_vec();
+                ascii.extend_from_slice(b"::");
+                ascii.extend_from_slice(&bytes[..at]);
+                write_string(&ascii, out)?
+            }
+            None => write_string(bytes, out)?,
+        },
         // Binary `R` blobs render as a quoted base64 string — the
         // form the staged texture-video-ascii-v7500.fbx fixture uses
         // for its embedded `Video.Content` (see [`crate::base64`]);
@@ -646,7 +656,7 @@ mod tests {
                         name: "Material".to_string(),
                         properties: vec![
                             FbxProperty::I64(2_359_823_919_504),
-                            FbxProperty::String(b"Material::Mat_Green".to_vec()),
+                            FbxProperty::String(b"Mat_Green\x00\x01Material".to_vec()),
                             FbxProperty::String(b"".to_vec()),
                         ],
                         children: vec![FbxNode {
@@ -679,7 +689,7 @@ mod tests {
                     name: "Geometry".to_string(),
                     properties: vec![
                         FbxProperty::I64(1),
-                        FbxProperty::String(b"Geometry::".to_vec()),
+                        FbxProperty::String(b"\x00\x01Geometry".to_vec()),
                         FbxProperty::String(b"Mesh".to_vec()),
                     ],
                     children: vec![
@@ -881,7 +891,7 @@ mod tests {
                         name: "Model".to_string(),
                         properties: vec![
                             FbxProperty::I64(1),
-                            FbxProperty::String("Model::Куб1".as_bytes().to_vec()),
+                            FbxProperty::String("Куб1\u{0}\u{1}Model".as_bytes().to_vec()),
                             FbxProperty::String(b"Mesh".to_vec()),
                         ],
                         children: vec![],
