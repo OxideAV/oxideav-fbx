@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.5](https://github.com/OxideAV/oxideav-fbx/compare/v0.0.4...v0.0.5) - 2026-11-10
+
+### Other
+
+- Synthesized curves reuse the source KeyTime ticks
+- Export-sweep fixtures: blend-shape FullWeights, sampled KeyAttr block, texture wrap/placement, NurbsCurve write-back
+- NurbsCurve geometry: typed record, evaluation join, sampled-line scene surface
+- ASCII object names in the binary Name\x00\x01Class shape; float-typed P values widen to D
+- API hygiene: non_exhaustive option records, builders, hidden scene stages
+
 ### Added
 
 - `nurbs_geometry` module + `FbxNurbsCurve`: `Geometry{NurbsCurve}`
