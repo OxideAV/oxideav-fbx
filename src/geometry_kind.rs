@@ -34,16 +34,12 @@
 //!
 //! # What is NOT surfaced
 //!
-//! - The control-point / knot-vector payloads of the NURBS / Line
-//!   geometries — the staged docs enumerate the subtype *names* (§6
-//!   point 3) but not the per-subtype `P`-record / sub-record grammar
-//!   that would feed a real curve / surface evaluation. The
-//!   evaluation + tessellation engine itself now exists
-//!   ([`crate::nurbs`] — validated rational B-spline curves /
-//!   tensor-product surfaces with tessellators emitting
-//!   [`oxideav_mesh3d::Primitive`]s), so the *only* remaining gate on
-//!   first-class NURBS meshes is that wire payload grammar being
-//!   staged; the decode-side join is the follow-up.
+//! - The payloads of `NurbsSurface` / `TrimNurbsSurface` / `Boundary`
+//!   / `Line` geometries — no staged doc or fixture carries their
+//!   record grammar. (`NurbsCurve` is staged: its geometry decodes to
+//!   a sampled line mesh carrying the typed record — see
+//!   [`crate::nurbs_geometry`] — and this pass still tags the owning
+//!   Model with the discriminator.)
 //! - `"Mesh"` (typed in [`crate::geometry`]) and `"Shape"` (typed in
 //!   [`crate::deformer`]) are deliberately excluded so the surfacing
 //!   passes never double-claim a geometry that already has a typed

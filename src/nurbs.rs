@@ -3,16 +3,14 @@
 //! FBX carries free-form geometry as `Geometry` elements whose §6
 //! prop2 subtype is `"NurbsCurve"` / `"NurbsSurface"` /
 //! `"TrimNurbsSurface"` / `"Boundary"` / `"Line"`
-//! (`docs/3d/fbx/fbx-binary-properties70.md` §6 point 3). The staged
-//! docs enumerate those subtype *names* only — the per-subtype wire
-//! payload grammar (the record names + layouts for knot vectors,
-//! control points, orders, forms and weights) is **not** staged, and
-//! no staged fixture contains such a geometry, so the decode-side
-//! join from `FbxDocument` records into this module is gated on that
-//! grammar being staged (see [`crate::geometry_kind`], which surfaces
-//! the subtype discriminator in the meantime).
+//! (`docs/3d/fbx/fbx-binary-properties70.md` §6 point 3). The
+//! `NurbsCurve` record set is staged
+//! (`docs/3d/fbx/fixtures/nurbs-curves-ascii-v7200/`) and joins into
+//! this engine through [`crate::nurbs_geometry`]; the other subtypes'
+//! payloads are not staged (their discriminator still surfaces via
+//! [`crate::geometry_kind`]).
 //!
-//! What this module provides *now* is the format-independent half:
+//! This module is the format-independent half:
 //! a validated typed model for rational B-spline (NURBS) curves and
 //! tensor-product surfaces, evaluation via the Cox–de Boor recursion,
 //! first derivatives, and tessellators emitting
@@ -46,9 +44,10 @@
 //!   period so that shifting the parameter by one period reproduces
 //!   the same point.
 //!
-//! Whether these map 1:1 onto the FBX wire "form" vocabulary is part
-//! of the unstaged payload grammar above; they are defined here in
-//! their generic B-spline sense.
+//! The FBX `NurbsCurve` `Form` strings map onto these through the
+//! staged knot-count relations ([`crate::nurbs_geometry`] module
+//! docs): `Open` and `Periodic` directly, `Closed` by evaluating the
+//! authored array closed by its first point.
 //!
 //! # Totality
 //!

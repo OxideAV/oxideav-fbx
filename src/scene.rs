@@ -103,6 +103,17 @@ pub fn build_scene(doc: &FbxDocument) -> Result<Scene3D> {
                         let mid = scene.add_mesh(mesh);
                         geometry_meshes.insert(id, mid);
                         geometry_corner_indices.insert(id, corners);
+                    } else if subtype(child).as_deref() == Some("NurbsCurve") {
+                        // `NurbsCurve` (staged grammar:
+                        // `fixtures/nurbs-curves-ascii-v7200/notes.md`)
+                        // — a sampled line mesh carrying the wire
+                        // record set; see `crate::nurbs_geometry`.
+                        let mesh = crate::nurbs_geometry::mesh_for_element(
+                            child,
+                            element_name(child).filter(|n| !n.is_empty()),
+                        );
+                        let mid = scene.add_mesh(mesh);
+                        geometry_meshes.insert(id, mid);
                     }
                 }
                 "Model" => {

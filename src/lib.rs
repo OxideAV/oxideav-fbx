@@ -159,7 +159,10 @@
 //!   both directions — see [`animation`] / [`anim_writer`].)
 //! - Skin: `SKINNING_METHOD_DUAL_QUATERNION` produces plain LBS
 //!   buffers (the doc notes this is safe to ignore in most cases).
-//! - BlendShape: in-between keyframes are collapsed to `target_shape`.
+//! - BlendShape: one `Shape` per channel. Multi-`Shape` (in-between)
+//!   channels are not decoded: no staged producer writes one and the
+//!   `FullWeights` reading for that case is unpinned (see
+//!   [`deformer`]).
 //! - Material PBR colour / factor channels (round 191) — decode the
 //!   element's `Properties70` `P`-record block via [`properties70`]
 //!   and apply `DiffuseColor` / `DiffuseFactor` / `Opacity` /
@@ -270,11 +273,13 @@ pub mod node_attribute;
 pub mod node_transform;
 /// B-spline / NURBS evaluation + tessellation engine (Cox–de Boor
 /// basis, rational curves + tensor-product surfaces, tessellators
-/// emitting [`oxideav_mesh3d::Primitive`]s). The decode-side join
-/// from FBX `Geometry` records is gated on the wire payload grammar
-/// being staged — `docs/3d/fbx/fbx-binary-properties70.md` §6 point 3
-/// enumerates only the subtype names.
+/// emitting [`oxideav_mesh3d::Primitive`]s). `Geometry{NurbsCurve}`
+/// records join it through [`nurbs_geometry`].
 pub mod nurbs;
+/// `Geometry{NurbsCurve}` wire records — typed [`FbxNurbsCurve`],
+/// evaluation join into [`nurbs`], sampled-line scene surface and
+/// lossless re-encode.
+pub mod nurbs_geometry;
 /// Opaque `Objects` passthrough — elements of a class this crate has
 /// no typed home for (`CollectionExclusive` display layers, …), carried
 /// verbatim and re-emitted with their typed-endpoint connections.
@@ -308,6 +313,7 @@ pub use binary::{
 pub use decoder::{FbxDecoder, is_binary_fbx};
 pub use encoder::{FbxEncoder, FbxOutputForm};
 pub use nurbs::{NurbsCurve, NurbsForm, NurbsSurface, TessellationOptions};
+pub use nurbs_geometry::FbxNurbsCurve;
 pub use scene_writer::{SceneEncodeOptions, encode_scene, encode_scene_with_options};
 pub use writer::{WriterOptions, write_document, write_document_with_options};
 
