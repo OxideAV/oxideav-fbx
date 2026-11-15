@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Texture placement sweep (2026-11 §2), binary 7400 / 7500 and ASCII:
+  all 46 textures round-trip with every property record
+  (`WrapModeU/V`, `UVSwap`, `Translation` / `Rotation` / `Scaling`,
+  both pivots, `UVSet`, mapping / blend / use enumerations, alpha) and
+  child record (`Texture_Alpha_Source`, `Cropping`, `ModelUV*`) in the
+  source's record order. `extras["fbx:texture_bindings"]`
+  (`material::TEXTURE_BINDINGS_KEY`) lists every `Texture → Material`
+  connection so several textures on one material property — and
+  properties outside the typed slots — survive; a texture no typed
+  slot references keeps its placement and `UVSet` label.
+
 - In-between blend shapes (2026-11 sweep §4): a `BlendShapeChannel`
   with several `Shape` geometries decodes its per-shape `FullWeights`
   (one float64 percent per shape, connection order) into the typed

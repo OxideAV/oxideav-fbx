@@ -312,6 +312,17 @@ pub fn encode_scene_with_options(scene: &Scene3D, opts: &SceneEncodeOptions) -> 
             !(texref.effective_uv_set() == 0
                 && raw_records.is_some_and(|r| r.get("uv_set").is_none()))
         });
+        // A texture no typed slot references has nowhere typed to
+        // hold its `UVSet` label or placement: the source's own ride
+        // through unchanged.
+        let unreferenced = first_ref[tex_idx].is_none();
+        let uv_label = uv_label.or_else(|| {
+            raw_records
+                .filter(|_| unreferenced)
+                .and_then(|r| r.get("uv_set"))
+                .and_then(|v| v.as_str())
+                .map(str::to_owned)
+        });
         let (tex_node, video_node) = build_texture(
             tex,
             texture_ids[tex_idx],
@@ -319,6 +330,7 @@ pub fn encode_scene_with_options(scene: &Scene3D, opts: &SceneEncodeOptions) -> 
             &texref,
             uv_label.as_deref(),
             raw_records,
+            unreferenced,
         );
         objects.children.push(tex_node);
         if let Some(vnode) = video_node {
@@ -329,13 +341,56 @@ pub fn encode_scene_with_options(scene: &Scene3D, opts: &SceneEncodeOptions) -> 
                 .push(connection_oo(video_ids[tex_idx], texture_ids[tex_idx]));
         }
     }
+    // Texture -> Material(prop_name) OP connections. The round-tripped
+    // connection list (`fbx:texture_bindings`) first, in its order: a
+    // slot's typed texture is its last listed connection and is written
+    // only while the typed slot still references it; every other
+    // listed connection (further textures on the same property, a
+    // property outside the typed slots) is written as it was. Typed
+    // slots the list does not cover follow.
+    let listed: Vec<(usize, usize, &str)> = scene
+        .extras
+        .get(crate::material::TEXTURE_BINDINGS_KEY)
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|e| {
+            Some((
+                e.get("texture")?.as_u64()? as usize,
+                e.get("material")?.as_u64()? as usize,
+                e.get("property")?.as_str()?,
+            ))
+        })
+        .filter(|(t, m, _)| *t < scene.textures.len() && *m < scene.materials.len())
+        .collect();
+    let mut covered: Vec<(usize, &'static str)> = Vec::new();
+    for (i, (tex_idx, xi, prop)) in listed.iter().enumerate() {
+        let kind = crate::material::texture_slot_kind(prop);
+        let is_slot_winner = kind.is_some()
+            && !listed[i + 1..]
+                .iter()
+                .any(|(_, m, p)| m == xi && crate::material::texture_slot_kind(p) == kind);
+        if let (true, Some(kind)) = (is_slot_winner, kind) {
+            let still_bound = material_texture_slots(&scene.materials[*xi])
+                .iter()
+                .any(|(r, k)| *k == kind && r.texture.0 as usize == *tex_idx);
+            if !still_bound {
+                continue;
+            }
+            covered.push((*xi, kind));
+        }
+        connections.children.push(connection_op(
+            texture_ids[*tex_idx],
+            material_ids[*xi],
+            prop,
+        ));
+    }
     for (xi, mat) in scene.materials.iter().enumerate() {
         for (texref, prop_name) in material_texture_slots(mat) {
             let tex_idx = texref.texture.0 as usize;
-            if tex_idx >= scene.textures.len() {
+            if tex_idx >= scene.textures.len() || covered.contains(&(xi, prop_name)) {
                 continue;
             }
-            // Texture -> Material(prop_name) OP connection.
             connections.children.push(connection_op(
                 texture_ids[tex_idx],
                 material_ids[xi],
@@ -4469,6 +4524,7 @@ fn build_texture(
     texref: &oxideav_mesh3d::TextureRef,
     uv_label: Option<&str>,
     raw_records: Option<&serde_json::Value>,
+    unreferenced: bool,
 ) -> (FbxNode, Option<FbxNode>) {
     let name = tex.name.clone().unwrap_or_default();
     // Round-tripped body leaves (`fbx:texture_records[i].leaves`):
@@ -4510,6 +4566,22 @@ fn build_texture(
         .and_then(|v| v.as_str());
     if let Some(label) = uv_label.or(raw_uv_set) {
         p_records.push(p_kstring("UVSet", label));
+    }
+    if let Some(placed) = raw_records
+        .filter(|_| unreferenced && texref.transform.is_none())
+        .and_then(|r| r.get("placement"))
+    {
+        // No typed reference carries this texture's placement: the
+        // authored triples verbatim.
+        for (key, name) in [
+            ("translation", "Translation"),
+            ("rotation", "Rotation"),
+            ("scaling", "Scaling"),
+        ] {
+            if let Some(v) = raw_vec3(placed, key) {
+                p_records.push(p_vector(name, v));
+            }
+        }
     }
     if let Some(t) = &texref.transform {
         // The authored f64 triples verbatim while the typed transform
@@ -4674,6 +4746,29 @@ fn build_texture(
         tex_children.push(leaf_string("Filename", &v));
     }
     tex_children.extend(tail_leaves);
+    // The source's record order, when it was recorded: each record
+    // takes the position of its name's first occurrence there (records
+    // the source did not have keep their place at the end).
+    if let Some(order) = raw_records
+        .and_then(|r| r.get("order"))
+        .and_then(|v| v.as_array())
+    {
+        let rank = |name: &str| -> usize {
+            order
+                .iter()
+                .position(|n| n.as_str() == Some(name))
+                .unwrap_or(order.len())
+        };
+        tex_children.sort_by_key(|c| rank(&c.name));
+        // A source that carried only one of the two path leaves keeps
+        // that shape.
+        let had = |name: &str| order.iter().any(|n| n.as_str() == Some(name));
+        if had("FileName") != had("RelativeFilename") {
+            tex_children.retain(|c| {
+                !matches!(c.name.as_str(), "FileName" | "RelativeFilename") || had(&c.name)
+            });
+        }
+    }
 
     let tex_node = FbxNode {
         name: "Texture".to_string(),

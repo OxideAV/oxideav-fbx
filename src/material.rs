@@ -327,6 +327,20 @@ pub fn extract_materials(
                 );
             }
         }
+        // The source order of the body records (`Type`, `Version`,
+        // `TextureName`, `Properties70`, `Media`, `FileName`, … —
+        // producers differ on where the path leaves sit), so the
+        // writer lays its own records out the same way.
+        props.raw.insert(
+            "order".to_string(),
+            serde_json::Value::Array(
+                tex_node
+                    .children
+                    .iter()
+                    .map(|c| serde_json::Value::String(c.name.clone()))
+                    .collect(),
+            ),
+        );
         if let Some(label) = PropertyMap::from_element(tex_node).as_str("UVSet") {
             props.raw.insert(
                 "uv_set".to_string(),
@@ -466,6 +480,27 @@ pub fn extract_materials(
         }
     }
 
+    // Every `Texture → Material` `OP` connection in file order
+    // ([`TEXTURE_BINDINGS_KEY`]): a material slot may have several
+    // textures connected (the typed slot holds the last one), and a
+    // property name outside the typed slots has no typed home at all.
+    let listed: Vec<serde_json::Value> = texture_bindings
+        .iter()
+        .filter_map(|(texture_fid, material_fid, prop)| {
+            Some(serde_json::json!({
+                "texture": texture_lookup.get(texture_fid)?.0,
+                "material": material_lookup.get(material_fid)?.0,
+                "property": prop,
+            }))
+        })
+        .collect();
+    if !listed.is_empty() {
+        scene.extras.insert(
+            TEXTURE_BINDINGS_KEY.to_string(),
+            serde_json::Value::Array(listed),
+        );
+    }
+
     // 6) Attach the materials connected to each Model to that model's
     //    mesh primitives.
     //
@@ -557,6 +592,32 @@ struct TextureProps {
     /// Typed sampler wrap per axis (see [`wrap_mode_from_fbx`]).
     wrap_s: WrapMode,
     wrap_t: WrapMode,
+}
+
+/// `Scene3D::extras` key: every `Texture → Material` `OP` connection
+/// in file order, as `{ "texture": idx, "material": idx, "property":
+/// name }`. The typed material slots hold one texture each (the last
+/// connected); this list keeps the others — and connections to
+/// properties outside the typed slots — so the writer re-creates them.
+pub const TEXTURE_BINDINGS_KEY: &str = "fbx:texture_bindings";
+
+/// The typed material slot a connection property name feeds, as the
+/// canonical name the writer uses for that slot; `None` for a property
+/// with no typed slot.
+pub(crate) fn texture_slot_kind(prop: &str) -> Option<&'static str> {
+    match prop {
+        "DiffuseColor" | "Maya|TEX_color_map" | "Maya|baseColor" | "3dsMax|main|base_color_map" => {
+            Some("DiffuseColor")
+        }
+        "NormalMap" | "Maya|TEX_normal_map" | "3dsMax|main|norm_map" => Some("NormalMap"),
+        "EmissiveColor"
+        | "Maya|TEX_emissive_map"
+        | "Maya|emissionColor"
+        | "3dsMax|main|emit_color_map" => Some("EmissiveColor"),
+        "Maya|TEX_metallic_map" | "3dsMax|main|metalness_map" => Some("Maya|TEX_metallic_map"),
+        "Maya|TEX_ao_map" | "AmbientOcclusion" => Some("AmbientOcclusion"),
+        _ => None,
+    }
 }
 
 /// `WrapModeU` / `WrapModeV` → the typed sampler wrap. The staged

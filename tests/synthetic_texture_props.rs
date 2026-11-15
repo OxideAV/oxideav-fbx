@@ -139,11 +139,15 @@ fn planar_placement_decodes_to_typed_transform() {
     assert_eq!(t.scale, [2.0, 3.0]);
     assert_eq!(t.uv_set, None);
     // Fully representable → the raw side carries only the exact f64
-    // placement and the source records verbatim (their wire shape).
+    // placement, the source records verbatim (their wire shape) and
+    // the source's body-record order.
     let rec = scene.extras["fbx:texture_records"]["0"]
         .as_object()
         .expect("texture record");
-    assert_eq!(rec.keys().collect::<Vec<_>>(), ["placement", "records"]);
+    assert_eq!(
+        rec.keys().collect::<Vec<_>>(),
+        ["order", "placement", "records"]
+    );
     assert_eq!(
         rec["placement"]["rotation"][2].as_f64(),
         Some(std::f64::consts::FRAC_PI_2)
