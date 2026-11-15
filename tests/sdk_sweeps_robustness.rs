@@ -101,6 +101,8 @@ fn mutated_sweep_files_never_panic() {
 /// of the staged files: each replaces one authored number.
 #[test]
 fn targeted_hostile_values_never_panic() {
+    // Patterns stay within one line: a checkout may carry either line
+    // ending.
     let edit = |dir: &str, name: &str, from: &str, to: &str| {
         let text = String::from_utf8(read(dir, name)).expect("utf-8");
         assert!(text.contains(from), "{name}: `{from}` not found");
@@ -112,9 +114,9 @@ fn targeted_hostile_values_never_panic() {
     let key = "keyattr-sweep-ascii-v7500.fbx";
     let kdir = "fbxsdk-keyattr-sweep";
     // Run lengths: zero, negative, enormous; a missing array.
-    edit(kdir, key, "a: 1,1,1,1\n", "a: 0,0,0,0\n");
-    edit(kdir, key, "a: 1,1,1,1\n", "a: -5,1,1,1\n");
-    edit(kdir, key, "a: 1,1,1,1\n", "a: 2147483647,2147483647,1,1\n");
+    edit(kdir, key, "a: 1,1,1,1", "a: 0,0,0,0");
+    edit(kdir, key, "a: 1,1,1,1", "a: -5,1,1,1");
+    edit(kdir, key, "a: 1,1,1,1", "a: 2147483647,2147483647,1,1");
     edit(kdir, key, "KeyAttrRefCount: *4", "KeyAttrRefCountX: *4");
     // Coincident and decreasing key times; flag words with every bit.
     edit(

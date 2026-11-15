@@ -1,0 +1,4 @@
+# Fixture files are sample data: no line-ending conversion on checkout,
+# so every platform reads the same bytes.
+*.fbx -text
+*.tsv -text
