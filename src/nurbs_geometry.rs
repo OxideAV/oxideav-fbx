@@ -737,12 +737,17 @@ impl FbxNurbsSurface {
             return surface.resolution_within(tol);
         }
         let (su, sv) = surface.span_counts();
+        // A per-span count beyond `MAX_SEGMENTS_PER_SPAN` (a damaged
+        // or hostile `Step`) is held to it.
         let per = |d: usize| -> u64 {
-            u64::from(if self.step[d] > 0 {
-                self.step[d]
-            } else {
-                how.segments_per_span.max(1)
-            })
+            u64::from(
+                if self.step[d] > 0 {
+                    self.step[d]
+                } else {
+                    how.segments_per_span.max(1)
+                }
+                .min(crate::nurbs::MAX_SEGMENTS_PER_SPAN),
+            )
         };
         let cap = |spans: usize, per: u64| (spans as u64 * per).clamp(1, 1023) as u32;
         (cap(su, per(0)), cap(sv, per(1)))

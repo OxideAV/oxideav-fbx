@@ -24,6 +24,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `tests/sdk_sweeps_census.rs`: a decode → encode cycle of each of the
   27 sweep files, in both output forms, keeps every object and every
   connection.
+- `tests/sdk_sweeps_robustness.rs`: deterministic mutation and
+  hostile-value sweeps over the sweep files — the typed readers and
+  tessellators return `Ok` or `Err`, never panic. A surface `Step`
+  beyond 64 segments per span is held to 64.
 
 - Texture placement sweep (2026-11 §2), binary 7400 / 7500 and ASCII:
   all 46 textures round-trip with every property record
