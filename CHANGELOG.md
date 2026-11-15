@@ -9,6 +9,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `anim_curve` module — typed `AnimationCurve` model per the 2026-11
+  key-attribute sweep: `KeyAttrFlags` (interpolation, constant mode,
+  tangent mode, break / clamp / time-independent / progressive-clamp,
+  weighted, velocity and handle-display bits), `KeyAttr` (slopes,
+  packed weights and velocities with the documented quantisation, TCB
+  words), `KeyAttrRun` run lengths with `compact_runs` / `expand_runs`,
+  `Extrapolation` records, `AnimCurve::from_element` / `to_element`,
+  and `CurveEvaluator`: constant-standard / constant-next / linear /
+  cubic Bézier segments with automatic (plain, time-independent,
+  clamped, progressive-clamp), user, broken, TCB and weighted tangents.
+  `bound_curves` lists every curve with its stack / layer / target /
+  property / channel join. All 62 sweep curves × 3 container flavours
+  evaluate to the staged evaluator samples (1825 of 1830 within 1e-4;
+  the other five sit beside a minimum-weight handle where the staged
+  numbers are not the exact root) and report the staged read-back
+  slopes and weights for all 277 keys.
+- Scene decode samples every curve through the evaluator
+  (`SceneDecodeOptions::curve_tolerance`, `FbxDecoder::with_scene_options`,
+  `scene::build_scene_with_options`): all-constant channels become
+  `Step` samplers, cubic and mixed channels a refined `Linear` grid.
+- Writer: source curves re-emit verbatim (attribute entries, run
+  lengths, extrapolation records, `Default`, curve-node channel
+  values) while the typed channel still evaluates to them; a curve node
+  keeps its source channel set (no curves invented for unanimated
+  axes); `Step` samplers write constant keys and cubic-spline `Vec3`
+  samplers cubic user-tangent keys.
+
+### Fixed
+
+- A `Lcl` component without a curve holds the curve node's `d|…`
+  value (was 0, also for scaling).
+- ASCII curves whose `KeyValueFloat` prints whole numbers were dropped.
+
 - `FbxProperty::Char`: a binary `C` byte that is an ASCII letter other
   than `T` / `F` (the extrapolation `Type` codes `R` / `M` / `K` / `A`,
   `Shading: Y`) is kept verbatim by both readers and both writers

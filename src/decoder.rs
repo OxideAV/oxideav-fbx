@@ -23,12 +23,21 @@ pub struct FbxDecoder {
     /// ...) that the round-1 [`Scene3D`] surface doesn't yet
     /// materialise.
     pub last_document: Option<FbxDocument>,
+    /// Document → scene decode knobs.
+    options: scene::SceneDecodeOptions,
 }
 
 impl FbxDecoder {
     /// Construct a fresh decoder with default options.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Builder-style setter for the document → scene decode knobs
+    /// (animation-curve bake tolerance, …).
+    pub fn with_scene_options(mut self, options: scene::SceneDecodeOptions) -> Self {
+        self.options = options;
+        self
     }
 }
 
@@ -44,7 +53,7 @@ impl Mesh3DDecoder for FbxDecoder {
                 "input is neither binary FBX (Kaydara magic) nor ASCII FBX (`; FBX` banner)",
             ));
         };
-        let mut scene = scene::build_scene(&doc)?;
+        let mut scene = scene::build_scene_with_options(&doc, &self.options)?;
         // Surface the binary footer's 16-byte per-file id (hex form)
         // so a re-encode can reproduce the file's trailing block
         // byte-for-byte. Absent / malformed footers surface nothing.

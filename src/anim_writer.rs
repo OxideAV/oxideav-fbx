@@ -43,10 +43,11 @@
 //! decode path divides back by the same constant.
 
 use oxideav_mesh3d::{
-    Animation, AnimationChannel, AnimationProperty, AnimationValues, NodeId, Scene3D,
+    Animation, AnimationChannel, AnimationProperty, AnimationValues, Interpolation, NodeId, Scene3D,
 };
 use serde_json::Value;
 
+use crate::anim_curve::{AnimCurve, ConstantMode, KeyAttr, KeyAttrFlags, TangentMode};
 use crate::animation::KTIME_TICKS_PER_SECOND;
 use crate::binary::{FbxNode, FbxProperty};
 use crate::deformer::DEFORM_PERCENT_SCALE;
@@ -253,12 +254,16 @@ pub(crate) fn build_animation_objects(
                                 original
                             }
                             None => {
-                                let attrs = key_attrs.leaves(
-                                    &join,
-                                    "DeformPercent",
-                                    "d|DeformPercent",
-                                    times.len(),
-                                );
+                                let attrs = if ch.sampler.interpolation == Interpolation::Step {
+                                    attr_leaves(&vec![hold_attr(); times.len()])
+                                } else {
+                                    key_attrs.leaves(
+                                        &join,
+                                        "DeformPercent",
+                                        "d|DeformPercent",
+                                        times.len(),
+                                    )
+                                };
                                 build_curve(
                                     curve_id,
                                     times,
@@ -311,6 +316,7 @@ pub(crate) fn build_animation_objects(
                         target_prop,
                         &times,
                         &components,
+                        None,
                         &key_attrs,
                         &join,
                     );
@@ -322,9 +328,8 @@ pub(crate) fn build_animation_objects(
                 let Some(ch) = ch else { continue };
                 let target_prop = ["Lcl Translation", "Lcl Rotation", "Lcl Scaling"][slot];
                 let times = &ch.sampler.keyframes;
-                let components = match channel_components(&ch.sampler.values, times.len()) {
-                    Some(c) => c,
-                    None => continue,
+                let Some((components, authored)) = channel_curves(ch) else {
+                    continue;
                 };
                 emit_trs_curves(
                     &mut objects,
@@ -335,6 +340,7 @@ pub(crate) fn build_animation_objects(
                     target_prop,
                     times,
                     &components,
+                    authored.as_ref(),
                     &key_attrs,
                     &join,
                 );
@@ -573,6 +579,20 @@ impl<'a> KeyAttrs<'a> {
         out
     }
 
+    /// The source curve node's own channel values for `prop` on
+    /// `join` (`"node_defaults"` of any catalogued curve of that node).
+    fn node_defaults(&self, join: &CurveJoin<'_>, prop: &str) -> Option<&'a Value> {
+        self.entries
+            .iter()
+            .copied()
+            .filter(|e| {
+                e.get("stack").and_then(Value::as_str) == Some(join.stack)
+                    && e.get("target").and_then(Value::as_str) == join.target.as_deref()
+                    && e.get("property").and_then(Value::as_str) == Some(prop)
+            })
+            .find_map(|e| e.get("node_defaults"))
+    }
+
     fn entry(&self, join: &CurveJoin<'_>, prop: &str, axis: &str) -> Option<&'a Value> {
         self.entries.iter().copied().find(|e| {
             e.get("stack").and_then(Value::as_str) == Some(join.stack)
@@ -583,9 +603,10 @@ impl<'a> KeyAttrs<'a> {
     }
 
     /// The source curve rebuilt verbatim (id left as 0 for the
-    /// caller to set) when linearly sampling it on the union grid
-    /// reproduces `values` to 1e-4 — i.e. the typed channel was not
-    /// edited — else `None`.
+    /// caller to set) when evaluating it — with its key attributes,
+    /// [`crate::anim_curve`] — at the typed channel's times reproduces
+    /// `values` to 1e-4, i.e. the typed channel was not edited; else
+    /// `None`.
     fn verbatim_curve(
         &self,
         join: &CurveJoin<'_>,
@@ -595,78 +616,52 @@ impl<'a> KeyAttrs<'a> {
         values: &[f32],
     ) -> Option<FbxNode> {
         let e = self.entry(join, prop, axis)?;
-        let key_times: Vec<i64> = e
-            .get("key_times")?
-            .as_array()?
-            .iter()
-            .map(Value::as_i64)
-            .collect::<Option<Vec<_>>>()?;
-        let key_values: Vec<f32> = e
-            .get("key_values")?
-            .as_array()?
-            .iter()
-            .map(|v| {
-                v.as_u64()
-                    .and_then(|b| u32::try_from(b).ok())
-                    .map(f32::from_bits)
-            })
-            .collect::<Option<Vec<_>>>()?;
-        if key_times.is_empty() || key_times.len() != key_values.len() {
-            return None;
-        }
-        let secs: Vec<f64> = key_times
-            .iter()
-            .map(|t| *t as f64 / KTIME_TICKS_PER_SECOND)
-            .collect();
-        for (t, v) in times.iter().zip(values) {
-            let t = f64::from(*t);
-            let sampled = if t <= secs[0] {
-                f64::from(key_values[0])
-            } else if t >= secs[secs.len() - 1] {
-                f64::from(key_values[key_values.len() - 1])
-            } else {
-                let i = secs.partition_point(|s| *s <= t).max(1);
-                let (t0, t1) = (secs[i - 1], secs[i]);
-                let (v0, v1) = (f64::from(key_values[i - 1]), f64::from(key_values[i]));
-                if t1 > t0 {
-                    v0 + (v1 - v0) * (t - t0) / (t1 - t0)
-                } else {
-                    v1
-                }
-            };
-            if (sampled - f64::from(*v)).abs() > 1.0e-4 * (1.0 + f64::from(v.abs())) {
-                return None;
+        // The element body: the catalogue's verbatim copy, or (extras
+        // written before it existed) the per-field entries.
+        let children: Vec<FbxNode> = match e.get("body").and_then(Value::as_array) {
+            Some(body) => body
+                .iter()
+                .filter_map(crate::properties70::json_to_body_leaf)
+                .collect(),
+            None => {
+                let key_times: Vec<i64> = e
+                    .get("key_times")?
+                    .as_array()?
+                    .iter()
+                    .map(Value::as_i64)
+                    .collect::<Option<Vec<_>>>()?;
+                let key_values: Vec<f32> = e
+                    .get("key_values")?
+                    .as_array()?
+                    .iter()
+                    .map(|v| {
+                        v.as_u64()
+                            .and_then(|b| u32::try_from(b).ok())
+                            .map(f32::from_bits)
+                    })
+                    .collect::<Option<Vec<_>>>()?;
+                let default = e
+                    .get("default")
+                    .and_then(Value::as_f64)
+                    .unwrap_or(f64::from(key_values.first().copied().unwrap_or(0.0)));
+                let key_ver = e.get("key_ver").and_then(Value::as_i64).unwrap_or(4008) as i32;
+                let n_keys = key_times.len();
+                let leaf = |name: &str, p: FbxProperty| FbxNode {
+                    name: name.to_string(),
+                    properties: vec![p],
+                    children: Vec::new(),
+                };
+                let mut children = vec![
+                    leaf("Default", FbxProperty::F64(default)),
+                    leaf("KeyVer", FbxProperty::I32(key_ver)),
+                    leaf("KeyTime", FbxProperty::I64Array(key_times)),
+                    leaf("KeyValueFloat", FbxProperty::F32Array(key_values)),
+                ];
+                children.extend(self.leaves(join, prop, axis, n_keys));
+                children
             }
-        }
-        let default = e
-            .get("default")
-            .and_then(Value::as_f64)
-            .unwrap_or(f64::from(key_values[0]));
-        let key_ver = e.get("key_ver").and_then(Value::as_i64).unwrap_or(4008) as i32;
-        let mut children = vec![
-            FbxNode {
-                name: "Default".to_string(),
-                properties: vec![FbxProperty::F64(default)],
-                children: Vec::new(),
-            },
-            FbxNode {
-                name: "KeyVer".to_string(),
-                properties: vec![FbxProperty::I32(key_ver)],
-                children: Vec::new(),
-            },
-            FbxNode {
-                name: "KeyTime".to_string(),
-                properties: vec![FbxProperty::I64Array(key_times.clone())],
-                children: Vec::new(),
-            },
-            FbxNode {
-                name: "KeyValueFloat".to_string(),
-                properties: vec![FbxProperty::F32Array(key_values)],
-                children: Vec::new(),
-            },
-        ];
-        children.extend(self.leaves(join, prop, axis, key_times.len()));
-        Some(FbxNode {
+        };
+        let element = FbxNode {
             name: "AnimationCurve".to_string(),
             properties: vec![
                 FbxProperty::I64(0),
@@ -674,7 +669,29 @@ impl<'a> KeyAttrs<'a> {
                 FbxProperty::String(Vec::new()),
             ],
             children,
-        })
+        };
+        let curve = crate::anim_curve::AnimCurve::from_element(&element)?;
+        if curve.is_empty() {
+            return None;
+        }
+        let eval = curve.evaluator();
+        // A key's own f32 time reads that key's value (the decode
+        // side's snap — see `animation::RawCurve::sample`).
+        let key_secs: Vec<f32> = curve
+            .key_times
+            .iter()
+            .map(|t| (*t as f64 / KTIME_TICKS_PER_SECOND) as f32)
+            .collect();
+        for (t, v) in times.iter().zip(values) {
+            let sampled = match key_secs.iter().position(|k| k == t) {
+                Some(i) => f64::from(curve.key_values[i]),
+                None => eval.sample(f64::from(*t)),
+            };
+            if (sampled - f64::from(*v)).abs() > 1.0e-4 * (1.0 + f64::from(v.abs())) {
+                return None;
+            }
+        }
+        Some(element)
     }
 
     fn leaves(&self, join: &CurveJoin<'_>, prop: &str, axis: &str, n_keys: usize) -> Vec<FbxNode> {
@@ -801,14 +818,47 @@ fn emit_trs_curves(
     target_prop: &str,
     times: &[f32],
     components: &[Vec<f32>; 3],
+    authored: Option<&[Vec<KeyAttr>; 3]>,
     key_attrs: &KeyAttrs<'_>,
     join: &CurveJoin<'_>,
 ) {
     let curve_node_id = alloc();
+    // Which axes get a curve. A source curve node that animated only
+    // some channels (the catalogue names them) keeps that shape: an
+    // axis it had no curve for, whose typed values are still constant,
+    // stays curve-less and is carried by the node's `d|…` value alone.
+    let source_axes: Vec<bool> = ["d|X", "d|Y", "d|Z"]
+        .iter()
+        .map(|axis| key_attrs.entry(join, target_prop, axis).is_some())
+        .collect();
+    let any_source = source_axes.iter().any(|b| *b);
+    let constant = |vals: &[f32]| vals.windows(2).all(|w| w[0] == w[1]);
+    let emit_axis: Vec<bool> = (0..3)
+        .map(|a| !any_source || source_axes[a] || !constant(&components[a]))
+        .collect();
+    // The node's own channel values: the source's where the channel is
+    // unedited (verbatim curve, or curve-less and unchanged), else the
+    // first key.
+    let source_defaults = key_attrs.node_defaults(join, target_prop);
     let defaults: Vec<FbxNode> = ["d|X", "d|Y", "d|Z"]
         .iter()
         .zip(components)
-        .map(|(axis, vals)| p_number(axis, f64::from(vals.first().copied().unwrap_or(0.0))))
+        .enumerate()
+        .map(|(a, (axis, vals))| {
+            let first = f64::from(vals.first().copied().unwrap_or(0.0));
+            let unedited = if emit_axis[a] {
+                key_attrs
+                    .verbatim_curve(join, target_prop, axis, times, vals)
+                    .is_some()
+            } else {
+                true
+            };
+            let source = source_defaults
+                .and_then(|d| d.get(*axis))
+                .and_then(Value::as_f64)
+                .filter(|d| unedited && (emit_axis[a] || (*d - first).abs() <= 1.0e-6));
+            p_number(axis, source.unwrap_or(first))
+        })
         .collect();
     objects.push(element(
         "AnimationCurveNode",
@@ -822,11 +872,17 @@ fn emit_trs_curves(
     // AnimationCurveNode -> AnimationLayer OO.
     connections.push(conn_oo(curve_node_id, layer_id));
 
-    for (axis_tag, values) in [
+    for (axis, (axis_tag, values)) in [
         ("d|X", &components[0]),
         ("d|Y", &components[1]),
         ("d|Z", &components[2]),
-    ] {
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        if !emit_axis[axis] {
+            continue;
+        }
         let curve_id = alloc();
         // The source curve verbatim (its own key grid, values,
         // `Default` / `KeyVer` and `KeyAttr*` arrays) whenever the
@@ -839,7 +895,12 @@ fn emit_trs_curves(
                 original
             }
             None => {
-                let attrs = key_attrs.leaves(join, target_prop, axis_tag, times.len());
+                let attrs = match authored {
+                    // The sampler's own interpolation (Step / cubic
+                    // spline) as typed key attributes.
+                    Some(per_axis) => attr_leaves(&per_axis[axis]),
+                    None => key_attrs.leaves(join, target_prop, axis_tag, times.len()),
+                };
                 build_curve(
                     curve_id,
                     times,
@@ -1021,6 +1082,84 @@ fn bracket(times: &[f32], t: f32) -> Option<(usize, usize, f64)> {
         0.0
     };
     Some((i, i + 1, frac))
+}
+
+/// A constant-"standard" key (`docs/3d/fbx/fbx-sdk-export-sweeps-2026-11.md`
+/// §1.2: `0x2`, hold this key's value).
+fn hold_attr() -> KeyAttr {
+    KeyAttr::new(KeyAttrFlags::constant(ConstantMode::Standard))
+}
+
+/// The `KeyAttrFlags` / `KeyAttrDataFloat` / `KeyAttrRefCount` leaves
+/// for one attribute per key, equal neighbours merged into runs.
+fn attr_leaves(per_key: &[KeyAttr]) -> Vec<FbxNode> {
+    if per_key.is_empty() {
+        return Vec::new();
+    }
+    let mut curve = AnimCurve::new(vec![0; per_key.len()], vec![0.0; per_key.len()])
+        .with_key_attrs(per_key.iter().copied());
+    curve.compact_runs();
+    curve
+        .to_body()
+        .into_iter()
+        .filter(|leaf| leaf.name.starts_with("KeyAttr"))
+        .collect()
+}
+
+/// Per-key values of the X / Y / Z component curves.
+type AxisValues = [Vec<f32>; 3];
+/// Per-key attributes of the X / Y / Z component curves.
+type AxisAttrs = [Vec<KeyAttr>; 3];
+
+/// A T / R / S channel as three per-key component series plus, when the
+/// sampler is not linear, the key attributes that say so:
+///
+/// - `Step` — constant-"standard" keys;
+/// - `CubicSpline` on a `Vec3` channel — cubic user-tangent keys whose
+///   right slope is the key's out-tangent and whose next-left slope is
+///   the following key's in-tangent (both are value units per second,
+///   and with the default one-third weights the segment is the same
+///   cubic Hermite segment);
+/// - `CubicSpline` on a rotation channel — the key values only: its
+///   tangents are quaternion derivatives, which have no Euler-curve
+///   counterpart.
+fn channel_curves(ch: &AnimationChannel) -> Option<(AxisValues, Option<AxisAttrs>)> {
+    let n = ch.sampler.keyframes.len();
+    match ch.sampler.interpolation {
+        Interpolation::Linear => Some((channel_components(&ch.sampler.values, n)?, None)),
+        Interpolation::Step => {
+            let components = channel_components(&ch.sampler.values, n)?;
+            Some((
+                components,
+                Some(std::array::from_fn(|_| vec![hold_attr(); n])),
+            ))
+        }
+        Interpolation::CubicSpline => match &ch.sampler.values {
+            AnimationValues::Vec3(v) if v.len() == 3 * n => {
+                let components: [Vec<f32>; 3] =
+                    std::array::from_fn(|axis| (0..n).map(|i| v[3 * i + 1][axis]).collect());
+                let attrs: [Vec<KeyAttr>; 3] = std::array::from_fn(|axis| {
+                    (0..n)
+                        .map(|i| {
+                            let out = v[3 * i + 2][axis];
+                            let next_in = if i + 1 < n { v[3 * (i + 1)][axis] } else { 0.0 };
+                            KeyAttr::new(KeyAttrFlags::cubic(TangentMode::User))
+                                .with_slopes(out, next_in)
+                        })
+                        .collect()
+                });
+                Some((components, Some(attrs)))
+            }
+            AnimationValues::Quat(q) if q.len() == 3 * n => {
+                let centres: Vec<[f32; 4]> = (0..n).map(|i| q[3 * i + 1]).collect();
+                Some((
+                    channel_components(&AnimationValues::Quat(centres), n)?,
+                    None,
+                ))
+            }
+            _ => None,
+        },
+    }
 }
 
 /// Decompose a channel's [`AnimationValues`] into three per-keyframe

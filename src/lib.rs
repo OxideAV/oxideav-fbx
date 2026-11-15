@@ -153,10 +153,14 @@
 //!   decode per `docs/3d/fbx/fbx-node-transform-chain.md` §1 and
 //!   re-emits from the `fbx:*` chain extras on encode; see
 //!   [`node_transform`] / [`scene_writer`].)
-//! - Animation: per-layer compositing and cubic / step / TCB
-//!   interpolation. (Pivot / Pre-/PostRotation / `RotationOrder`
-//!   composition **is** applied to channels on chain-bearing Models,
-//!   both directions — see [`animation`] / [`anim_writer`].)
+//! - Animation: per-layer compositing; the numeric behaviour of the
+//!   non-default extrapolation modes (their records are typed and
+//!   round-trip; see [`anim_curve`]). Constant / linear / cubic keys
+//!   with automatic, user, TCB, clamped, weighted and broken tangents
+//!   **are** evaluated ([`anim_curve`]); pivot / Pre-/PostRotation /
+//!   `RotationOrder` composition **is** applied to channels on
+//!   chain-bearing Models, both directions — see [`animation`] /
+//!   [`anim_writer`].
 //! - Skin: `SKINNING_METHOD_DUAL_QUATERNION` produces plain LBS
 //!   buffers (the doc notes this is safe to ignore in most cases).
 //! - BlendShape: one `Shape` per channel. Multi-`Shape` (in-between)
@@ -199,6 +203,10 @@
 
 /// Animation-curve emission for the [`scene_writer`] encoder — the
 /// inverse of [`animation::extract_animations`] (round 377).
+/// `AnimationCurve` typed key-attribute model (interpolation, tangent
+/// mode, weights, velocities, run-length packing, extrapolation
+/// records) and the curve evaluator.
+pub mod anim_curve;
 #[doc(hidden)]
 pub mod anim_writer;
 #[doc(hidden)]
@@ -302,6 +310,7 @@ pub mod scene_writer;
 pub mod takes;
 pub mod writer;
 
+pub use anim_curve::{AnimCurve, CurveEvaluator, KeyAttr, KeyAttrFlags};
 pub use ascii::is_ascii_fbx;
 pub use ascii_writer::{
     AsciiWriterOptions, write_ascii_document, write_ascii_document_with_options,
@@ -314,6 +323,7 @@ pub use decoder::{FbxDecoder, is_binary_fbx};
 pub use encoder::{FbxEncoder, FbxOutputForm};
 pub use nurbs::{NurbsCurve, NurbsForm, NurbsSurface, TessellationOptions};
 pub use nurbs_geometry::FbxNurbsCurve;
+pub use scene::SceneDecodeOptions;
 pub use scene_writer::{SceneEncodeOptions, encode_scene, encode_scene_with_options};
 pub use writer::{WriterOptions, write_document, write_document_with_options};
 

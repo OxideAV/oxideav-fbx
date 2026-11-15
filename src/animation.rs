@@ -17,10 +17,14 @@
 //!   one named property on a target `Model` node (e.g.
 //!   `Lcl Translation`, `Lcl Rotation`, `Lcl Scaling`,
 //!   `DeformPercent`).
-//! - `AnimationCurve` — the actual sampled keyframes:
-//!   `KeyTime` (`l` array — i64 FBX tick stamps) +
-//!   `KeyValueFloat` (`f` array — f32 sample values) and optional
-//!   `KeyAttrFlags` / `KeyAttrDataFloat` interpolation metadata.
+//! - `AnimationCurve` — the keys: `KeyTime` (`l` array — i64 FBX tick
+//!   stamps) + `KeyValueFloat` (`f` array — f32 values) and the
+//!   `KeyAttrFlags` / `KeyAttrDataFloat` / `KeyAttrRefCount` attribute
+//!   entries that say how each segment interpolates. The typed model
+//!   and the evaluator live in [`crate::anim_curve`]; this module
+//!   samples every curve through it (see
+//!   [`extract_animations_with_tolerance`] for how constant and cubic
+//!   segments reach the scene model's `Step` / `Linear` samplers).
 //!
 //! # Connection topology
 //!
@@ -80,6 +84,7 @@ use oxideav_mesh3d::{
     AnimationValues, Interpolation, NodeId, Scene3D,
 };
 
+use crate::anim_curve::{AnimCurve, CurveEvaluator};
 use crate::binary::{FbxDocument, FbxNode, FbxProperty};
 use crate::deformer::{DEFORM_PERCENT_SCALE, MorphChannelBinding};
 use crate::node_transform::TransformChain;
@@ -106,6 +111,9 @@ const TARGET_DEFORM_PERCENT: &str = "DeformPercent";
 /// the end of [`extract_animations`].
 #[derive(Default)]
 struct ComponentCurves {
+    /// The curve node's own `d|X` / `d|Y` / `d|Z` values — what a
+    /// component without a curve holds.
+    defaults: [Option<f32>; 3],
     /// `Some(curve)` once the X (or scalar) curve has been seen.
     x: Option<RawCurve>,
     /// `Some(curve)` once the Y curve has been seen.
@@ -114,8 +122,10 @@ struct ComponentCurves {
     z: Option<RawCurve>,
 }
 
-/// A single `AnimationCurve` — raw `KeyTime` integers + `KeyValueFloat`
-/// scalars, fresh out of the binary document.
+/// A single `AnimationCurve` prepared for sampling: its key grid in
+/// the `f32` seconds the scene model uses, and the typed evaluator
+/// ([`crate::anim_curve::CurveEvaluator`]) that resolves every
+/// segment's interpolation.
 #[derive(Clone)]
 struct RawCurve {
     /// Keyframe times in seconds (already divided by
@@ -123,7 +133,110 @@ struct RawCurve {
     times_secs: Vec<f32>,
     /// Sample values, one per keyframe.
     values: Vec<f32>,
+    /// The curve's evaluator.
+    eval: CurveEvaluator,
 }
+
+impl RawCurve {
+    /// The curve's value at `t`. A query that is a key's own `f32`
+    /// time returns that key's value exactly (the `f32` image of a key
+    /// time can fall a hair before the key, where a step segment still
+    /// holds the previous value).
+    fn sample(&self, t: f32) -> f32 {
+        if let Ok(i) = self
+            .times_secs
+            .binary_search_by(|x| x.partial_cmp(&t).unwrap_or(std::cmp::Ordering::Equal))
+        {
+            return self.values[i];
+        }
+        self.eval.sample(f64::from(t)) as f32
+    }
+
+    /// `true` when the curve has at least one segment and every segment
+    /// holds its left key's value — a channel made only of such curves
+    /// is a `Step` sampler on its own key grid.
+    fn is_all_hold(&self) -> bool {
+        let segments = self.times_secs.len().saturating_sub(1);
+        segments > 0 && (0..segments).all(|i| self.eval.segment_step(i) == Some(false))
+    }
+
+    /// Append the times a linear consumer needs to follow this curve:
+    /// every key, plus
+    ///
+    /// - for a step segment, one time right next to the jump (just
+    ///   before the next key for "standard", just after this key for
+    ///   "next") — skipped when `step_channel`, where the sampler
+    ///   itself is `Step`;
+    /// - for a cubic segment, interior times from recursive bisection
+    ///   until the chord between neighbours is within `tolerance` ×
+    ///   the curve's value range of the curve.
+    fn push_grid(&self, dst: &mut Vec<f32>, tolerance: f32, step_channel: bool) {
+        dst.extend_from_slice(&self.times_secs);
+        let (lo, hi) = self
+            .values
+            .iter()
+            .fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), v| {
+                (lo.min(*v), hi.max(*v))
+            });
+        let range = if hi > lo { f64::from(hi - lo) } else { 1.0 };
+        let abs_tol = (f64::from(tolerance.max(1.0e-6)) * range).max(1.0e-9);
+        for i in 0..self.times_secs.len().saturating_sub(1) {
+            let (t0, t1) = (self.times_secs[i], self.times_secs[i + 1]);
+            if t1 <= t0 || t0.is_nan() || t1.is_nan() {
+                continue;
+            }
+            match self.eval.segment_step(i) {
+                Some(next) => {
+                    if step_channel {
+                        continue;
+                    }
+                    // The neighbouring representable time, kept at
+                    // least 2 ns away so the grid's 1 ns merge of
+                    // coincident keys cannot swallow it.
+                    let t = if next {
+                        t0.next_up().max(t0 + 2.0e-9)
+                    } else {
+                        t1.next_down().min(t1 - 2.0e-9)
+                    };
+                    if t > t0 && t < t1 {
+                        dst.push(t);
+                    }
+                }
+                None if self.eval.segment_is_linear(i) => {}
+                None => self.bisect(dst, f64::from(t0), f64::from(t1), abs_tol, 0),
+            }
+        }
+    }
+
+    /// Recursive bisection of a curved span `[a, b]` (see
+    /// [`RawCurve::push_grid`]): the quarter points are compared with
+    /// the chord; a span that deviates is split at its midpoint.
+    fn bisect(&self, dst: &mut Vec<f32>, a: f64, b: f64, abs_tol: f64, depth: u32) {
+        const MAX_DEPTH: u32 = 8;
+        let (va, vb) = (self.eval.sample(a), self.eval.sample(b));
+        let deviates = [0.25, 0.5, 0.75].iter().any(|f| {
+            let t = a + (b - a) * f;
+            (self.eval.sample(t) - (va + (vb - va) * f)).abs() > abs_tol
+        });
+        if !deviates || depth >= MAX_DEPTH {
+            return;
+        }
+        let mid = 0.5 * (a + b);
+        let mid32 = mid as f32;
+        if !(f64::from(mid32) > a && f64::from(mid32) < b) {
+            return;
+        }
+        self.bisect(dst, a, mid, abs_tol, depth + 1);
+        dst.push(mid32);
+        self.bisect(dst, mid, b, abs_tol, depth + 1);
+    }
+}
+
+/// Default relative tolerance of the curve bake
+/// ([`extract_animations`]): a curved segment is subdivided until a
+/// linear reading stays within this fraction of the curve's value
+/// range.
+pub const DEFAULT_CURVE_TOLERANCE: f32 = 1.0e-3;
 
 /// Walk the [`FbxDocument`] and produce one [`Animation`] per
 /// `AnimationStack`. Channels are wired onto the supplied
@@ -145,6 +258,34 @@ pub fn extract_animations(
     deformer_targets: &HashMap<i64, MorphChannelBinding>,
     node_morph_statics: &HashMap<NodeId, Vec<f32>>,
 ) -> Vec<Animation> {
+    extract_animations_with_tolerance(
+        doc,
+        model_nodes,
+        deformer_targets,
+        node_morph_statics,
+        DEFAULT_CURVE_TOLERANCE,
+    )
+}
+
+/// [`extract_animations`] with an explicit curve-bake tolerance.
+///
+/// Every curve is evaluated with its key attributes
+/// ([`crate::anim_curve`]). The scene model's samplers are linear (or
+/// `Step`), so:
+///
+/// - a channel whose curves are all linear keeps its key grid;
+/// - a channel whose curves are all constant-"standard" becomes a
+///   `Step` sampler on its key grid;
+/// - any other channel is a `Linear` sampler on a refined grid — one
+///   extra time beside each step, and curved segments bisected until
+///   the linear reading is within `tolerance` × the curve's value range.
+pub fn extract_animations_with_tolerance(
+    doc: &FbxDocument,
+    model_nodes: &HashMap<i64, NodeId>,
+    deformer_targets: &HashMap<i64, MorphChannelBinding>,
+    node_morph_statics: &HashMap<NodeId, Vec<f32>>,
+    tolerance: f32,
+) -> Vec<Animation> {
     // Index Objects by FBX id for every animation-related element
     // type we touch.
     let mut stacks: HashMap<i64, String> = HashMap::new();
@@ -154,6 +295,8 @@ pub fn extract_animations(
     let mut stack_order: Vec<i64> = Vec::new();
     let mut layers: HashMap<i64, String> = HashMap::new();
     let mut curve_nodes: HashMap<i64, String> = HashMap::new();
+    // Each curve node's `d|X` / `d|Y` / `d|Z` property values.
+    let mut curve_node_defaults: HashMap<i64, [Option<f32>; 3]> = HashMap::new();
     let mut curves: HashMap<i64, RawCurve> = HashMap::new();
 
     if let Some(objects) = doc.root.child("Objects") {
@@ -176,6 +319,11 @@ pub fn extract_animations(
                 "AnimationCurveNode" => {
                     if let Some(id) = element_id(child) {
                         curve_nodes.insert(id, element_name(child).unwrap_or_default());
+                        let props = crate::properties70::PropertyMap::from_element(child);
+                        curve_node_defaults.insert(
+                            id,
+                            ["d|X", "d|Y", "d|Z"].map(|n| props.as_f64(n).map(|v| v as f32)),
+                        );
                     }
                 }
                 "AnimationCurve" => {
@@ -293,6 +441,9 @@ pub fn extract_animations(
                 .or_default()
                 .entry((node_id, prop_tag(prop)))
                 .or_default();
+            if let Some(d) = curve_node_defaults.get(curve_node_id) {
+                bucket.defaults = *d;
+            }
             match axis_tag.as_str() {
                 "d|X" => bucket.x = Some(curve.clone()),
                 "d|Y" => bucket.y = Some(curve.clone()),
@@ -358,14 +509,15 @@ pub fn extract_animations(
             for (node_id, [t_c, r_c, s_c]) in grouped {
                 match node_chains.get(&node_id) {
                     Some(chain) if chain.has_extensions() => {
-                        anim.channels
-                            .extend(build_composed_channels(node_id, chain, t_c, r_c, s_c));
+                        anim.channels.extend(build_composed_channels(
+                            node_id, chain, t_c, r_c, s_c, tolerance,
+                        ));
                     }
                     _ => {
                         for (tag, comps) in [(0u8, t_c), (1, r_c), (2, s_c)] {
                             if let Some(comps) = comps
                                 && let Some(channel) =
-                                    build_channel(node_id, prop_from_tag(tag), comps)
+                                    build_channel(node_id, prop_from_tag(tag), comps, tolerance)
                             {
                                 anim.channels.push(channel);
                             }
@@ -380,9 +532,12 @@ pub fn extract_animations(
             node_ids.sort_by_key(|n| n.0);
             for node_id in node_ids {
                 let slot_curves = &morphs[&node_id];
-                if let Some(channel) =
-                    build_morph_channel(node_id, slot_curves, node_morph_statics.get(&node_id))
-                {
+                if let Some(channel) = build_morph_channel(
+                    node_id,
+                    slot_curves,
+                    node_morph_statics.get(&node_id),
+                    tolerance,
+                ) {
                     anim.channels.push(channel);
                 }
             }
@@ -414,8 +569,10 @@ pub const AUX_CURVE_NODES_KEY: &str = "fbx:aux_curve_nodes";
 /// `KeyAttrFlags` word of the sampled-curve attribute block
 /// (`docs/3d/fbx/blender-export-sweeps-2026-09.md` §2.1: `24836` =
 /// `0x00006104`, one element, on every curve of the staged
-/// sampled-curve exports). Uninterpreted — the bit assignment is the
-/// open `KeyAttrFlags` docs gap.
+/// sampled-curve exports). Under the bit table of
+/// `docs/3d/fbx/fbx-sdk-export-sweeps-2026-11.md` §1.9 it is a
+/// **linear** key (`0x4`) with three tangent-mode bits that have no
+/// effect on a linear key.
 pub const SAMPLED_KEY_ATTR_FLAGS: i32 = 24836;
 
 /// `KeyAttrDataFloat` words of the same block, as raw little-endian
@@ -671,6 +828,9 @@ pub fn extract_key_attr_catalogue(doc: &FbxDocument) -> Option<serde_json::Value
     let mut stacks: HashMap<i64, String> = HashMap::new();
     let mut layers: HashMap<i64, ()> = HashMap::new();
     let mut curve_nodes: HashMap<i64, ()> = HashMap::new();
+    // Each curve node's numeric `P` values (`d|X`, …), by record name.
+    let mut node_defaults: HashMap<i64, serde_json::Map<String, serde_json::Value>> =
+        HashMap::new();
     let mut model_names: HashMap<i64, String> = HashMap::new();
     let mut curve_elements: Vec<(i64, &FbxNode)> = Vec::new();
     for child in &objects.children {
@@ -686,6 +846,20 @@ pub fn extract_key_attr_catalogue(doc: &FbxDocument) -> Option<serde_json::Value
             }
             "AnimationCurveNode" => {
                 curve_nodes.insert(id, ());
+                let mut defaults = serde_json::Map::new();
+                for p in child
+                    .child("Properties70")
+                    .into_iter()
+                    .flat_map(|n| n.children_named("P"))
+                {
+                    if let (Some(name), Some(v)) = (
+                        crate::properties70::p_name(p),
+                        crate::properties70::p_numeric_values(p).first(),
+                    ) {
+                        defaults.insert(name.to_owned(), serde_json::json!(v));
+                    }
+                }
+                node_defaults.insert(id, defaults);
             }
             "AnimationCurve" => curve_elements.push((id, child)),
             // Curve-node endpoints the join names: Models, and the
@@ -749,6 +923,12 @@ pub fn extract_key_attr_catalogue(doc: &FbxDocument) -> Option<serde_json::Value
         let wiring = curve_to_node.get(&curve_id);
         if let Some((cn_id, axis)) = wiring {
             entry.insert("axis".into(), serde_json::Value::String(axis.clone()));
+            // The curve node's own channel values (`d|X` / `d|Y` /
+            // `d|Z`): the static value of every channel, with or
+            // without a curve (`fbx-sdk-export-sweeps-2026-11.md` §1.7).
+            if let Some(d) = node_defaults.get(cn_id).filter(|d| !d.is_empty()) {
+                entry.insert("node_defaults".into(), serde_json::Value::Object(d.clone()));
+            }
             if let Some((target_id, prop)) = node_to_target.get(cn_id) {
                 entry.insert("property".into(), serde_json::Value::String(prop.clone()));
                 if let Some(name) = model_names.get(target_id) {
@@ -803,6 +983,12 @@ pub fn extract_key_attr_catalogue(doc: &FbxDocument) -> Option<serde_json::Value
         {
             entry.insert("key_ver".into(), serde_json::json!(k));
         }
+        // The whole element body in source order (extrapolation
+        // records included) — what the writer re-emits verbatim.
+        entry.insert(
+            "body".into(),
+            serde_json::Value::Array(crate::properties70::body_json(node)),
+        );
         let ints = |v: &Option<serde_json::Value>| -> Vec<i64> {
             v.as_ref()
                 .and_then(serde_json::Value::as_array)
@@ -928,6 +1114,7 @@ fn build_channel(
     node: NodeId,
     property: AnimationProperty,
     comps: &ComponentCurves,
+    tolerance: f32,
 ) -> Option<AnimationChannel> {
     let xs = comps.x.as_ref();
     let ys = comps.y.as_ref();
@@ -936,9 +1123,10 @@ fn build_channel(
     // Build the merged time axis over whichever components exist —
     // exporters animate components independently, so a Z-only (or
     // Y-only) curve set is a legitimate channel.
+    let step = all_hold([xs, ys, zs].into_iter().flatten());
     let mut merged_times: Vec<f32> = Vec::new();
     for c in [xs, ys, zs].into_iter().flatten() {
-        push_times(&mut merged_times, &c.times_secs);
+        c.push_grid(&mut merged_times, tolerance, step);
     }
     merged_times.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     merged_times.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
@@ -946,16 +1134,24 @@ fn build_channel(
         return None;
     }
 
-    // Resample each component onto the merged grid (absent → 0.0).
-    let resample = |c: Option<&RawCurve>| -> Vec<f32> {
+    // Resample each component onto the merged grid. A component
+    // without a curve holds the curve node's own `d|…` value (the
+    // channel's static value), else the property's neutral value.
+    let neutral = if property == AnimationProperty::Scale {
+        1.0
+    } else {
+        0.0
+    };
+    let resample = |c: Option<&RawCurve>, axis: usize| -> Vec<f32> {
+        let rest = comps.defaults[axis].unwrap_or(neutral);
         merged_times
             .iter()
-            .map(|t| c.map(|c| sample_linear(c, *t)).unwrap_or(0.0))
+            .map(|t| c.map(|c| c.sample(*t)).unwrap_or(rest))
             .collect()
     };
-    let xv = resample(xs);
-    let yv = resample(ys);
-    let zv = resample(zs);
+    let xv = resample(xs, 0);
+    let yv = resample(ys, 1);
+    let zv = resample(zs, 2);
 
     let values = match property {
         AnimationProperty::Rotation => {
@@ -986,9 +1182,30 @@ fn build_channel(
         sampler: AnimationSampler {
             keyframes: merged_times,
             values,
-            interpolation: Interpolation::Linear,
+            interpolation: sampler_interpolation(step),
         },
     })
+}
+
+/// `true` when there is at least one curve and each is all-hold (see
+/// [`RawCurve::is_all_hold`]).
+fn all_hold<'a>(curves: impl Iterator<Item = &'a RawCurve>) -> bool {
+    let mut any = false;
+    for c in curves {
+        if !c.is_all_hold() {
+            return false;
+        }
+        any = true;
+    }
+    any
+}
+
+fn sampler_interpolation(step: bool) -> Interpolation {
+    if step {
+        Interpolation::Step
+    } else {
+        Interpolation::Linear
+    }
 }
 
 /// Combine every `DeformPercent` curve targeting one node's
@@ -1010,6 +1227,7 @@ fn build_morph_channel(
     node: NodeId,
     slot_curves: &std::collections::BTreeMap<usize, RawCurve>,
     statics: Option<&Vec<f32>>,
+    tolerance: f32,
 ) -> Option<AnimationChannel> {
     let statics: &[f32] = statics.map_or(&[], Vec::as_slice);
     // Stride = the mesh's morph-target count: every static slot plus
@@ -1018,9 +1236,10 @@ fn build_morph_channel(
     let max_animated = slot_curves.keys().copied().max()?;
     let n_targets = statics.len().max(max_animated + 1);
 
+    let step = all_hold(slot_curves.values());
     let mut merged_times: Vec<f32> = Vec::new();
     for c in slot_curves.values() {
-        push_times(&mut merged_times, &c.times_secs);
+        c.push_grid(&mut merged_times, tolerance, step);
     }
     merged_times.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     merged_times.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
@@ -1038,15 +1257,14 @@ fn build_morph_channel(
         .map(|&t| {
             (0..n_targets)
                 .map(|slot| match slot_curves.get(&slot) {
-                    Some(curve) => {
-                        (f64::from(sample_linear(curve, t)) / DEFORM_PERCENT_SCALE) as f32
-                    }
+                    Some(curve) => (f64::from(curve.sample(t)) / DEFORM_PERCENT_SCALE) as f32,
                     None => statics.get(slot).copied().unwrap_or(0.0),
                 })
                 .collect()
         })
         .collect();
-    let sampler = AnimationSampler::morph_weights(merged_times, frames, Interpolation::Linear)?;
+    let sampler =
+        AnimationSampler::morph_weights(merged_times, frames, sampler_interpolation(step))?;
     Some(AnimationChannel::new(
         node,
         AnimationProperty::MorphWeights,
@@ -1080,13 +1298,19 @@ fn build_composed_channels(
     t_curves: Option<&ComponentCurves>,
     r_curves: Option<&ComponentCurves>,
     s_curves: Option<&ComponentCurves>,
+    tolerance: f32,
 ) -> Vec<AnimationChannel> {
     // Union time grid across every present component curve.
+    let present = || {
+        [t_curves, r_curves, s_curves]
+            .into_iter()
+            .flatten()
+            .flat_map(|cc| [&cc.x, &cc.y, &cc.z].into_iter().flatten())
+    };
+    let step = all_hold(present());
     let mut times: Vec<f32> = Vec::new();
-    for curves in [t_curves, r_curves, s_curves].into_iter().flatten() {
-        for c in [&curves.x, &curves.y, &curves.z].into_iter().flatten() {
-            push_times(&mut times, &c.times_secs);
-        }
+    for c in present() {
+        c.push_grid(&mut times, tolerance, step);
     }
     times.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     times.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
@@ -1098,10 +1322,15 @@ fn build_composed_channels(
         match curves {
             None => statics,
             Some(cc) => {
-                let comp = |c: &Option<RawCurve>| {
-                    c.as_ref().map_or(0.0, |c| f64::from(sample_linear(c, t)))
+                // A component without a curve holds the curve node's
+                // `d|…` value, else the Model's static component.
+                let comp = |c: &Option<RawCurve>, axis: usize| {
+                    c.as_ref().map_or_else(
+                        || cc.defaults[axis].map_or(statics[axis], f64::from),
+                        |c| f64::from(c.sample(t)),
+                    )
                 };
-                [comp(&cc.x), comp(&cc.y), comp(&cc.z)]
+                [comp(&cc.x, 0), comp(&cc.y, 1), comp(&cc.z, 2)]
             }
         }
     };
@@ -1134,7 +1363,7 @@ fn build_composed_channels(
         sampler: AnimationSampler {
             keyframes: times.clone(),
             values,
-            interpolation: Interpolation::Linear,
+            interpolation: sampler_interpolation(step),
         },
     };
     let mut out = vec![channel(
@@ -1153,76 +1382,21 @@ fn build_composed_channels(
     out
 }
 
-/// Append every time from `src` into `dst` (deduping happens after a
-/// global sort).
-fn push_times(dst: &mut Vec<f32>, src: &[f32]) {
-    dst.extend_from_slice(src);
-}
-
-/// Linear sampler — clamps at the endpoints, linearly interpolates
-/// between adjacent keyframes. We don't honour `KeyAttrFlags` /
-/// `KeyAttrDataFloat` (cubic / step / TCB) because the docs we have
-/// do not specify their bit layout; emitting `Interpolation::Linear`
-/// matches the common baked-animation downstream representation.
-fn sample_linear(curve: &RawCurve, t: f32) -> f32 {
-    if curve.times_secs.is_empty() {
-        return 0.0;
-    }
-    if t <= curve.times_secs[0] {
-        return curve.values[0];
-    }
-    let last = curve.times_secs.len() - 1;
-    if t >= curve.times_secs[last] {
-        return curve.values[last];
-    }
-    // Binary search for the bracketing pair.
-    let idx = curve
-        .times_secs
-        .binary_search_by(|x| x.partial_cmp(&t).unwrap_or(std::cmp::Ordering::Equal));
-    match idx {
-        Ok(i) => curve.values[i],
-        Err(i) => {
-            let t0 = curve.times_secs[i - 1];
-            let t1 = curve.times_secs[i];
-            let v0 = curve.values[i - 1];
-            let v1 = curve.values[i];
-            let dt = t1 - t0;
-            if dt.abs() < f32::EPSILON {
-                v0
-            } else {
-                let alpha = (t - t0) / dt;
-                v0 + (v1 - v0) * alpha
-            }
-        }
-    }
-}
-
-/// Read an `AnimationCurve` element record into a [`RawCurve`].
-///
-/// Looks for the `KeyTime` (`l` array — i64 ticks) and `KeyValueFloat`
-/// (`f` array — f32 values) sub-records. Returns `None` when either
-/// is missing or the lengths disagree.
+/// Read an `AnimationCurve` element record into a [`RawCurve`] through
+/// the typed [`AnimCurve`]. Returns `None` when `KeyTime` /
+/// `KeyValueFloat` are missing or their lengths disagree.
 fn read_curve(node: &FbxNode) -> Option<RawCurve> {
-    let times_node = node.child("KeyTime")?;
-    let vals_node = node.child("KeyValueFloat")?;
-    let times_raw: Vec<i64> = match times_node.properties.first()? {
-        FbxProperty::I64Array(a) => a.clone(),
-        FbxProperty::I32Array(a) => a.iter().map(|v| *v as i64).collect(),
-        _ => return None,
-    };
-    let values: Vec<f32> = match vals_node.properties.first()? {
-        FbxProperty::F32Array(a) => a.clone(),
-        FbxProperty::F64Array(a) => a.iter().map(|v| *v as f32).collect(),
-        _ => return None,
-    };
-    if times_raw.len() != values.len() {
-        return None;
-    }
-    let times_secs: Vec<f32> = times_raw
+    let curve = AnimCurve::from_element(node)?;
+    let times_secs: Vec<f32> = curve
+        .key_times
         .iter()
         .map(|t| ((*t as f64) / KTIME_TICKS_PER_SECOND) as f32)
         .collect();
-    Some(RawCurve { times_secs, values })
+    Some(RawCurve {
+        times_secs,
+        values: curve.key_values.clone(),
+        eval: curve.evaluator(),
+    })
 }
 
 /// Read property[0] (the FBX element id) of an Objects-child record.
@@ -1334,14 +1508,79 @@ mod tests {
         assert!((q[3] - s).abs() < 1e-5);
     }
 
+    fn raw(curve: AnimCurve) -> RawCurve {
+        RawCurve {
+            times_secs: curve
+                .key_times
+                .iter()
+                .map(|t| ((*t as f64) / KTIME_TICKS_PER_SECOND) as f32)
+                .collect(),
+            values: curve.key_values.clone(),
+            eval: curve.evaluator(),
+        }
+    }
+
+    fn ticks(s: f64) -> i64 {
+        (s * KTIME_TICKS_PER_SECOND).round() as i64
+    }
+
     #[test]
     fn linear_sample_clamps() {
-        let c = RawCurve {
-            times_secs: vec![1.0, 2.0],
-            values: vec![10.0, 20.0],
-        };
-        assert_eq!(sample_linear(&c, 0.0), 10.0);
-        assert_eq!(sample_linear(&c, 3.0), 20.0);
-        assert_eq!(sample_linear(&c, 1.5), 15.0);
+        let c = raw(AnimCurve::new(
+            vec![ticks(1.0), ticks(2.0)],
+            vec![10.0, 20.0],
+        ));
+        assert_eq!(c.sample(0.0), 10.0);
+        assert_eq!(c.sample(3.0), 20.0);
+        assert_eq!(c.sample(1.5), 15.0);
+        // A linear curve adds nothing to its key grid.
+        let mut grid = Vec::new();
+        c.push_grid(&mut grid, DEFAULT_CURVE_TOLERANCE, false);
+        assert_eq!(grid, vec![1.0, 2.0]);
+    }
+
+    #[test]
+    fn step_and_cubic_segments_refine_the_grid() {
+        use crate::anim_curve::{ConstantMode, KeyAttr, KeyAttrFlags, TangentMode};
+        let times = vec![ticks(0.0), ticks(1.0), ticks(2.0)];
+        let hold = KeyAttr::new(KeyAttrFlags::constant(ConstantMode::Standard));
+        let c = raw(AnimCurve::new(times.clone(), vec![0.0, 10.0, 4.0]).with_key_attrs([hold; 3]));
+        assert!(c.is_all_hold());
+        // As a Step channel the grid is the key grid …
+        let mut grid = Vec::new();
+        c.push_grid(&mut grid, DEFAULT_CURVE_TOLERANCE, true);
+        assert_eq!(grid.len(), 3);
+        // … in a linear channel each jump gets a neighbour that still
+        // holds the old value.
+        let mut grid = Vec::new();
+        c.push_grid(&mut grid, DEFAULT_CURVE_TOLERANCE, false);
+        grid.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        assert_eq!(grid.len(), 5);
+        assert!(grid[1] < 1.0 && grid[1] > 0.999);
+        assert_eq!(c.sample(grid[1]), 0.0);
+        assert_eq!(c.sample(1.0), 10.0);
+
+        let next = KeyAttr::new(KeyAttrFlags::constant(ConstantMode::Next));
+        let c = raw(AnimCurve::new(times.clone(), vec![0.0, 10.0, 4.0]).with_key_attrs([next; 3]));
+        assert!(!c.is_all_hold());
+        let mut grid = Vec::new();
+        c.push_grid(&mut grid, DEFAULT_CURVE_TOLERANCE, false);
+        grid.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        assert_eq!(grid.len(), 5);
+        assert_eq!(c.sample(0.0), 0.0);
+        assert_eq!(c.sample(grid[1]), 10.0);
+
+        // A cubic segment is bisected until the chords follow it.
+        let user = KeyAttr::new(KeyAttrFlags::cubic(TangentMode::User)).with_slopes(0.0, 0.0);
+        let c = raw(AnimCurve::new(times, vec![0.0, 10.0, 4.0]).with_key_attrs([user; 3]));
+        let mut grid = Vec::new();
+        c.push_grid(&mut grid, DEFAULT_CURVE_TOLERANCE, false);
+        grid.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        assert!(grid.len() > 20, "{} grid times", grid.len());
+        for w in grid.windows(2) {
+            let mid = 0.5 * (w[0] + w[1]);
+            let chord = 0.5 * (c.sample(w[0]) + c.sample(w[1]));
+            assert!((c.sample(mid) - chord).abs() <= 0.02, "at {mid}");
+        }
     }
 }

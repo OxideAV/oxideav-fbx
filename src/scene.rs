@@ -24,7 +24,6 @@ use std::collections::HashMap;
 
 use oxideav_mesh3d::{Error, Node, Result, Scene3D};
 
-use crate::animation::extract_animations;
 use crate::binary::{FbxDocument, FbxNode, FbxProperty};
 use crate::deformer::extract_deformers;
 use crate::documents::extract_documents;
@@ -42,6 +41,47 @@ use crate::takes::extract_takes;
 /// Decode the top-level `Objects` / `Connections` records into a
 /// [`Scene3D`].
 pub fn build_scene(doc: &FbxDocument) -> Result<Scene3D> {
+    build_scene_with_options(doc, &SceneDecodeOptions::default())
+}
+
+/// Knobs of the document → scene decode.
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[non_exhaustive]
+pub struct SceneDecodeOptions {
+    /// Relative tolerance of the animation-curve bake: a cubic segment
+    /// is subdivided until its linear reading stays within this
+    /// fraction of the curve's value range
+    /// ([`crate::animation::DEFAULT_CURVE_TOLERANCE`]).
+    pub curve_tolerance: f32,
+}
+
+impl Default for SceneDecodeOptions {
+    fn default() -> Self {
+        Self {
+            curve_tolerance: crate::animation::DEFAULT_CURVE_TOLERANCE,
+        }
+    }
+}
+
+impl SceneDecodeOptions {
+    /// The defaults.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Builder-style setter for
+    /// [`curve_tolerance`](Self::curve_tolerance).
+    pub fn with_curve_tolerance(mut self, curve_tolerance: f32) -> Self {
+        self.curve_tolerance = curve_tolerance;
+        self
+    }
+}
+
+/// [`build_scene`] with explicit [`SceneDecodeOptions`].
+pub fn build_scene_with_options(
+    doc: &FbxDocument,
+    options: &SceneDecodeOptions,
+) -> Result<Scene3D> {
     let mut scene = Scene3D::new();
 
     // Round 219 — GlobalSettings P-record decode. Runs first so any
@@ -342,11 +382,12 @@ pub fn build_scene(doc: &FbxDocument) -> Result<Scene3D> {
         &model_nodes,
         &geometry_to_node,
     );
-    let animations = extract_animations(
+    let animations = crate::animation::extract_animations_with_tolerance(
         doc,
         &model_nodes,
         &deformer_out.channel_targets,
         &deformer_out.node_morph_statics,
+        options.curve_tolerance,
     );
     for anim in animations {
         scene.add_animation(anim);
