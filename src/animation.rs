@@ -828,6 +828,7 @@ pub fn extract_key_attr_catalogue(doc: &FbxDocument) -> Option<serde_json::Value
     let mut stacks: HashMap<i64, String> = HashMap::new();
     let mut layers: HashMap<i64, ()> = HashMap::new();
     let mut curve_nodes: HashMap<i64, ()> = HashMap::new();
+    let mut curve_node_names: HashMap<i64, String> = HashMap::new();
     // Each curve node's numeric `P` values (`d|X`, …), by record name.
     let mut node_defaults: HashMap<i64, serde_json::Map<String, serde_json::Value>> =
         HashMap::new();
@@ -846,6 +847,7 @@ pub fn extract_key_attr_catalogue(doc: &FbxDocument) -> Option<serde_json::Value
             }
             "AnimationCurveNode" => {
                 curve_nodes.insert(id, ());
+                curve_node_names.insert(id, element_name(child).unwrap_or_default());
                 let mut defaults = serde_json::Map::new();
                 for p in child
                     .child("Properties70")
@@ -928,6 +930,11 @@ pub fn extract_key_attr_catalogue(doc: &FbxDocument) -> Option<serde_json::Value
             // without a curve (`fbx-sdk-export-sweeps-2026-11.md` §1.7).
             if let Some(d) = node_defaults.get(cn_id).filter(|d| !d.is_empty()) {
                 entry.insert("node_defaults".into(), serde_json::Value::Object(d.clone()));
+            }
+            // The curve node's own name (`T` / `R` / `S` /
+            // `DeformPercent` in the staged vendor-exporter files).
+            if let Some(n) = curve_node_names.get(cn_id) {
+                entry.insert("node_name".into(), serde_json::Value::String(n.clone()));
             }
             if let Some((target_id, prop)) = node_to_target.get(cn_id) {
                 entry.insert("property".into(), serde_json::Value::String(prop.clone()));

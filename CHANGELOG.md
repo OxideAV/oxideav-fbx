@@ -7,7 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Reader performance: uncompressed binary arrays decode straight from
+  the input bytes (10.4 MB geometry: 1.96 ms → 0.18 ms, peak heap
+  15.2 MB → 10.4 MB); ASCII numbers are scanned in place and typed
+  arrays collect directly in their final element type (17.1 MB
+  geometry: 32.2 ms → 24.0 ms, peak 17.6 MB → 10.4 MB; largest staged
+  ASCII file 244 µs → 194 µs). Parsed trees unchanged. `benches/parse.rs`
+  measures both.
+- Curve nodes keep their source name and an animation stack its own
+  (possibly empty) record set through a scene round trip.
+
 ### Added
+
+- `tests/sdk_sweeps_census.rs`: a decode → encode cycle of each of the
+  27 sweep files, in both output forms, keeps every object and every
+  connection.
 
 - Texture placement sweep (2026-11 §2), binary 7400 / 7500 and ASCII:
   all 46 textures round-trip with every property record

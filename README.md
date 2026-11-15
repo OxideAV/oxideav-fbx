@@ -161,8 +161,8 @@ clean-room from third-party documentation:
   `MorphWeights` channel is built through
   `AnimationSampler::morph_weights` (the typed synthesis path), so
   `morph_weight_frames()` reads the per-key weight vectors back
-  losslessly. `MorphTarget::inbetweens` stays empty — see the
-  in-between note under "Notes & limitations".
+  losslessly. A channel with several target shapes decodes into
+  `MorphTarget::inbetweens` — see "2026-11 export sweeps" below.
 - **Materials / Textures / Video**
   — one `oxideav_mesh3d::Material` per FBX `Material` element with
   PBR factors decoded from `Properties70` `P`-records per
@@ -600,10 +600,10 @@ clean-room from third-party documentation:
   `"Shape"` is consumed by the blend-shape path in [`crate::deformer`]
   (a `Shape` geometry connects to a `BlendShapeChannel`, never to a
   `Model`), but the remaining subtypes — `"NurbsCurve"`,
-  `"NurbsSurface"`, `"Boundary"`, `"TrimNurbsSurface"`, `"Line"` — have
-  no first-class mesh3d tessellation in this crate and were previously
-  dropped entirely by the scene walker (no `Mesh`, no node tag). Round
-  271 records the §6 discriminator string verbatim on the owning
+  `"NurbsSurface"`, `"Boundary"`, `"TrimNurbsSurface"`, `"Line"` — are
+  sampled into meshes that carry their records (see `NurbsCurve` below
+  and "2026-11 export sweeps"). The §6 discriminator string is also
+  recorded verbatim on the owning
   `Model`'s `Node::extras["fbx:geometry_kind"]` via the
   `Geometry -> Model` `OO` connection, so a consumer can detect that a
   non-tessellated NURBS / line geometry exists and what kind it is
@@ -619,8 +619,7 @@ clean-room from third-party documentation:
   n + 2·order − 1) fix the evaluated control array (`K − order`
   points): `Closed` closes the authored array with its first point,
   `Periodic` wraps its first `degree` points — the engine's periodic
-  form. `to_curve()` joins the evaluation engine (weights = `w` when
-  `Rational`); the scene model gets one mesh per curve whose
+  form. `to_curve()` joins the evaluation engine (weights = `w`); the scene model gets one mesh per curve whose
   primitive is the curve sampled at 16 segments per knot span
   (`LineStrip`, `LineLoop` for `Periodic`) carrying the wire records
   on `extras["fbx:nurbs_curve"]`, so the encoder writes a
@@ -629,8 +628,10 @@ clean-room from third-party documentation:
   validate: clamped `Open` curves hit their end points, the `Closed`
   curve starts and ends on its first point, both `Periodic` curves
   meet at the seam. `FbxNurbsCurve::to_mesh` builds the same surface
-  from the API. `NurbsSurface` / `TrimNurbsSurface` / `Line` /
-  `Boundary` payloads stay unstaged (discriminator only).
+  from the API. Curve points are homogeneous (`x, y, z` divided by the
+  blended `w`), the convention the 2026-11 sweep pins for curves.
+  `NurbsSurface` / `TrimNurbsSurface` / `Boundary` / `Line` and the
+  older `Nurb` / `Patch` families: "2026-11 export sweeps" below.
 - **B-spline / NURBS evaluation + tessellation engine** (`nurbs`
   module) — the format-independent half of NURBS support, implemented
   from the textbook definition of the B-spline basis (Cox–de Boor
@@ -857,6 +858,147 @@ clean-room from third-party documentation:
     `FbxEncoder::new().form(FbxOutputForm::Ascii)`, `.version(7700)`,
     `.compress_arrays_at(256)`.
 
+## 2026-11 export sweeps
+
+The four vendor-exporter fixture sweeps of
+`docs/3d/fbx/fbx-sdk-export-sweeps-2026-11.md` (written with Autodesk
+FBX SDK 2020.3.7 as a black-box producer; vendored under
+`tests/fixtures/sweeps-2026-11/`), each scene in three container
+flavours. Every cell is a tested decode **and** a tested re-encode in
+both output forms; "census" is `tests/sdk_sweeps_census.rs`, which
+checks that a decode → encode cycle keeps every object (class, name,
+sub-type, body record for record) and every connection of the file.
+
+| Sweep | Scene | binary 7400 | binary 7500 | ASCII 7500 | Typed surface | Census |
+|---|---|---|---|---|---|---|
+| Key attributes | `keyattr-sweep` (62 curves) | yes | yes | yes | flags, slopes, weights, velocities, TCB, runs, extrapolation; 1830 evaluator samples, 277 read-back tangents | yes |
+| Key attributes | `keyattr-runs-roundtrip` (7 curves, second generation) | yes | yes | yes | run lengths `{4}` `{2,3,1}` `{8}` `{2,2}`; compaction equals the staged second generation | yes |
+| NURBS | `nurbs-curves` (13 curves) | yes | yes | yes | order, dimension, form, rational, points, knots; evaluation; tolerance sampling | yes |
+| NURBS | `nurbs-surfaces` (16 surfaces) | yes | yes | yes | orders, dimensions, forms, steps, surface mode, flip normals; tessellation | yes |
+| NURBS | `nurbs-line` (3 line sets) | yes | yes | yes | points, complement end marks → polylines | yes |
+| NURBS | `nurbs-trim` (1 trimmed surface, 3 boundaries, 11 edges) | yes | yes | yes | surface, boundary loops, regions, membership | yes |
+| NURBS | `nurbs-legacy` (`Nurb`, `Patch`) | yes | yes | yes | carried verbatim | yes |
+| Blend shapes | `blendshape-inbetween` (13 channels, 18 shapes) | yes | yes | yes | stations, in-betweens, piecewise evaluation, normals | yes |
+| Texture placement | `texture-placement-sweep` (46 textures) | yes | yes | yes | wrap modes, placement / pivots / swap / UV set / enumerations as stored, all connections | yes |
+
+Polygon `Mesh` geometry is the one object class the census counts
+instead of comparing: the scene model holds mesh layers per polygon
+vertex, so a by-control-point layer comes back per polygon vertex with
+the same values.
+
+### Animation curves (`anim_curve`)
+
+`AnimCurve::from_element` / `to_element`, `bound_curves(&doc)`,
+`AnimCurve::evaluate(seconds)` / `evaluator()`:
+
+- `KeyAttrFlags` — interpolation (constant / linear / cubic), constant
+  mode (standard / next), tangent mode (automatic / TCB / user), break,
+  clamp, time-independent, progressive clamp, right / next-left
+  weighted, right / next-left velocity, handle display; unassigned bits
+  are kept and written back.
+- `KeyAttrDataFloat` — four words per entry: right slope, next-left
+  slope, two packed int16 weights and two packed int16 velocities
+  (× 9999, with the documented quantisation), or tension / continuity /
+  bias on a TCB key. The pair stored with key *i* describes the segment
+  from key *i* to key *i*+1. In ASCII the words print as signed
+  integers of their bit patterns.
+- `KeyAttrRefCount` — run lengths over consecutive keys
+  (`compact_runs` / `expand_runs` give the two shapes the exporter
+  writes).
+- Evaluation — constant-standard, constant-next, linear, and cubic
+  Bézier segments in the (time, value) plane with user / broken slopes,
+  automatic slopes (plain, time-independent, clamped, progressive
+  clamp), TCB slopes and weighted handles. 1825 of the 1830 staged
+  evaluator samples are reproduced within 1e-4 in every container
+  flavour; the other five sit one eighth of a second from a handle of
+  the smallest storable weight, where the staged numbers are not the
+  exact root of the control polygon that reproduces the rest. All 277
+  staged read-back slopes and weights match.
+- Scene model — a channel of constant-standard curves is a `Step`
+  sampler on its key grid; a linear channel keeps its key grid; any
+  other channel is a `Linear` sampler on a grid refined until the
+  linear reading is within `SceneDecodeOptions::curve_tolerance`
+  (default 1e-3) of the curve's value range. A component without a
+  curve holds the curve node's own channel value.
+
+Not staged, and therefore not claimed: a formula for the
+progressive-clamp slope (the rule used reproduces both staged data
+sets), any effect of tangent velocity, the extrapolation modes'
+numeric behaviour, the `KeyVer` ≤ 4007 weight layout.
+
+### NURBS (`nurbs_geometry`, `geometry_tree`, `nurbs`)
+
+- `FbxNurbsCurve`, `FbxNurbsSurface`, `FbxLine`, `FbxTrimSurface` /
+  `FbxBoundary`: `from_element` / `to_element` / `to_mesh`, joined to
+  the B-spline engine (`to_curve` / `to_surface`; `Closed` closes on
+  the first point, `Periodic` wraps, per direction; control grid U
+  fastest).
+- Tessellation — `NurbsTessellation { segments_per_span, tolerance }`:
+  a fixed count per knot span, a surface's own `Step`, or a chord
+  tolerance in model units (`NurbsCurve::tessellate_within`,
+  `NurbsSurface::tessellate_within`). `SceneDecodeOptions::with_nurbs`
+  / `with_nurbs_tolerance` set it for the scene decode.
+- Trimmed surfaces — regions are derived from the boundary connection
+  order and the `OuterBoundary` flag; `FbxTrimSurface::tessellate`
+  keeps the part of the surface inside a region's outer loop and
+  outside its holes.
+- Scene model — one mesh per geometry tree (a trimmed surface owns its
+  untrimmed surface, boundaries and edge curves) carrying the records
+  on `extras["fbx:geometry_tree"]`; the encoder writes every object
+  and every `Geometry → Geometry` connection back in order.
+
+### In-between blend shapes (`deformer`)
+
+A channel's `FullWeights` holds one float64 percent per connected
+`Shape`, in connection order. The shape at 100 % is the
+`MorphTarget`'s deltas; every other station is a
+`MorphTarget::inbetweens` entry at `full_weight / 100` (each shape
+stores its delta against the base mesh). `MorphTarget::at_weight` and
+`Primitive::apply_morph_weights` evaluate piecewise through the
+stations. `extras["fbx:blend_channels"]` keeps the deformer name, the
+channel's property records, shape names / order / percents and shapes
+with no typed slot; the writer emits the same layout from decoded and
+from API-authored targets.
+
+### Texture placement (`material`)
+
+`WrapModeU` / `WrapModeV` type onto `Sampler::wrap_s` / `wrap_t`
+(0 repeat, 1 clamp; other integers stay raw). A planar, pivot-free
+`Translation` / `Rotation` / `Scaling` types onto
+`TextureRef::transform`; pivots, `UVSwap`, the mapping / blend / use
+enumerations, alpha and the `ModelUV*` / `Cropping` /
+`Texture_Alpha_Source` child records are stored and written exactly as
+authored. `extras["fbx:texture_bindings"]` lists every
+`Texture → Material` connection. The composition order of translation,
+rotation, scaling and the pivots, the rotation unit and the
+UV-versus-image direction are not staged; the typed transform is the
+pivot-free literal reading.
+
+### Reader performance
+
+`cargo bench --bench parse` (release build; medians of five interleaved
+runs on a shared machine; peak = heap growth of one parse):
+
+| Input | Size | Parse time before → after | Peak heap before → after |
+|---|---:|---:|---:|
+| `keyattr-sweep-binary-v7500.fbx` (largest staged binary) | 112.8 kB | 135 µs → 121 µs | 339.5 kB → 339.5 kB |
+| `keyattr-sweep-ascii-v7500.fbx` (largest staged ASCII) | 112.1 kB | 244 µs → 194 µs | 416.0 kB → 415.9 kB |
+| synthetic 200 000-point geometry, binary | 10.4 MB | 1.96 ms → 0.18 ms | 15.20 MB → 10.40 MB |
+| synthetic 200 000-point geometry, ASCII | 17.1 MB | 32.2 ms → 24.0 ms | 17.58 MB → 10.40 MB |
+
+- Binary: an uncompressed array is decoded straight from the input
+  bytes (no intermediate byte buffer); only a deflated array owns its
+  inflated bytes.
+- ASCII: numbers are scanned in place — integers and plain decimals
+  build no token string (a decimal whose digits fit 53 bits over an
+  exact power of ten is one division; anything else goes to the
+  standard parser on the borrowed slice); a typed array is collected
+  directly in its final element type in one buffer sized from the
+  declared count; line and column are computed only when a diagnostic
+  is produced.
+
+The parsed trees are unchanged.
+
 ## Round-trip fidelity (round 455)
 
 `tests/fixed_point.rs` is the writer's oracle: every staged fixture
@@ -1002,34 +1144,19 @@ the partial-support edges and the not-yet-implemented surfaces.
   16-byte per-file id's *derivation* is undocumented by every staged
   source, so freshly-encoded scenes carry an all-zero id (a captured
   id from `parse_footer` / `fbx:footer_id` is reproduced verbatim).
-- Animation: per-layer compositing weights and `KeyAttrFlags` cubic /
-  step / TCB interpolation modes remain uninterpreted — linear
-  sampling between keyframes only. The staged sampled-curve block
-  (`KeyAttrFlags {24836}`, `KeyAttrDataFloat` words
-  `{0, 0, 0x0F3F0F3F, 0}`, `KeyAttrRefCount {key count}` — every
-  curve of the 2026-09 sweep, nine interpolation / tangent /
-  extrapolation modes alike, sweep doc §2) is recognised:
-  `animation::is_sampled_key_attr_block`, and
-  `"sampled_block": true` on its catalogue entry — read as nothing
-  more than "the producer sampled the curve". The writer puts exactly
-  that block on every curve it samples itself in a scene with no
-  round-tripped catalogue (API-built scenes), and source curves keep
-  theirs verbatim (blend-shape `DeformPercent` curves included). The raw payloads are not dropped:
-  every `AnimationCurve` carrying `KeyAttrFlags` / `KeyAttrDataFloat`
-  / `KeyAttrRefCount` contributes one entry to
-  `Scene3D::extras["fbx:key_attrs"]` (stack / target / property /
-  axis join key, the integer arrays verbatim, the data floats as
-  lossless IEEE-754 bit patterns, the curve's `Default` / `KeyVer`
-  and its **own key grid + values**). Nothing is interpreted because
-  `docs/3d/fbx/GAP-TRACKER.md` records **no value assignment** for
-  the bitfield (the open acquisition item — an export sweep pinning
-  one known mode per curve). On encode the writer re-emits the
-  *original* per-axis curve verbatim — attributes included — whenever
-  the typed channel still samples identically from it (all 90 curves
-  of the staged skin-anim fixture); an edited channel falls back to
-  the union-grid curve, which carries the attributes only when its
-  key count is unchanged, since stretching an uninterpreted per-key
-  table onto a new grid would require exactly those semantics.
+- Animation: per-layer compositing weights are not applied, and the
+  non-default extrapolation modes are typed and written back but
+  evaluate as "hold the end value" (their numeric behaviour is not
+  staged). Key attributes **are** decoded and evaluated — see
+  "2026-11 export sweeps". Every `AnimationCurve` also contributes one
+  entry to `Scene3D::extras["fbx:key_attrs"]` (stack / target /
+  property / axis join, the attribute arrays, the curve's `Default` /
+  `KeyVer`, key grid and values, its whole body in source order, the
+  curve node's name and channel values); the writer re-emits the
+  *original* curve verbatim whenever the typed channel still evaluates
+  to it, and otherwise writes the typed sampler's keys (`Step` as
+  constant keys, cubic-spline `Vec3` as cubic user-tangent keys, linear
+  with the sampled-curve block `KeyAttrFlags {24836}` — a linear key).
   Stacks / layers (`fbx:anim_stacks`, curve-less takes included) and
   curve nodes outside the typed channel set (`fbx:aux_curve_nodes`)
   pass through verbatim. (`PreRotation` / `PostRotation` / pivot /
@@ -1040,15 +1167,12 @@ the partial-support edges and the not-yet-implemented surfaces.
 - Skin: `SKINNING_METHOD_DUAL_QUATERNION` / `BLENDED_DQ_LINEAR`
   surface as plain LBS buffers (the doc notes this is safe to ignore
   unless the renderer specifically needs it).
-- BlendShape in-betweens: `MorphTarget::inbetweens` is left empty in
-  both directions. The staged sweep (§4) shows one `Shape` per
-  channel from its producer (chained keys → separate channels), a
-  per-vertex `FullWeights` (`len(Indexes)` percent values), and an
-  importer that rejects multi-`Shape` channels; no staged file has a
-  multi-`Shape` channel, so the station weight each extra `Shape`
-  would get (and whether `FullWeights` then becomes a per-`Shape`
-  table) is unpinned — a docs acquisition item. A channel with
-  several `Shape`s decodes its most recent one.
+- BlendShape in-betweens: decoded and written (see "2026-11 export
+  sweeps"); how the vendor blends between stations is not staged, so
+  the typed model's piecewise-linear reading through the stations and
+  the base mesh at 0 % is what `MorphTarget::at_weight` gives. A second
+  shape at the same percent, or one at 0 %, is carried verbatim but is
+  not a station.
 - Specular workflow — FBX `Specular` / `SpecularFactor` aren't
   surfaced because the glTF metallic-roughness target has no separate
   specular colour channel. The values still round-trip through the
@@ -1068,13 +1192,16 @@ the partial-support edges and the not-yet-implemented surfaces.
   per-corner attribute buffers (positions / normals / UVs / skin /
   morph) into N parts is the consumer's job — the slot table + the
   per-corner index buffer are the only inputs that decision needs.
-- **NURBS beyond `NurbsCurve`** — `NurbsSurface` /
-  `TrimNurbsSurface` / `Line` / `Boundary` payloads and any binary
-  `NurbsCurve` sample are unstaged (sweep §5.3); those subtypes keep
-  the `Node::extras["fbx:geometry_kind"]` discriminator and ride the
-  `FbxDocument` untyped. On `NurbsCurve`: whether a rational curve's
-  `x, y, z` are pre-multiplied by `w` is unobservable on the staged
-  sample (every `w = 1`); they are read as Cartesian.
+- **NURBS residue** — the surface weight convention is not staged
+  (surface points are read like curve points, as homogeneous
+  coordinates); trim boundary coordinates are read as the surface's
+  own parameter values; an `Open` curve with unclamped knots is
+  evaluated as the ordinary B-spline over its knot domain; the older
+  `Nurb` / `Patch` families are carried verbatim without evaluation
+  (the meaning of `Nurb` multiplicities is not staged). The trimmed
+  tessellation removes whole triangles (those the boundary crosses are
+  split three levels deep first), so the trimmed edge follows the
+  loops to 1/8 of a grid cell rather than exactly.
 - Coordinate-system / unit-scale **auto-conversion** —
   `GlobalSettings` is *decoded* (see "GlobalSettings"
   above) so the file's authored axis convention + unit factor land

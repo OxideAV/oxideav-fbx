@@ -41,3 +41,9 @@ compcol = { version = "0.6", default-features = false, features = ["zlib"] }
 # Used directly to populate `Primitive::extras` / `Mesh::extras` (which
 # are typed as `HashMap<String, serde_json::Value>` by oxideav-mesh3d).
 serde_json = "1"
+
+# Parse-time / peak-memory measurement of the container readers
+# (`cargo bench --bench parse`); plain `main`, no bench framework.
+[[bench]]
+name = "parse"
+harness = false

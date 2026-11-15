@@ -571,42 +571,46 @@ fn read_property(bytes: &[u8], off: usize) -> Result<(FbxProperty, usize)> {
         b'f' => {
             let (data, next) = read_array_payload(bytes, p, 4)?;
             p = next;
-            let mut out = Vec::with_capacity(data.len() / 4);
-            for chunk in data.as_chunks::<4>().0 {
-                out.push(f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
-            }
-            FbxProperty::F32Array(out)
+            FbxProperty::F32Array(
+                data.as_chunks::<4>()
+                    .0
+                    .iter()
+                    .map(|c| f32::from_le_bytes(*c))
+                    .collect(),
+            )
         }
         b'd' => {
             let (data, next) = read_array_payload(bytes, p, 8)?;
             p = next;
-            let mut out = Vec::with_capacity(data.len() / 8);
-            for chunk in data.as_chunks::<8>().0 {
-                out.push(f64::from_le_bytes([
-                    chunk[0], chunk[1], chunk[2], chunk[3], chunk[4], chunk[5], chunk[6], chunk[7],
-                ]));
-            }
-            FbxProperty::F64Array(out)
+            FbxProperty::F64Array(
+                data.as_chunks::<8>()
+                    .0
+                    .iter()
+                    .map(|c| f64::from_le_bytes(*c))
+                    .collect(),
+            )
         }
         b'l' => {
             let (data, next) = read_array_payload(bytes, p, 8)?;
             p = next;
-            let mut out = Vec::with_capacity(data.len() / 8);
-            for chunk in data.as_chunks::<8>().0 {
-                out.push(i64::from_le_bytes([
-                    chunk[0], chunk[1], chunk[2], chunk[3], chunk[4], chunk[5], chunk[6], chunk[7],
-                ]));
-            }
-            FbxProperty::I64Array(out)
+            FbxProperty::I64Array(
+                data.as_chunks::<8>()
+                    .0
+                    .iter()
+                    .map(|c| i64::from_le_bytes(*c))
+                    .collect(),
+            )
         }
         b'i' => {
             let (data, next) = read_array_payload(bytes, p, 4)?;
             p = next;
-            let mut out = Vec::with_capacity(data.len() / 4);
-            for chunk in data.as_chunks::<4>().0 {
-                out.push(i32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
-            }
-            FbxProperty::I32Array(out)
+            FbxProperty::I32Array(
+                data.as_chunks::<4>()
+                    .0
+                    .iter()
+                    .map(|c| i32::from_le_bytes(*c))
+                    .collect(),
+            )
         }
         b'b' => {
             let (data, next) = read_array_payload(bytes, p, 1)?;
@@ -617,7 +621,7 @@ fn read_property(bytes: &[u8], off: usize) -> Result<(FbxProperty, usize)> {
         b'c' => {
             let (data, next) = read_array_payload(bytes, p, 1)?;
             p = next;
-            FbxProperty::ByteArray(data)
+            FbxProperty::ByteArray(data.into_owned())
         }
         // -- Special types (Gessler §"Special types") --
         b'S' => {
@@ -651,9 +655,17 @@ fn read_property(bytes: &[u8], off: usize) -> Result<(FbxProperty, usize)> {
 }
 
 /// Read an array property payload (`ArrayLength` / `Encoding` /
-/// `CompressedLength` / `Contents`). Returns the *uncompressed* byte
-/// buffer plus the offset just past the entire array record.
-fn read_array_payload(bytes: &[u8], off: usize, elem_bytes: usize) -> Result<(Vec<u8>, usize)> {
+/// `CompressedLength` / `Contents`). Returns the *uncompressed* bytes
+/// plus the offset just past the entire array record. An uncompressed
+/// array (`Encoding 0`) is borrowed straight from the input — the
+/// typed elements are decoded from the file bytes with no intermediate
+/// buffer; only a deflated array (`Encoding 1`) owns its inflated
+/// bytes.
+fn read_array_payload(
+    bytes: &[u8],
+    off: usize,
+    elem_bytes: usize,
+) -> Result<(std::borrow::Cow<'_, [u8]>, usize)> {
     let array_length = read_u32(bytes, off)? as usize;
     let encoding = read_u32(bytes, off + 4)?;
     let comp_length = read_u32(bytes, off + 8)? as usize;
@@ -668,8 +680,10 @@ fn read_array_payload(bytes: &[u8], off: usize, elem_bytes: usize) -> Result<(Ve
                     "binary FBX: uncompressed array runs past EOF",
                 ));
             }
-            let out = bytes[payload_off..payload_off + raw_size].to_vec();
-            (out, payload_off + raw_size)
+            (
+                std::borrow::Cow::Borrowed(&bytes[payload_off..payload_off + raw_size]),
+                payload_off + raw_size,
+            )
         }
         1 => {
             if payload_off + comp_length > bytes.len() {
@@ -692,7 +706,7 @@ fn read_array_payload(bytes: &[u8], off: usize, elem_bytes: usize) -> Result<(Ve
                     inflated.len()
                 )));
             }
-            (inflated, payload_off + comp_length)
+            (std::borrow::Cow::Owned(inflated), payload_off + comp_length)
         }
         other => {
             return Err(Error::invalid(format!(

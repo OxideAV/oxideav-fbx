@@ -266,7 +266,9 @@ pub(crate) fn build_animation_objects(
                         objects.push(element(
                             "AnimationCurveNode",
                             curve_node_id,
-                            "DeformPercent",
+                            key_attrs
+                                .node_name(&join, "DeformPercent")
+                                .unwrap_or("DeformPercent"),
                             "",
                             props70(vec![p_number("d|DeformPercent", node_value)]),
                         ));
@@ -523,11 +525,11 @@ fn props70(records: Vec<FbxNode>) -> Vec<FbxNode> {
 /// channels' keyframe range (the records every staged producer
 /// writes).
 fn stack_body(entry: Option<&Value>, anim: &Animation) -> Vec<FbxNode> {
+    // A round-tripped stack keeps its own record set — none included
+    // (the staged vendor-exporter blend-shape scene's stack has no
+    // `Properties70` at all).
     if let Some(e) = entry {
-        let raw = records_of(e);
-        if !raw.is_empty() {
-            return props70(raw);
-        }
+        return props70(records_of(e));
     }
     let mut lo = f32::INFINITY;
     let mut hi = f32::NEG_INFINITY;
@@ -618,6 +620,19 @@ impl<'a> KeyAttrs<'a> {
                     && e.get("property").and_then(Value::as_str) == Some(prop)
             })
             .find_map(|e| e.get("node_defaults"))
+    }
+
+    /// The source curve node's name for `prop` on `join`.
+    fn node_name(&self, join: &CurveJoin<'_>, prop: &str) -> Option<&'a str> {
+        self.entries
+            .iter()
+            .copied()
+            .filter(|e| {
+                e.get("stack").and_then(Value::as_str) == Some(join.stack)
+                    && e.get("target").and_then(Value::as_str) == join.target.as_deref()
+                    && e.get("property").and_then(Value::as_str) == Some(prop)
+            })
+            .find_map(|e| e.get("node_name").and_then(Value::as_str))
     }
 
     fn entry(&self, join: &CurveJoin<'_>, prop: &str, axis: &str) -> Option<&'a Value> {
@@ -890,7 +905,9 @@ fn emit_trs_curves(
     objects.push(element(
         "AnimationCurveNode",
         curve_node_id,
-        target_prop,
+        key_attrs
+            .node_name(join, target_prop)
+            .unwrap_or(target_prop),
         "",
         props70(defaults),
     ));

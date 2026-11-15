@@ -132,8 +132,6 @@ fn extract_version(root: &FbxNode) -> Option<u32> {
 struct Parser<'a> {
     src: &'a [u8],
     pos: usize,
-    line: usize,
-    col: usize,
     /// Current `{ }` body nesting level. [`Parser::parse_node`] and
     /// [`Parser::parse_body`] are mutually recursive, so an unbounded
     /// depth lets a crafted input of repeated `A: {` lines (~5 bytes
@@ -149,8 +147,6 @@ impl<'a> Parser<'a> {
         Self {
             src,
             pos: 0,
-            line: 1,
-            col: 1,
             depth: 0,
         }
     }
@@ -170,13 +166,17 @@ impl<'a> Parser<'a> {
     fn bump(&mut self) -> Option<u8> {
         let b = self.peek()?;
         self.pos += 1;
-        if b == b'\n' {
-            self.line += 1;
-            self.col = 1;
-        } else {
-            self.col += 1;
-        }
         Some(b)
+    }
+
+    /// 1-based `(line, column)` of the current position — derived from
+    /// the consumed bytes only when a diagnostic needs it, so the scan
+    /// itself tracks nothing but `pos`.
+    fn line_col(&self) -> (usize, usize) {
+        let consumed = &self.src[..self.pos.min(self.src.len())];
+        let line = 1 + consumed.iter().filter(|b| **b == b'\n').count();
+        let col = 1 + consumed.iter().rev().take_while(|b| **b != b'\n').count();
+        (line, col)
     }
 
     /// Skip whitespace (including newlines) and `;`-comments. A
@@ -224,10 +224,9 @@ impl<'a> Parser<'a> {
     }
 
     fn err<T>(&self, msg: impl Into<String>) -> Result<T> {
+        let (line, col) = self.line_col();
         Err(Error::invalid(format!(
-            "ascii FBX:{}:{}: {}",
-            self.line,
-            self.col,
+            "ascii FBX:{line}:{col}: {}",
             msg.into()
         )))
     }
@@ -340,33 +339,19 @@ impl<'a> Parser<'a> {
             return self.err("expected ':' after typed-array 'a'");
         }
         self.bump();
-        // Collect element tokens.
-        let mut floats = Vec::new();
-        let mut ints = Vec::new();
-        let mut any_float = false;
+        // Collect element tokens straight into the array's final
+        // element type: `i32` while every element fits, widened to
+        // `i64` on the first that does not, to `f64` on the first
+        // float token. The declared count sizes the buffer once
+        // (bounded by what the remaining input could hold, so a
+        // hostile count cannot reserve memory the file does not back).
+        let reserve = count.min(self.src.len().saturating_sub(self.pos) / 2 + 1);
+        let mut elements = ArrayElements::Unset(reserve);
         // Empty-array case: "*0 { a: }" — no elements.
         self.skip_trivia();
         if self.peek() != Some(b'}') {
             loop {
-                let elem = self.parse_numeric_token()?;
-                match elem {
-                    NumericToken::Int(n) => {
-                        if any_float {
-                            floats.push(n as f64);
-                        } else {
-                            ints.push(n);
-                        }
-                    }
-                    NumericToken::Float(f) => {
-                        if !any_float {
-                            // Promote any already-collected ints to f64s.
-                            floats = ints.iter().map(|&i| i as f64).collect();
-                            ints.clear();
-                            any_float = true;
-                        }
-                        floats.push(f);
-                    }
-                }
+                elements.push(self.parse_numeric_token()?);
                 self.skip_trivia();
                 match self.peek() {
                     Some(b',') => {
@@ -394,41 +379,25 @@ impl<'a> Parser<'a> {
             return self.err("expected '}' closing typed-array body");
         }
         self.bump();
-        let prop = if any_float {
-            // The count is a hint, not a hard invariant — surface
-            // mismatches loudly rather than letting downstream consumers
-            // walk a short or long buffer.
-            if count != floats.len() {
-                return Err(Error::invalid(format!(
-                    "ascii FBX: typed-array count {} != actual element count {}",
-                    count,
-                    floats.len()
-                )));
-            }
-            FbxProperty::F64Array(floats)
-        } else {
-            if count != ints.len() {
-                return Err(Error::invalid(format!(
-                    "ascii FBX: typed-array count {} != actual element count {}",
-                    count,
-                    ints.len()
-                )));
-            }
-            // Narrow to I32Array when every element fits — this is the
-            // variant the geometry / pose / material pullers pattern-
-            // match on. Fall back to I64Array (matching the binary
-            // `l` array variant) when any element overflows; the
-            // animation module's KeyTime puller accepts both shapes.
-            let fits_i32 = ints
-                .iter()
-                .all(|&n| (i32::MIN as i64..=i32::MAX as i64).contains(&n));
-            if fits_i32 {
-                FbxProperty::I32Array(ints.iter().map(|&n| n as i32).collect())
-            } else {
-                FbxProperty::I64Array(ints)
-            }
-        };
-        Ok(prop)
+        // The count is a hint, not a hard invariant — surface
+        // mismatches loudly rather than letting downstream consumers
+        // walk a short or long buffer.
+        if count != elements.len() {
+            return Err(Error::invalid(format!(
+                "ascii FBX: typed-array count {} != actual element count {}",
+                count,
+                elements.len()
+            )));
+        }
+        // `I32Array` is the variant the geometry / pose / material
+        // pullers pattern-match on; `I64Array` matches the binary `l`
+        // array (the animation module's `KeyTime` puller accepts both).
+        Ok(match elements {
+            ArrayElements::Unset(_) => FbxProperty::I32Array(Vec::new()),
+            ArrayElements::I32(v) => FbxProperty::I32Array(v),
+            ArrayElements::I64(v) => FbxProperty::I64Array(v),
+            ArrayElements::F64(v) => FbxProperty::F64Array(v),
+        })
     }
 
     /// Parse zero-or-more comma-separated scalar values (the
@@ -599,66 +568,156 @@ impl<'a> Parser<'a> {
     /// integer-vs-float split is otherwise driven purely by token
     /// form, not magnitude.
     fn parse_numeric_token(&mut self) -> Result<NumericToken> {
+        let src = self.src;
         let start = self.pos;
-        if self.peek() == Some(b'-') {
-            self.bump();
+        let mut i = start;
+        let negative = src.get(i) == Some(&b'-');
+        if negative {
+            i += 1;
         }
-        let mut has_int_digit = false;
-        let mut has_dot = false;
-        let mut has_exp = false;
-        while let Some(b) = self.peek() {
-            if b.is_ascii_digit() {
-                has_int_digit = true;
-                self.bump();
-            } else {
-                break;
+        // Integer digits, accumulated in place — no token string is
+        // built for an integer.
+        let digits_from = i;
+        let mut magnitude: u64 = 0;
+        let mut overflow = false;
+        while let Some(d) = src.get(i).filter(|b| b.is_ascii_digit()) {
+            match magnitude
+                .checked_mul(10)
+                .and_then(|m| m.checked_add(u64::from(d - b'0')))
+            {
+                Some(m) => magnitude = m,
+                None => overflow = true,
             }
+            i += 1;
         }
-        if self.peek() == Some(b'.') {
-            has_dot = true;
-            self.bump();
-            while let Some(b) = self.peek() {
-                if b.is_ascii_digit() {
-                    self.bump();
-                } else {
-                    break;
+        let has_int_digit = i > digits_from;
+        let has_dot = src.get(i) == Some(&b'.');
+        // Fraction digits continue the same decimal mantissa.
+        let mut mantissa = magnitude;
+        let mut mantissa_overflow = overflow;
+        let mut fraction_digits = 0usize;
+        if has_dot {
+            i += 1;
+            while let Some(d) = src.get(i).filter(|b| b.is_ascii_digit()) {
+                match mantissa
+                    .checked_mul(10)
+                    .and_then(|m| m.checked_add(u64::from(d - b'0')))
+                {
+                    Some(m) => mantissa = m,
+                    None => mantissa_overflow = true,
                 }
+                fraction_digits += 1;
+                i += 1;
             }
         }
-        if matches!(self.peek(), Some(b'e' | b'E')) {
-            has_exp = true;
-            self.bump();
-            if matches!(self.peek(), Some(b'+' | b'-')) {
-                self.bump();
+        let has_exp = matches!(src.get(i), Some(b'e' | b'E'));
+        if has_exp {
+            i += 1;
+            if matches!(src.get(i), Some(b'+' | b'-')) {
+                i += 1;
             }
-            while let Some(b) = self.peek() {
-                if b.is_ascii_digit() {
-                    self.bump();
-                } else {
-                    break;
-                }
+            while src.get(i).is_some_and(u8::is_ascii_digit) {
+                i += 1;
             }
         }
+        self.pos = i;
         if !has_int_digit && !has_dot {
             return self.err("expected numeric token");
         }
-        let s = std::str::from_utf8(&self.src[start..self.pos])
+        if !has_dot && !has_exp && !overflow {
+            // In `i64` range (some KTime magnitudes are not, and fall
+            // through to the float reading below).
+            if negative && magnitude <= 1 << 63 {
+                return Ok(NumericToken::Int((magnitude as i64).wrapping_neg()));
+            }
+            if !negative && magnitude <= i64::MAX as u64 {
+                return Ok(NumericToken::Int(magnitude as i64));
+            }
+        }
+        // A plain decimal whose digits fit the 53-bit significand and
+        // whose scale is an exactly representable power of ten: the
+        // quotient of the two is the correctly rounded value (both
+        // operands are exact, and IEEE division rounds once).
+        if has_dot
+            && !has_exp
+            && !mantissa_overflow
+            && mantissa < (1 << 53)
+            && fraction_digits < EXACT_POW10.len()
+            && (has_int_digit || fraction_digits > 0)
+        {
+            let v = mantissa as f64 / EXACT_POW10[fraction_digits];
+            return Ok(NumericToken::Float(if negative { -v } else { v }));
+        }
+        // Any other float token (or an integer beyond `i64`): parsed
+        // from the borrowed input slice.
+        let s = std::str::from_utf8(&src[start..i])
             .map_err(|e| Error::invalid(format!("ascii FBX: numeric not UTF-8: {e}")))?;
-        if has_dot || has_exp {
-            let v: f64 = s
-                .parse()
-                .map_err(|e| Error::invalid(format!("ascii FBX: bad float '{s}': {e}")))?;
-            Ok(NumericToken::Float(v))
-        } else {
-            // Try i64 first, fall through to f64 if it's a magnitude
-            // bigger than i64::MAX (some KTime values get there).
-            if let Ok(n) = s.parse::<i64>() {
-                Ok(NumericToken::Int(n))
-            } else {
-                let v: f64 = s
-                    .parse()
-                    .map_err(|e| Error::invalid(format!("ascii FBX: bad numeric '{s}': {e}")))?;
-                Ok(NumericToken::Float(v))
+        let v: f64 = s
+            .parse()
+            .map_err(|e| Error::invalid(format!("ascii FBX: bad float '{s}': {e}")))?;
+        Ok(NumericToken::Float(v))
+    }
+}
+
+/// The powers of ten a `f64` holds exactly (10⁰ … 10²²).
+const EXACT_POW10: [f64; 23] = [
+    1e0, 1e1, 1e2, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9, 1e10, 1e11, 1e12, 1e13, 1e14, 1e15, 1e16,
+    1e17, 1e18, 1e19, 1e20, 1e21, 1e22,
+];
+
+/// Elements of a typed array under construction, in the narrowest
+/// element type that still holds every token seen so far.
+enum ArrayElements {
+    /// No element yet; the buffer is allocated (at this capacity) in
+    /// the first element's type.
+    Unset(usize),
+    I32(Vec<i32>),
+    I64(Vec<i64>),
+    F64(Vec<f64>),
+}
+
+impl ArrayElements {
+    fn len(&self) -> usize {
+        match self {
+            Self::Unset(_) => 0,
+            Self::I32(v) => v.len(),
+            Self::I64(v) => v.len(),
+            Self::F64(v) => v.len(),
+        }
+    }
+
+    fn push(&mut self, token: NumericToken) {
+        if let Self::Unset(reserve) = *self {
+            *self = match token {
+                NumericToken::Int(_) => Self::I32(Vec::with_capacity(reserve)),
+                NumericToken::Float(_) => Self::F64(Vec::with_capacity(reserve)),
+            };
+        }
+        match (&mut *self, token) {
+            (Self::Unset(_), _) => {}
+            (Self::I32(v), NumericToken::Int(n)) => match i32::try_from(n) {
+                Ok(narrow) => v.push(narrow),
+                Err(_) => {
+                    let mut wide: Vec<i64> = Vec::with_capacity(v.capacity());
+                    wide.extend(v.iter().map(|x| i64::from(*x)));
+                    wide.push(n);
+                    *self = Self::I64(wide);
+                }
+            },
+            (Self::I64(v), NumericToken::Int(n)) => v.push(n),
+            (Self::F64(v), NumericToken::Int(n)) => v.push(n as f64),
+            (Self::F64(v), NumericToken::Float(f)) => v.push(f),
+            (Self::I32(v), NumericToken::Float(f)) => {
+                let mut floats: Vec<f64> = Vec::with_capacity(v.capacity());
+                floats.extend(v.iter().map(|x| f64::from(*x)));
+                floats.push(f);
+                *self = Self::F64(floats);
+            }
+            (Self::I64(v), NumericToken::Float(f)) => {
+                let mut floats: Vec<f64> = Vec::with_capacity(v.capacity());
+                floats.extend(v.iter().map(|x| *x as f64));
+                floats.push(f);
+                *self = Self::F64(floats);
             }
         }
     }
@@ -1036,6 +1095,82 @@ mod tests {
             FbxProperty::F64Array(v) => assert_eq!(v, &[0.0, 0.0, 1.0]),
             other => panic!("expected F64Array, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn decimal_fast_path_equals_the_standard_parse() {
+        // Every token goes through the in-place scan; the result must
+        // be bit-identical to `str::parse::<f64>` on the same text.
+        let tokens = [
+            "0.0",
+            "-0.0",
+            "1.5",
+            "-2.5",
+            "0.1",
+            "0.2",
+            "0.3",
+            "3.14159",
+            "-1000.5",
+            "0.125",
+            "123456789.125",
+            "9007199254740991.0",
+            "9007199254740993.0",
+            "0.14285714285714285",
+            "1.",
+            ".5",
+            "-.25",
+            "0.000001",
+            "1e3",
+            "1.5e-3",
+            "-2E+2",
+            "12345678901234567890.5",
+            "0.1234567890123456789012345",
+            "4.9e-324",
+            "1.7976931348623157e308",
+            "0.30000000000000004",
+            "100.0",
+            "46186158000.0",
+        ];
+        for t in tokens {
+            let mut p = Parser::new(t.as_bytes());
+            let got = match p.parse_numeric_token().unwrap() {
+                NumericToken::Float(f) => f,
+                NumericToken::Int(n) => panic!("{t} lexed as integer {n}"),
+            };
+            let want: f64 = t.parse().unwrap();
+            assert_eq!(got.to_bits(), want.to_bits(), "{t}");
+            assert_eq!(p.pos, t.len(), "{t}");
+        }
+        // Integers: in range stay integers, beyond `i64` read as floats.
+        for (t, want) in [
+            ("0", 0i64),
+            ("-0", 0),
+            ("42", 42),
+            ("-17", -17),
+            ("9223372036854775807", i64::MAX),
+            ("-9223372036854775808", i64::MIN),
+        ] {
+            match Parser::new(t.as_bytes()).parse_numeric_token().unwrap() {
+                NumericToken::Int(n) => assert_eq!(n, want, "{t}"),
+                NumericToken::Float(f) => panic!("{t} lexed as float {f}"),
+            }
+        }
+        for t in [
+            "9223372036854775808",
+            "-9223372036854775809",
+            "123456789012345678901234",
+        ] {
+            match Parser::new(t.as_bytes()).parse_numeric_token().unwrap() {
+                NumericToken::Float(f) => assert_eq!(f, t.parse::<f64>().unwrap(), "{t}"),
+                NumericToken::Int(n) => panic!("{t} lexed as integer {n}"),
+            }
+        }
+    }
+
+    #[test]
+    fn diagnostics_carry_line_and_column() {
+        let err = parse(b"; FBX 7.5.0\nA: 1\n\tB: ?\n").unwrap_err();
+        assert!(format!("{err:?}").contains("ascii FBX:3:5:"), "{err:?}");
     }
 
     #[test]
