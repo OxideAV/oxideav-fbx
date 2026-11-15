@@ -44,3 +44,16 @@ these copies are for in-crate CI consumption only.
 RE'd from sample bytes/text only — no FBX-implementation source was
 read. The clean-room grammar handoff used to build the ASCII parser
 lives in `docs/3d/fbx/fbx-ascii-grammar.md`.
+
+## `sweeps-2026-11/`
+
+The four vendor-exporter sweeps of
+`docs/3d/fbx/fbx-sdk-export-sweeps-2026-11.md`, byte-identical copies
+of `docs/3d/fbx/fixtures/fbxsdk-{keyattr-sweep,nurbs,blendshape-inbetween,texture-placement}/`
+(27 `.fbx` files — each scene as binary 7400, binary 7500 and ASCII
+7500 — plus the two `.tsv` evaluator / read-back data files of the
+key-attribute sweep; about 0.9 MB in total). Scenes authored for the
+docs repository with Autodesk FBX SDK 2020.3.7 as a black-box
+producer; no third-party content. The per-directory `notes.md` files
+in the docs repository list the SHA-256 digests, the authored scenes
+and the annotated offset walks the tests assert against.

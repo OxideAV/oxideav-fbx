@@ -1,0 +1,761 @@
+; FBX 7.5.0 project file
+; ----------------------------------------------------
+
+FBXHeaderExtension:  {
+	FBXHeaderVersion: 1003
+	FBXVersion: 7500
+	CreationTimeStamp:  {
+		Version: 1000
+		Year: 2026
+		Month: 11
+		Day: 11
+		Hour: 8
+		Minute: 29
+		Second: 6
+		Millisecond: 0
+	}
+	Creator: "FBX SDK/FBX Plugins version 2020.3.7"
+	SceneInfo: "SceneInfo::GlobalInfo", "UserData" {
+		Type: "UserData"
+		Version: 100
+		MetaData:  {
+			Version: 100
+			Title: "blendshape-inbetween"
+			Subject: ""
+			Author: "oxideav docs fixture producer"
+			Keywords: ""
+			Revision: ""
+			Comment: ""
+		}
+		Properties70:  {
+			P: "DocumentUrl", "KString", "Url", "", "blendshape-inbetween-ascii-v7500.fbx"
+			P: "SrcDocumentUrl", "KString", "Url", "", "blendshape-inbetween-ascii-v7500.fbx"
+			P: "Original", "Compound", "", ""
+			P: "Original|ApplicationVendor", "KString", "", "", ""
+			P: "Original|ApplicationName", "KString", "", "", ""
+			P: "Original|ApplicationVersion", "KString", "", "", ""
+			P: "Original|DateTime_GMT", "DateTime", "", "", ""
+			P: "Original|FileName", "KString", "", "", ""
+			P: "LastSaved", "Compound", "", ""
+			P: "LastSaved|ApplicationVendor", "KString", "", "", ""
+			P: "LastSaved|ApplicationName", "KString", "", "", ""
+			P: "LastSaved|ApplicationVersion", "KString", "", "", ""
+			P: "LastSaved|DateTime_GMT", "DateTime", "", "", ""
+		}
+	}
+}
+GlobalSettings:  {
+	Version: 1000
+	Properties70:  {
+		P: "UpAxis", "int", "Integer", "",1
+		P: "UpAxisSign", "int", "Integer", "",1
+		P: "FrontAxis", "int", "Integer", "",2
+		P: "FrontAxisSign", "int", "Integer", "",1
+		P: "CoordAxis", "int", "Integer", "",0
+		P: "CoordAxisSign", "int", "Integer", "",1
+		P: "OriginalUpAxis", "int", "Integer", "",-1
+		P: "OriginalUpAxisSign", "int", "Integer", "",1
+		P: "UnitScaleFactor", "double", "Number", "",1
+		P: "OriginalUnitScaleFactor", "double", "Number", "",1
+		P: "AmbientColor", "ColorRGB", "Color", "",0,0,0
+		P: "DefaultCamera", "KString", "", "", "Producer Perspective"
+		P: "TimeMode", "enum", "", "",0
+		P: "TimeProtocol", "enum", "", "",2
+		P: "SnapOnFrameMode", "enum", "", "",0
+		P: "TimeSpanStart", "KTime", "Time", "",0
+		P: "TimeSpanStop", "KTime", "Time", "",46186158000
+		P: "CustomFrameRate", "double", "Number", "",-1
+		P: "TimeMarker", "Compound", "", ""
+		P: "CurrentTimeMarker", "int", "Integer", "",-1
+	}
+}
+
+; Documents Description
+;------------------------------------------------------------------
+
+Documents:  {
+	Count: 1
+	Document: 94439153785536, "blendshape-inbetween", "Scene" {
+		Properties70:  {
+			P: "SourceObject", "object", "", ""
+			P: "ActiveAnimStackName", "KString", "", "", ""
+		}
+		RootNode: 0
+	}
+}
+
+; Document References
+;------------------------------------------------------------------
+
+References:  {
+}
+
+; Object definitions
+;------------------------------------------------------------------
+
+Definitions:  {
+	Version: 100
+	Count: 39
+	ObjectType: "GlobalSettings" {
+		Count: 1
+	}
+	ObjectType: "Model" {
+		Count: 1
+		PropertyTemplate: "FbxNode" {
+			Properties70:  {
+				P: "QuaternionInterpolate", "enum", "", "",0
+				P: "RotationOffset", "Vector3D", "Vector", "",0,0,0
+				P: "RotationPivot", "Vector3D", "Vector", "",0,0,0
+				P: "ScalingOffset", "Vector3D", "Vector", "",0,0,0
+				P: "ScalingPivot", "Vector3D", "Vector", "",0,0,0
+				P: "TranslationActive", "bool", "", "",0
+				P: "TranslationMin", "Vector3D", "Vector", "",0,0,0
+				P: "TranslationMax", "Vector3D", "Vector", "",0,0,0
+				P: "TranslationMinX", "bool", "", "",0
+				P: "TranslationMinY", "bool", "", "",0
+				P: "TranslationMinZ", "bool", "", "",0
+				P: "TranslationMaxX", "bool", "", "",0
+				P: "TranslationMaxY", "bool", "", "",0
+				P: "TranslationMaxZ", "bool", "", "",0
+				P: "RotationOrder", "enum", "", "",0
+				P: "RotationSpaceForLimitOnly", "bool", "", "",0
+				P: "RotationStiffnessX", "double", "Number", "",0
+				P: "RotationStiffnessY", "double", "Number", "",0
+				P: "RotationStiffnessZ", "double", "Number", "",0
+				P: "AxisLen", "double", "Number", "",10
+				P: "PreRotation", "Vector3D", "Vector", "",0,0,0
+				P: "PostRotation", "Vector3D", "Vector", "",0,0,0
+				P: "RotationActive", "bool", "", "",0
+				P: "RotationMin", "Vector3D", "Vector", "",0,0,0
+				P: "RotationMax", "Vector3D", "Vector", "",0,0,0
+				P: "RotationMinX", "bool", "", "",0
+				P: "RotationMinY", "bool", "", "",0
+				P: "RotationMinZ", "bool", "", "",0
+				P: "RotationMaxX", "bool", "", "",0
+				P: "RotationMaxY", "bool", "", "",0
+				P: "RotationMaxZ", "bool", "", "",0
+				P: "InheritType", "enum", "", "",0
+				P: "ScalingActive", "bool", "", "",0
+				P: "ScalingMin", "Vector3D", "Vector", "",0,0,0
+				P: "ScalingMax", "Vector3D", "Vector", "",1,1,1
+				P: "ScalingMinX", "bool", "", "",0
+				P: "ScalingMinY", "bool", "", "",0
+				P: "ScalingMinZ", "bool", "", "",0
+				P: "ScalingMaxX", "bool", "", "",0
+				P: "ScalingMaxY", "bool", "", "",0
+				P: "ScalingMaxZ", "bool", "", "",0
+				P: "GeometricTranslation", "Vector3D", "Vector", "",0,0,0
+				P: "GeometricRotation", "Vector3D", "Vector", "",0,0,0
+				P: "GeometricScaling", "Vector3D", "Vector", "",1,1,1
+				P: "MinDampRangeX", "double", "Number", "",0
+				P: "MinDampRangeY", "double", "Number", "",0
+				P: "MinDampRangeZ", "double", "Number", "",0
+				P: "MaxDampRangeX", "double", "Number", "",0
+				P: "MaxDampRangeY", "double", "Number", "",0
+				P: "MaxDampRangeZ", "double", "Number", "",0
+				P: "MinDampStrengthX", "double", "Number", "",0
+				P: "MinDampStrengthY", "double", "Number", "",0
+				P: "MinDampStrengthZ", "double", "Number", "",0
+				P: "MaxDampStrengthX", "double", "Number", "",0
+				P: "MaxDampStrengthY", "double", "Number", "",0
+				P: "MaxDampStrengthZ", "double", "Number", "",0
+				P: "PreferedAngleX", "double", "Number", "",0
+				P: "PreferedAngleY", "double", "Number", "",0
+				P: "PreferedAngleZ", "double", "Number", "",0
+				P: "LookAtProperty", "object", "", ""
+				P: "UpVectorProperty", "object", "", ""
+				P: "Show", "bool", "", "",1
+				P: "NegativePercentShapeSupport", "bool", "", "",1
+				P: "DefaultAttributeIndex", "int", "Integer", "",-1
+				P: "Freeze", "bool", "", "",0
+				P: "LODBox", "bool", "", "",0
+				P: "Lcl Translation", "Lcl Translation", "", "A",0,0,0
+				P: "Lcl Rotation", "Lcl Rotation", "", "A",0,0,0
+				P: "Lcl Scaling", "Lcl Scaling", "", "A",1,1,1
+				P: "Visibility", "Visibility", "", "A",1
+				P: "Visibility Inheritance", "Visibility Inheritance", "", "",1
+			}
+		}
+	}
+	ObjectType: "Geometry" {
+		Count: 19
+		PropertyTemplate: "FbxMesh" {
+			Properties70:  {
+				P: "Color", "ColorRGB", "Color", "",0.8,0.8,0.8
+				P: "BBoxMin", "Vector3D", "Vector", "",0,0,0
+				P: "BBoxMax", "Vector3D", "Vector", "",0,0,0
+				P: "Primary Visibility", "bool", "", "",1
+				P: "Casts Shadows", "bool", "", "",1
+				P: "Receive Shadows", "bool", "", "",1
+			}
+		}
+	}
+	ObjectType: "Deformer" {
+		Count: 14
+	}
+	ObjectType: "AnimationStack" {
+		Count: 1
+		PropertyTemplate: "FbxAnimStack" {
+			Properties70:  {
+				P: "Description", "KString", "", "", ""
+				P: "LocalStart", "KTime", "Time", "",0
+				P: "LocalStop", "KTime", "Time", "",0
+				P: "ReferenceStart", "KTime", "Time", "",0
+				P: "ReferenceStop", "KTime", "Time", "",0
+			}
+		}
+	}
+	ObjectType: "AnimationLayer" {
+		Count: 1
+		PropertyTemplate: "FbxAnimLayer" {
+			Properties70:  {
+				P: "Weight", "Number", "", "A",100
+				P: "Mute", "bool", "", "",0
+				P: "Solo", "bool", "", "",0
+				P: "Lock", "bool", "", "",0
+				P: "Color", "ColorRGB", "Color", "",0.8,0.8,0.8
+				P: "BlendMode", "enum", "", "",0
+				P: "RotationAccumulationMode", "enum", "", "",0
+				P: "ScaleAccumulationMode", "enum", "", "",0
+				P: "BlendModeBypass", "ULongLong", "", "",0
+			}
+		}
+	}
+	ObjectType: "AnimationCurveNode" {
+		Count: 1
+		PropertyTemplate: "FbxAnimCurveNode" {
+			Properties70:  {
+				P: "d", "Compound", "", ""
+			}
+		}
+	}
+	ObjectType: "AnimationCurve" {
+		Count: 1
+	}
+}
+
+; Object properties
+;------------------------------------------------------------------
+
+Objects:  {
+	Geometry: 94439153957056, "Geometry::QuadMesh", "Mesh" {
+		Vertices: *12 {
+			a: 0,0,0,10,0,0,10,10,0,0,10,0
+		} 
+		PolygonVertexIndex: *4 {
+			a: 0,1,2,-4
+		} 
+		GeometryVersion: 124
+		LayerElementNormal: 0 {
+			Version: 102
+			Name: ""
+			MappingInformationType: "ByVertice"
+			ReferenceInformationType: "Direct"
+			Normals: *12 {
+				a: 0,0,1,0,0.6,0.8,0.6,0,0.8,0,-0.6,0.8
+			} 
+			NormalsW: *4 {
+				a: 1,1,1,1
+			} 
+		}
+		Layer: 0 {
+			Version: 100
+			LayerElement:  {
+				Type: "LayerElementNormal"
+				TypedIndex: 0
+			}
+		}
+	}
+	Geometry: 94439153975648, "Geometry::A_full100", "Shape" {
+		Version: 100
+		Indexes: *1 {
+			a: 2
+		} 
+		Vertices: *3 {
+			a: 0,0,8
+		} 
+		Normals: *3 {
+			a: 0,0,0
+		} 
+	}
+	Geometry: 94439153982976, "Geometry::A_at30", "Shape" {
+		Version: 100
+		Indexes: *2 {
+			a: 1,2
+		} 
+		Vertices: *6 {
+			a: 0,0,1,0,0,2
+		} 
+		Normals: *6 {
+			a: 0,0,0,0,0,0
+		} 
+	}
+	Geometry: 94439153986064, "Geometry::A_at60", "Shape" {
+		Version: 100
+		Indexes: *1 {
+			a: 2
+		} 
+		Vertices: *3 {
+			a: 0,0,5
+		} 
+		Normals: *3 {
+			a: 0,0,0
+		} 
+	}
+	Geometry: 94439153991936, "Geometry::B_only", "Shape" {
+		Version: 100
+		Indexes: *1 {
+			a: 0
+		} 
+		Vertices: *3 {
+			a: -1,-2,-3
+		} 
+		Normals: *3 {
+			a: 0,1,-1
+		} 
+	}
+	Geometry: 94439153998784, "Geometry::C_at25", "Shape" {
+		Version: 100
+		Indexes: *1 {
+			a: 3
+		} 
+		Vertices: *3 {
+			a: 0,0,1
+		} 
+		Normals: *3 {
+			a: 0,0,0
+		} 
+	}
+	Geometry: 94439154001744, "Geometry::C_at50", "Shape" {
+		Version: 100
+		Indexes: *1 {
+			a: 3
+		} 
+		Vertices: *3 {
+			a: 0,0,2
+		} 
+		Normals: *3 {
+			a: 0,0,0
+		} 
+	}
+	Geometry: 94439154004672, "Geometry::C_full100", "Shape" {
+		Version: 100
+		Indexes: *1 {
+			a: 3
+		} 
+		Vertices: *3 {
+			a: 0,0,4
+		} 
+		Normals: *3 {
+			a: 0,0,0
+		} 
+	}
+	Geometry: 94439154011120, "Geometry::D_first", "Shape" {
+		Version: 100
+		Indexes: *1 {
+			a: 1
+		} 
+		Vertices: *3 {
+			a: 1,0,0
+		} 
+		Normals: *3 {
+			a: 0,0,0
+		} 
+	}
+	Geometry: 94439154014032, "Geometry::D_second", "Shape" {
+		Version: 100
+		Indexes: *1 {
+			a: 1
+		} 
+		Vertices: *3 {
+			a: 2,0,0
+		} 
+		Normals: *3 {
+			a: 0,0,0
+		} 
+	}
+	Geometry: 94439154019952, "Geometry::E_legacy", "Shape" {
+		Version: 100
+		Indexes: *1 {
+			a: 0
+		} 
+		Vertices: *3 {
+			a: 0,0,7
+		} 
+		Normals: *3 {
+			a: 0,0,0
+		} 
+	}
+	Geometry: 94439154025792, "Geometry::F_absolute", "Shape" {
+		Properties70:  {
+		}
+		Version: 100
+		Indexes: *1 {
+			a: 0
+		} 
+		Vertices: *3 {
+			a: 0,0,7
+		} 
+		Normals: *3 {
+			a: 0,0,0
+		} 
+	}
+	Geometry: 94439154031744, "Geometry::G_nodelta", "Shape" {
+		Version: 100
+		Indexes: *1 {
+			a: 0
+		} 
+		Vertices: *3 {
+			a: 0,0,0
+		} 
+		Normals: *3 {
+			a: 0,0,0
+		} 
+	}
+	Geometry: 94439154037632, "Geometry::H_at_minus50", "Shape" {
+		Version: 100
+		Indexes: *1 {
+			a: 2
+		} 
+		Vertices: *3 {
+			a: 0,0,-4
+		} 
+		Normals: *3 {
+			a: 0,0,0
+		} 
+	}
+	Geometry: 94439154040656, "Geometry::H_at_150", "Shape" {
+		Version: 100
+		Indexes: *1 {
+			a: 2
+		} 
+		Vertices: *3 {
+			a: 0,0,12
+		} 
+		Normals: *3 {
+			a: 0,0,0
+		} 
+	}
+	Geometry: 94439154049504, "Geometry::J_nonlegacy", "Shape" {
+		Properties70:  {
+		}
+		Version: 100
+		Indexes: *1 {
+			a: 0
+		} 
+		Vertices: *3 {
+			a: 0,0,7
+		} 
+		Normals: *3 {
+			a: 0,0,0
+		} 
+	}
+	Geometry: 94439154055456, "Geometry::K_nonlegacy_absolute", "Shape" {
+		Properties70:  {
+		}
+		Version: 100
+		Indexes: *1 {
+			a: 0
+		} 
+		Vertices: *3 {
+			a: 0,0,7
+		} 
+		Normals: *3 {
+			a: 0,0,0
+		} 
+	}
+	Geometry: 94439154061952, "Geometry::L_normals", "Shape" {
+		Version: 100
+		Indexes: *2 {
+			a: 0,2
+		} 
+		Vertices: *6 {
+			a: 1,2,3,3,4,15
+		} 
+		Normals: *6 {
+			a: 0.6,0.8,-1,0.4,0,-0.8
+		} 
+	}
+	Geometry: 94439154068864, "Geometry::M_all", "Shape" {
+		Version: 100
+		Indexes: *4 {
+			a: 0,1,2,3
+		} 
+		Vertices: *12 {
+			a: 0,0,2,0,0,4,0,0,3,0,0,1
+		} 
+		Normals: *12 {
+			a: 0,0,0,0,0,0,0,0,0,0,0,0
+		} 
+	}
+	Model: 94439153953936, "Model::Quad", "Mesh" {
+		Version: 232
+		Properties70:  {
+			P: "ScalingMax", "Vector3D", "Vector", "",0,0,0
+			P: "DefaultAttributeIndex", "int", "Integer", "",0
+		}
+		Shading: Y
+		Culling: "CullingOff"
+	}
+	Deformer: 94439153965328, "Deformer::BS", "BlendShape" {
+		Version: 100
+	}
+	Deformer: 94439153970432, "SubDeformer::ChA_inbetween_added_100_30_60", "BlendShapeChannel" {
+		Version: 100
+		Properties70:  {
+			P: "DeformPercent", "Number", "", "A+",45
+		}
+		DeformPercent: 45
+		FullWeights: *3 {
+			a: 100,30,60
+		} 
+	}
+	Deformer: 94439153989024, "SubDeformer::ChB_single_default_percent_with_normals", "BlendShapeChannel" {
+		Version: 100
+		DeformPercent: 0
+		FullWeights: *1 {
+			a: 100
+		} 
+	}
+	Deformer: 94439153995808, "SubDeformer::ChC_inbetween_added_25_50_100", "BlendShapeChannel" {
+		Version: 100
+		Properties70:  {
+			P: "DeformPercent", "Number", "", "A",100
+		}
+		DeformPercent: 100
+		FullWeights: *3 {
+			a: 25,50,100
+		} 
+	}
+	Deformer: 94439154007696, "SubDeformer::ChD_two_shapes_both_default_percent", "BlendShapeChannel" {
+		Version: 100
+		DeformPercent: 0
+		FullWeights: *2 {
+			a: 100,100
+		} 
+	}
+	Deformer: 94439154016960, "SubDeformer::ChE_shape_legacy_style_flag", "BlendShapeChannel" {
+		Version: 100
+		DeformPercent: 0
+		FullWeights: *1 {
+			a: 100
+		} 
+	}
+	Deformer: 94439154022896, "SubDeformer::ChF_shape_absolute_mode_flag", "BlendShapeChannel" {
+		Version: 100
+		DeformPercent: 0
+		FullWeights: *1 {
+			a: 100
+		} 
+	}
+	Deformer: 94439154028848, "SubDeformer::ChG_shape_identical_to_base", "BlendShapeChannel" {
+		Version: 100
+		DeformPercent: 0
+		FullWeights: *1 {
+			a: 100
+		} 
+	}
+	Deformer: 94439154034736, "SubDeformer::ChH_weights_over_100_and_negative", "BlendShapeChannel" {
+		Version: 100
+		Properties70:  {
+			P: "DeformPercent", "Number", "", "A",-12.5
+		}
+		DeformPercent: -12.5
+		FullWeights: *2 {
+			a: -50,150
+		} 
+	}
+	Deformer: 94439154043616, "SubDeformer::ChI_no_shapes", "BlendShapeChannel" {
+		Version: 100
+		DeformPercent: 0
+	}
+	Deformer: 94439154046688, "SubDeformer::ChJ_shape_legacy_style_off", "BlendShapeChannel" {
+		Version: 100
+		DeformPercent: 0
+		FullWeights: *1 {
+			a: 100
+		} 
+	}
+	Deformer: 94439154052560, "SubDeformer::ChK_shape_legacy_off_absolute_on", "BlendShapeChannel" {
+		Version: 100
+		DeformPercent: 0
+		FullWeights: *1 {
+			a: 100
+		} 
+	}
+	Deformer: 94439154058976, "SubDeformer::ChL_shape_normals_distinct", "BlendShapeChannel" {
+		Version: 100
+		DeformPercent: 0
+		FullWeights: *1 {
+			a: 100
+		} 
+	}
+	Deformer: 94439154065824, "SubDeformer::ChM_shape_moves_all_four_vertices", "BlendShapeChannel" {
+		Version: 100
+		DeformPercent: 0
+		FullWeights: *1 {
+			a: 100
+		} 
+	}
+	AnimationStack: 94439154071856, "AnimStack::Take 001", "" {
+	}
+	AnimationCurve: 94439154091888, "AnimCurve::", "" {
+		Default: 45
+		KeyVer: 4009
+		KeyTime: *2 {
+			a: 0,46186158000
+		} 
+		KeyValueFloat: *2 {
+			a: 0,100
+		} 
+		;KeyAttrFlags: Linear, Linear
+		KeyAttrFlags: *2 {
+			a: 260,260
+		} 
+		;KeyAttrDataFloat: RightAuto:0, NextLeftAuto:0; RightAuto:0, NextLeftAuto:0
+		KeyAttrDataFloat: *8 {
+			a: 0,0,218434821,0,0,0,218434821,0
+		} 
+		KeyAttrRefCount: *2 {
+			a: 1,1
+		} 
+	}
+	AnimationCurveNode: 94439154086016, "AnimCurveNode::DeformPercent", "" {
+		Properties70:  {
+			P: "d|DeformPercent", "Number", "", "A",45
+		}
+	}
+	AnimationLayer: 94439154077776, "AnimLayer::BaseLayer", "" {
+	}
+}
+
+; Object connections
+;------------------------------------------------------------------
+
+Connections:  {
+	
+	;Model::Quad, Model::RootNode
+	C: "OO",94439153953936,0
+	
+	;Geometry::QuadMesh, Model::Quad
+	C: "OO",94439153957056,94439153953936
+	
+	;Deformer::BS, Geometry::QuadMesh
+	C: "OO",94439153965328,94439153957056
+	
+	;SubDeformer::ChA_inbetween_added_100_30_60, Deformer::BS
+	C: "OO",94439153970432,94439153965328
+	
+	;SubDeformer::ChB_single_default_percent_with_normals, Deformer::BS
+	C: "OO",94439153989024,94439153965328
+	
+	;SubDeformer::ChC_inbetween_added_25_50_100, Deformer::BS
+	C: "OO",94439153995808,94439153965328
+	
+	;SubDeformer::ChD_two_shapes_both_default_percent, Deformer::BS
+	C: "OO",94439154007696,94439153965328
+	
+	;SubDeformer::ChE_shape_legacy_style_flag, Deformer::BS
+	C: "OO",94439154016960,94439153965328
+	
+	;SubDeformer::ChF_shape_absolute_mode_flag, Deformer::BS
+	C: "OO",94439154022896,94439153965328
+	
+	;SubDeformer::ChG_shape_identical_to_base, Deformer::BS
+	C: "OO",94439154028848,94439153965328
+	
+	;SubDeformer::ChH_weights_over_100_and_negative, Deformer::BS
+	C: "OO",94439154034736,94439153965328
+	
+	;SubDeformer::ChI_no_shapes, Deformer::BS
+	C: "OO",94439154043616,94439153965328
+	
+	;SubDeformer::ChJ_shape_legacy_style_off, Deformer::BS
+	C: "OO",94439154046688,94439153965328
+	
+	;SubDeformer::ChK_shape_legacy_off_absolute_on, Deformer::BS
+	C: "OO",94439154052560,94439153965328
+	
+	;SubDeformer::ChL_shape_normals_distinct, Deformer::BS
+	C: "OO",94439154058976,94439153965328
+	
+	;SubDeformer::ChM_shape_moves_all_four_vertices, Deformer::BS
+	C: "OO",94439154065824,94439153965328
+	
+	;Geometry::A_full100, SubDeformer::ChA_inbetween_added_100_30_60
+	C: "OO",94439153975648,94439153970432
+	
+	;Geometry::A_at30, SubDeformer::ChA_inbetween_added_100_30_60
+	C: "OO",94439153982976,94439153970432
+	
+	;Geometry::A_at60, SubDeformer::ChA_inbetween_added_100_30_60
+	C: "OO",94439153986064,94439153970432
+	
+	;AnimCurveNode::DeformPercent, SubDeformer::ChA_inbetween_added_100_30_60
+	C: "OP",94439154086016,94439153970432, "DeformPercent"
+	
+	;Geometry::B_only, SubDeformer::ChB_single_default_percent_with_normals
+	C: "OO",94439153991936,94439153989024
+	
+	;Geometry::C_at25, SubDeformer::ChC_inbetween_added_25_50_100
+	C: "OO",94439153998784,94439153995808
+	
+	;Geometry::C_at50, SubDeformer::ChC_inbetween_added_25_50_100
+	C: "OO",94439154001744,94439153995808
+	
+	;Geometry::C_full100, SubDeformer::ChC_inbetween_added_25_50_100
+	C: "OO",94439154004672,94439153995808
+	
+	;Geometry::D_first, SubDeformer::ChD_two_shapes_both_default_percent
+	C: "OO",94439154011120,94439154007696
+	
+	;Geometry::D_second, SubDeformer::ChD_two_shapes_both_default_percent
+	C: "OO",94439154014032,94439154007696
+	
+	;Geometry::E_legacy, SubDeformer::ChE_shape_legacy_style_flag
+	C: "OO",94439154019952,94439154016960
+	
+	;Geometry::F_absolute, SubDeformer::ChF_shape_absolute_mode_flag
+	C: "OO",94439154025792,94439154022896
+	
+	;Geometry::G_nodelta, SubDeformer::ChG_shape_identical_to_base
+	C: "OO",94439154031744,94439154028848
+	
+	;Geometry::H_at_minus50, SubDeformer::ChH_weights_over_100_and_negative
+	C: "OO",94439154037632,94439154034736
+	
+	;Geometry::H_at_150, SubDeformer::ChH_weights_over_100_and_negative
+	C: "OO",94439154040656,94439154034736
+	
+	;Geometry::J_nonlegacy, SubDeformer::ChJ_shape_legacy_style_off
+	C: "OO",94439154049504,94439154046688
+	
+	;Geometry::K_nonlegacy_absolute, SubDeformer::ChK_shape_legacy_off_absolute_on
+	C: "OO",94439154055456,94439154052560
+	
+	;Geometry::L_normals, SubDeformer::ChL_shape_normals_distinct
+	C: "OO",94439154061952,94439154058976
+	
+	;Geometry::M_all, SubDeformer::ChM_shape_moves_all_four_vertices
+	C: "OO",94439154068864,94439154065824
+	
+	;AnimLayer::BaseLayer, AnimStack::Take 001
+	C: "OO",94439154077776,94439154071856
+	
+	;AnimCurveNode::DeformPercent, AnimLayer::BaseLayer
+	C: "OO",94439154086016,94439154077776
+	
+	;AnimCurve::, AnimCurveNode::DeformPercent
+	C: "OP",94439154091888,94439154086016, "d|DeformPercent"
+}
+;Takes section
+;----------------------------------------------------
+
+Takes:  {
+	Current: ""
+	Take: "Take 001" {
+		FileName: "Take_001.tak"
+		LocalTime: 0,46186158000
+		ReferenceTime: 0,46186158000
+	}
+}

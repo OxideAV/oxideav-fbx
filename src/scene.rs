@@ -131,16 +131,21 @@ pub fn build_scene(doc: &FbxDocument) -> Result<Scene3D> {
                     // `Shading: T` and `Culling: "CullingOff"`*") —
                     // surfaced verbatim so they round-trip through
                     // `Scene3D` (the encoder re-emits both).
+                    // `T` / `F` surface as a boolean; any other letter
+                    // code (`Shading: Y` in the 2026-11 export sweeps)
+                    // as its one-letter string.
                     if let Some(shading) = child
                         .child("Shading")
                         .and_then(|n| n.properties.first())
                         .and_then(|p| match p {
-                            FbxProperty::Bool(b) => Some(*b),
+                            FbxProperty::Bool(b) => Some(serde_json::Value::Bool(*b)),
+                            FbxProperty::Char(c) => {
+                                Some(serde_json::Value::String(char::from(*c).to_string()))
+                            }
                             _ => None,
                         })
                     {
-                        node.extras
-                            .insert("fbx:shading".to_string(), serde_json::Value::Bool(shading));
+                        node.extras.insert("fbx:shading".to_string(), shading);
                     }
                     if let Some(culling) = child
                         .child("Culling")

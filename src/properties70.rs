@@ -925,6 +925,7 @@ pub fn p_record_to_json(p: &FbxNode) -> Option<Value> {
             Some(match v {
                 // Width-normalised tags — see the module docs.
                 FbxProperty::Bool(b) => json!({ "c": b }),
+                FbxProperty::Char(c) => json!({ "ch": c }),
                 FbxProperty::I16(n) => json!({ "l": n }),
                 FbxProperty::I32(n) => json!({ "l": n }),
                 FbxProperty::I64(n) => json!({ "l": n }),
@@ -970,6 +971,7 @@ pub fn json_to_p_record(v: &Value) -> Option<FbxNode> {
         let (tag, inner) = tagged.iter().next()?;
         let prop = match tag.as_str() {
             "c" => FbxProperty::Bool(inner.as_bool()?),
+            "ch" => FbxProperty::Char(u8::try_from(inner.as_u64()?).ok()?),
             // Integers re-emit as `I` when they fit (the docs §4
             // wire form for `enum` / `int` / `bool`), `L` otherwise.
             "l" => {
@@ -1030,6 +1032,7 @@ pub fn leaves_json(element: &FbxNode, skip: &[&str]) -> Vec<Value> {
                 .map(|v| {
                     Some(match v {
                         FbxProperty::Bool(b) => json!({ "c": b }),
+                        FbxProperty::Char(c) => json!({ "ch": c }),
                         FbxProperty::I16(n) => json!({ "l": n }),
                         FbxProperty::I32(n) => json!({ "l": n }),
                         FbxProperty::I64(n) => json!({ "l": n }),
@@ -1056,6 +1059,7 @@ pub fn json_to_leaf(v: &Value) -> Option<FbxNode> {
         let (tag, inner) = tagged.iter().next()?;
         properties.push(match tag.as_str() {
             "c" => FbxProperty::Bool(inner.as_bool()?),
+            "ch" => FbxProperty::Char(u8::try_from(inner.as_u64()?).ok()?),
             "l" => {
                 let n = inner.as_i64()?;
                 match i32::try_from(n) {
@@ -1119,14 +1123,26 @@ pub fn body_json(element: &FbxNode) -> Vec<Value> {
     element
         .children
         .iter()
-        .filter(|c| c.name != "Properties70" && c.children.is_empty())
+        .filter(|c| c.name != "Properties70")
         .filter_map(|c| {
+            // A leaf with children (`Pre-Extrapolation { Type,
+            // Repetition }`) nests its own body under `"children"`.
+            if !c.children.is_empty() {
+                let values: Option<Vec<Value>> =
+                    c.properties.iter().map(scalar_value_json).collect();
+                return Some(json!({
+                    "name": c.name,
+                    "values": values?,
+                    "children": body_json(c),
+                }));
+            }
             let values: Option<Vec<Value>> = c
                 .properties
                 .iter()
                 .map(|v| {
                     Some(match v {
                         FbxProperty::Bool(b) => json!({ "c": b }),
+                FbxProperty::Char(c) => json!({ "ch": c }),
                         FbxProperty::I16(n) => json!({ "l": n }),
                         FbxProperty::I32(n) => json!({ "l": n }),
                         FbxProperty::I64(n) => json!({ "l": n }),
@@ -1163,6 +1179,11 @@ pub fn json_to_body_leaf(v: &Value) -> Option<FbxNode> {
     let obj = v.as_object()?;
     let name = obj.get("name")?.as_str()?.to_owned();
     let mut properties = Vec::new();
+    let children: Vec<FbxNode> = obj
+        .get("children")
+        .and_then(Value::as_array)
+        .map(|a| a.iter().filter_map(json_to_body_leaf).collect())
+        .unwrap_or_default();
     for value in obj.get("values")?.as_array()? {
         let tagged = value.as_object()?;
         let (tag, inner) = tagged.iter().next()?;
@@ -1170,6 +1191,7 @@ pub fn json_to_body_leaf(v: &Value) -> Option<FbxNode> {
             |v: &Value| -> Option<Vec<i64>> { v.as_array()?.iter().map(Value::as_i64).collect() };
         properties.push(match tag.as_str() {
             "c" => FbxProperty::Bool(inner.as_bool()?),
+            "ch" => FbxProperty::Char(u8::try_from(inner.as_u64()?).ok()?),
             "l" => {
                 let n = inner.as_i64()?;
                 match i32::try_from(n) {
@@ -1218,7 +1240,23 @@ pub fn json_to_body_leaf(v: &Value) -> Option<FbxNode> {
     Some(FbxNode {
         name,
         properties,
-        children: Vec::new(),
+        children,
+    })
+}
+
+/// One scalar value in the [`body_json`] tag shape (`None` for arrays
+/// and blobs).
+fn scalar_value_json(v: &FbxProperty) -> Option<Value> {
+    Some(match v {
+        FbxProperty::Bool(b) => json!({ "c": b }),
+        FbxProperty::Char(c) => json!({ "ch": c }),
+        FbxProperty::I16(n) => json!({ "l": n }),
+        FbxProperty::I32(n) => json!({ "l": n }),
+        FbxProperty::I64(n) => json!({ "l": n }),
+        FbxProperty::F32(x) => json!({ "d": x }),
+        FbxProperty::F64(x) => json!({ "d": x }),
+        FbxProperty::String(b) => json!({ "s": String::from_utf8_lossy(b) }),
+        _ => return None,
     })
 }
 

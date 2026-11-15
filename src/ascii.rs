@@ -247,7 +247,7 @@ impl<'a> Parser<'a> {
         //  (b) value-list, then optionally `{ body }`
         self.skip_inline_trivia();
         if self.peek() == Some(b'*') {
-            let prop = self.parse_array_payload()?;
+            let prop = normalize_array(&name, self.parse_array_payload()?);
             return Ok(FbxNode {
                 name,
                 properties: vec![prop],
@@ -506,6 +506,12 @@ impl<'a> Parser<'a> {
                 self.bump();
                 Ok(FbxProperty::Bool(false))
             }
+            // Any other bare uppercase letter is a letter code
+            // (`Shading: Y`, extrapolation `Type: R`).
+            Some(b @ b'A'..=b'Z') if self.is_bare_letter() => {
+                self.bump();
+                Ok(FbxProperty::Char(b))
+            }
             Some(b) => self.err(format!(
                 "unexpected byte 0x{b:02x} where a scalar value was expected"
             )),
@@ -668,8 +674,11 @@ fn is_ident_start(b: u8) -> bool {
     b.is_ascii_alphabetic() || b == b'_'
 }
 
+/// `-` continues an identifier: the curve extrapolation records are
+/// named `Pre-Extrapolation` / `Post-Extrapolation`
+/// (`docs/3d/fbx/fbx-sdk-export-sweeps-2026-11.md` §1.8).
 fn is_ident_continue(b: u8) -> bool {
-    b.is_ascii_alphanumeric() || b == b'_'
+    b.is_ascii_alphanumeric() || b == b'_' || b == b'-'
 }
 
 /// Convenience wrapper: returns the FBX version embedded in a parsed
@@ -717,6 +726,58 @@ fn widen_float_typed_values(properties: &mut [FbxProperty]) {
             FbxProperty::I64(n) => *v = FbxProperty::F64(n as f64),
             _ => {}
         }
+    }
+}
+
+/// Array records that are `d` (float64) on the binary wire and whose
+/// ASCII form prints whole values without a fraction
+/// (`Points: *12 { a: 1,10,100,1,… }`, `FullWeights: *3 { a: 100,30,60 }`
+/// in the staged 2026-11 export sweeps), which lexes as an integer
+/// array.
+const DOUBLE_ARRAYS: &[&str] = &[
+    "Points",
+    "KnotVector",
+    "KnotVectorU",
+    "KnotVectorV",
+    "FullWeights",
+    "Vertices",
+    "Normals",
+];
+
+/// Give an ASCII typed array the element type its binary counterpart
+/// carries, so both front-ends surface one tree:
+///
+/// - `KeyAttrDataFloat` — `f` on the binary wire, printed in ASCII as
+///   the **signed decimal integer of each word's bit pattern**
+///   (`docs/3d/fbx/fbx-sdk-export-sweeps-2026-11.md` §1.3): integers
+///   become the `f32` with those bits. A float-token rendition (not
+///   staged) narrows by value.
+/// - `KeyValueFloat` — `f` on the binary wire, ordinary decimals in
+///   ASCII: narrowed by value.
+/// - the [`DOUBLE_ARRAYS`] records — widened to `d`.
+fn normalize_array(name: &str, prop: FbxProperty) -> FbxProperty {
+    match (name, prop) {
+        ("KeyAttrDataFloat", FbxProperty::I32Array(a)) => FbxProperty::F32Array(
+            a.into_iter()
+                .map(|w| f32::from_bits(u32::from_ne_bytes(w.to_ne_bytes())))
+                .collect(),
+        ),
+        ("KeyAttrDataFloat" | "KeyValueFloat", FbxProperty::F64Array(a)) => {
+            FbxProperty::F32Array(a.into_iter().map(|v| v as f32).collect())
+        }
+        ("KeyValueFloat", FbxProperty::I32Array(a)) => {
+            FbxProperty::F32Array(a.into_iter().map(|v| v as f32).collect())
+        }
+        ("KeyValueFloat", FbxProperty::I64Array(a)) => {
+            FbxProperty::F32Array(a.into_iter().map(|v| v as f32).collect())
+        }
+        (n, FbxProperty::I32Array(a)) if DOUBLE_ARRAYS.contains(&n) => {
+            FbxProperty::F64Array(a.into_iter().map(f64::from).collect())
+        }
+        (n, FbxProperty::I64Array(a)) if DOUBLE_ARRAYS.contains(&n) => {
+            FbxProperty::F64Array(a.into_iter().map(|v| v as f64).collect())
+        }
+        (_, prop) => prop,
     }
 }
 
@@ -967,13 +1028,13 @@ mod tests {
             Some("ByPolygonVertex")
         );
         let normals = &len.child("Normals").unwrap().properties[0];
-        // All three elements are integer-shaped in this synthetic
-        // (`0,0,1`) so the narrowing rule picks I32Array; real-world
-        // normals arrays are always float-shaped (`0.0,0.0,1.0`) and
-        // pick F64Array.
+        // All three elements are integer-shaped (`0,0,1` — the form
+        // the staged 2026-11 sweeps print whole-valued doubles in),
+        // and `Normals` is a `d` array on the binary wire, so the
+        // parser widens it to the same F64Array.
         match normals {
-            FbxProperty::I32Array(v) => assert_eq!(v, &[0, 0, 1]),
-            other => panic!("expected I32Array, got {other:?}"),
+            FbxProperty::F64Array(v) => assert_eq!(v, &[0.0, 0.0, 1.0]),
+            other => panic!("expected F64Array, got {other:?}"),
         }
     }
 

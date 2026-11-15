@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `FbxProperty::Char`: a binary `C` byte that is an ASCII letter other
+  than `T` / `F` (the extrapolation `Type` codes `R` / `M` / `K` / `A`,
+  `Shading: Y`) is kept verbatim by both readers and both writers
+  instead of collapsing to a boolean. `FbxNode` / `FbxDocument` derive
+  `PartialEq`.
+- ASCII reader accepts the 2026-11 vendor-exporter sweep files: bare
+  letter codes, `-` inside record names (`Pre-Extrapolation`), and
+  arrays typed like their binary counterparts (`KeyAttrDataFloat`
+  integers are bit patterns of `f` words, `KeyValueFloat` narrows to
+  `f`, whole-valued `Points` / `KnotVector*` / `FullWeights` /
+  `Vertices` / `Normals` widen to `d`). The ASCII writer prints
+  `KeyAttrDataFloat` words as signed integers.
+- Nested body leaves (`Pre-Extrapolation { Type, Repetition }`) ride
+  the verbatim body catalogues.
+- All 27 sweep files vendored under `tests/fixtures/sweeps-2026-11/`
+  with same-form and cross-form container round-trip tests.
+
 - `nurbs_geometry` module + `FbxNurbsCurve`: `Geometry{NurbsCurve}`
   records (`Order` / `Dimension` / `Form` / `Rational` / `Points` /
   `KnotVector`, per the staged `nurbs-curves-ascii-v7200` sample) decode

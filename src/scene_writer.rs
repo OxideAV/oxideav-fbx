@@ -3441,10 +3441,19 @@ fn build_model(node: &Node, id: i64) -> FbxNode {
     // §7c: `Shading: T` / `Culling: "CullingOff"`) — re-emitted from
     // the decode-side `fbx:shading` / `fbx:culling` extras so they
     // survive the Scene3D round trip.
-    if let Some(shading) = node.extras.get("fbx:shading").and_then(|v| v.as_bool()) {
+    let shading = match node.extras.get("fbx:shading") {
+        Some(serde_json::Value::Bool(b)) => Some(FbxProperty::Bool(*b)),
+        // A one-letter code other than `T` / `F` (`Shading: Y`).
+        Some(serde_json::Value::String(s)) => match s.as_bytes() {
+            [c @ b'A'..=b'Z'] => Some(FbxProperty::Char(*c)),
+            _ => None,
+        },
+        _ => None,
+    };
+    if let Some(shading) = shading {
         children.push(FbxNode {
             name: "Shading".to_string(),
-            properties: vec![FbxProperty::Bool(shading)],
+            properties: vec![shading],
             children: Vec::new(),
         });
     }

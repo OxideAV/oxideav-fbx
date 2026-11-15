@@ -104,6 +104,13 @@ pub enum FbxProperty {
     /// `T` / `F` token bytes (observed in the staged v7400 fixture);
     /// plain `0x00` / `0x01` forms decode via the LSB.
     Bool(bool),
+    /// `C` — one byte that is not a boolean token: an ASCII letter
+    /// code. `docs/3d/fbx/fbx-sdk-export-sweeps-2026-11.md` §1.8 pins
+    /// the extrapolation `Type` record (`R` / `M` / `K` / `A`, "binary
+    /// `C`, one byte holding an ASCII letter; ASCII: a bare unquoted
+    /// letter"); the same sweep's `Model` bodies carry `Shading: Y`.
+    /// The byte is kept verbatim so both writers reproduce it.
+    Char(u8),
     /// `I` — 4-byte signed integer.
     I32(i32),
     /// `F` — 32-bit IEEE 754 single.
@@ -169,7 +176,7 @@ impl FbxProperty {
 /// `name` is the UTF-8-decoded node name (Gessler "Name" field); all
 /// known FBX node names are pure ASCII so we surface them as `String`
 /// rather than raw bytes.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct FbxNode {
     pub name: String,
     pub properties: Vec<FbxProperty>,
@@ -192,7 +199,7 @@ impl FbxNode {
 /// container with empty name whose children are the top-level
 /// records like `FBXHeaderExtension`, `Objects`, `Connections`, ...)
 /// and the file-format version.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct FbxDocument {
     pub version: u32,
     pub root: FbxNode,
@@ -528,7 +535,17 @@ fn read_property(bytes: &[u8], off: usize) -> Result<(FbxProperty, usize)> {
             // token byte is true; otherwise the LSB decides (covers
             // the plain 0x00 / 0x01 encodings and reads the `F` token
             // byte 0x46 as false).
-            FbxProperty::Bool(raw == b'T' || (raw & 1) != 0)
+            //
+            // Any other ASCII uppercase letter is a letter code, not a
+            // boolean (extrapolation `Type` `R` / `M` / `K` / `A`,
+            // `Shading: Y` — fbx-sdk-export-sweeps-2026-11.md §1.8);
+            // it is kept verbatim.
+            match raw {
+                b'T' => FbxProperty::Bool(true),
+                b'F' => FbxProperty::Bool(false),
+                b'A'..=b'Z' => FbxProperty::Char(raw),
+                _ => FbxProperty::Bool((raw & 1) != 0),
+            }
         }
         b'I' => {
             let v = read_i32(bytes, p)?;

@@ -339,6 +339,10 @@ fn write_property(prop: &FbxProperty, out: &mut Vec<u8>, opts: &WriterOptions) -
             // forms).
             out.push(if *v { b'T' } else { b'F' });
         }
+        FbxProperty::Char(c) => {
+            out.push(b'C');
+            out.push(*c);
+        }
         FbxProperty::I32(v) => {
             out.push(b'I');
             out.extend_from_slice(&v.to_le_bytes());

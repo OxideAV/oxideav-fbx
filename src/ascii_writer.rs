@@ -281,7 +281,23 @@ fn write_array_node(node: &FbxNode, out: &mut Vec<u8>, depth: usize) -> Result<(
     out.extend_from_slice(b"a:");
     if count > 0 {
         out.push(b' ');
-        write_array_elements(&node.properties[0], out)?;
+        match &node.properties[0] {
+            // `KeyAttrDataFloat` words are bit patterns (two packed
+            // int16 pairs among them), printed as the signed decimal
+            // integer of each word
+            // (`docs/3d/fbx/fbx-sdk-export-sweeps-2026-11.md` §1.3) —
+            // a float rendition could not carry them.
+            FbxProperty::F32Array(words) if node.name == "KeyAttrDataFloat" => {
+                for (i, w) in words.iter().enumerate() {
+                    if i > 0 {
+                        out.push(b',');
+                    }
+                    let bits = i32::from_ne_bytes(w.to_bits().to_ne_bytes());
+                    out.extend_from_slice(bits.to_string().as_bytes());
+                }
+            }
+            other => write_array_elements(other, out)?,
+        }
     }
     out.push(b'\n');
     // Closing brace — same depth as the opening line.
@@ -388,6 +404,8 @@ fn write_scalar(p: &FbxProperty, out: &mut Vec<u8>) -> Result<()> {
         FbxProperty::F32(v) => write_f64(*v as f64, out),
         FbxProperty::F64(v) => write_f64(*v, out),
         FbxProperty::Bool(v) => out.push(if *v { b'T' } else { b'F' }),
+        // A letter code prints as the bare letter (`Type: R`).
+        FbxProperty::Char(c) => out.push(*c),
         // The binary `Name\x00\x01ClassTag` object-name join renders as
         // the ASCII `ClassTag::Name` (the parser's inverse).
         FbxProperty::String(bytes) => match bytes.windows(2).position(|w| w == b"\x00\x01") {

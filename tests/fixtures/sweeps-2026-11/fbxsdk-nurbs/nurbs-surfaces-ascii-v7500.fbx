@@ -1,0 +1,771 @@
+; FBX 7.5.0 project file
+; ----------------------------------------------------
+
+FBXHeaderExtension:  {
+	FBXHeaderVersion: 1003
+	FBXVersion: 7500
+	CreationTimeStamp:  {
+		Version: 1000
+		Year: 2026
+		Month: 11
+		Day: 11
+		Hour: 8
+		Minute: 29
+		Second: 51
+		Millisecond: 0
+	}
+	Creator: "FBX SDK/FBX Plugins version 2020.3.7"
+	SceneInfo: "SceneInfo::GlobalInfo", "UserData" {
+		Type: "UserData"
+		Version: 100
+		MetaData:  {
+			Version: 100
+			Title: "nurbs-surfaces"
+			Subject: ""
+			Author: "oxideav docs fixture producer"
+			Keywords: ""
+			Revision: ""
+			Comment: ""
+		}
+		Properties70:  {
+			P: "DocumentUrl", "KString", "Url", "", "nurbs-surfaces-ascii-v7500.fbx"
+			P: "SrcDocumentUrl", "KString", "Url", "", "nurbs-surfaces-ascii-v7500.fbx"
+			P: "Original", "Compound", "", ""
+			P: "Original|ApplicationVendor", "KString", "", "", ""
+			P: "Original|ApplicationName", "KString", "", "", ""
+			P: "Original|ApplicationVersion", "KString", "", "", ""
+			P: "Original|DateTime_GMT", "DateTime", "", "", ""
+			P: "Original|FileName", "KString", "", "", ""
+			P: "LastSaved", "Compound", "", ""
+			P: "LastSaved|ApplicationVendor", "KString", "", "", ""
+			P: "LastSaved|ApplicationName", "KString", "", "", ""
+			P: "LastSaved|ApplicationVersion", "KString", "", "", ""
+			P: "LastSaved|DateTime_GMT", "DateTime", "", "", ""
+		}
+	}
+}
+GlobalSettings:  {
+	Version: 1000
+	Properties70:  {
+		P: "UpAxis", "int", "Integer", "",1
+		P: "UpAxisSign", "int", "Integer", "",1
+		P: "FrontAxis", "int", "Integer", "",2
+		P: "FrontAxisSign", "int", "Integer", "",1
+		P: "CoordAxis", "int", "Integer", "",0
+		P: "CoordAxisSign", "int", "Integer", "",1
+		P: "OriginalUpAxis", "int", "Integer", "",-1
+		P: "OriginalUpAxisSign", "int", "Integer", "",1
+		P: "UnitScaleFactor", "double", "Number", "",1
+		P: "OriginalUnitScaleFactor", "double", "Number", "",1
+		P: "AmbientColor", "ColorRGB", "Color", "",0,0,0
+		P: "DefaultCamera", "KString", "", "", "Producer Perspective"
+		P: "TimeMode", "enum", "", "",0
+		P: "TimeProtocol", "enum", "", "",2
+		P: "SnapOnFrameMode", "enum", "", "",0
+		P: "TimeSpanStart", "KTime", "Time", "",0
+		P: "TimeSpanStop", "KTime", "Time", "",46186158000
+		P: "CustomFrameRate", "double", "Number", "",-1
+		P: "TimeMarker", "Compound", "", ""
+		P: "CurrentTimeMarker", "int", "Integer", "",-1
+	}
+}
+
+; Documents Description
+;------------------------------------------------------------------
+
+Documents:  {
+	Count: 1
+	Document: 94354168588992, "nurbs-surfaces", "Scene" {
+		Properties70:  {
+			P: "SourceObject", "object", "", ""
+			P: "ActiveAnimStackName", "KString", "", "", ""
+		}
+		RootNode: 0
+	}
+}
+
+; Document References
+;------------------------------------------------------------------
+
+References:  {
+}
+
+; Object definitions
+;------------------------------------------------------------------
+
+Definitions:  {
+	Version: 100
+	Count: 33
+	ObjectType: "GlobalSettings" {
+		Count: 1
+	}
+	ObjectType: "Geometry" {
+		Count: 16
+		PropertyTemplate: "FbxNurbsSurface" {
+			Properties70:  {
+				P: "Color", "ColorRGB", "Color", "",0.8,0.8,0.8
+				P: "BBoxMin", "Vector3D", "Vector", "",0,0,0
+				P: "BBoxMax", "Vector3D", "Vector", "",0,0,0
+				P: "Primary Visibility", "bool", "", "",1
+				P: "Casts Shadows", "bool", "", "",1
+				P: "Receive Shadows", "bool", "", "",1
+			}
+		}
+	}
+	ObjectType: "Model" {
+		Count: 16
+		PropertyTemplate: "FbxNode" {
+			Properties70:  {
+				P: "QuaternionInterpolate", "enum", "", "",0
+				P: "RotationOffset", "Vector3D", "Vector", "",0,0,0
+				P: "RotationPivot", "Vector3D", "Vector", "",0,0,0
+				P: "ScalingOffset", "Vector3D", "Vector", "",0,0,0
+				P: "ScalingPivot", "Vector3D", "Vector", "",0,0,0
+				P: "TranslationActive", "bool", "", "",0
+				P: "TranslationMin", "Vector3D", "Vector", "",0,0,0
+				P: "TranslationMax", "Vector3D", "Vector", "",0,0,0
+				P: "TranslationMinX", "bool", "", "",0
+				P: "TranslationMinY", "bool", "", "",0
+				P: "TranslationMinZ", "bool", "", "",0
+				P: "TranslationMaxX", "bool", "", "",0
+				P: "TranslationMaxY", "bool", "", "",0
+				P: "TranslationMaxZ", "bool", "", "",0
+				P: "RotationOrder", "enum", "", "",0
+				P: "RotationSpaceForLimitOnly", "bool", "", "",0
+				P: "RotationStiffnessX", "double", "Number", "",0
+				P: "RotationStiffnessY", "double", "Number", "",0
+				P: "RotationStiffnessZ", "double", "Number", "",0
+				P: "AxisLen", "double", "Number", "",10
+				P: "PreRotation", "Vector3D", "Vector", "",0,0,0
+				P: "PostRotation", "Vector3D", "Vector", "",0,0,0
+				P: "RotationActive", "bool", "", "",0
+				P: "RotationMin", "Vector3D", "Vector", "",0,0,0
+				P: "RotationMax", "Vector3D", "Vector", "",0,0,0
+				P: "RotationMinX", "bool", "", "",0
+				P: "RotationMinY", "bool", "", "",0
+				P: "RotationMinZ", "bool", "", "",0
+				P: "RotationMaxX", "bool", "", "",0
+				P: "RotationMaxY", "bool", "", "",0
+				P: "RotationMaxZ", "bool", "", "",0
+				P: "InheritType", "enum", "", "",0
+				P: "ScalingActive", "bool", "", "",0
+				P: "ScalingMin", "Vector3D", "Vector", "",0,0,0
+				P: "ScalingMax", "Vector3D", "Vector", "",1,1,1
+				P: "ScalingMinX", "bool", "", "",0
+				P: "ScalingMinY", "bool", "", "",0
+				P: "ScalingMinZ", "bool", "", "",0
+				P: "ScalingMaxX", "bool", "", "",0
+				P: "ScalingMaxY", "bool", "", "",0
+				P: "ScalingMaxZ", "bool", "", "",0
+				P: "GeometricTranslation", "Vector3D", "Vector", "",0,0,0
+				P: "GeometricRotation", "Vector3D", "Vector", "",0,0,0
+				P: "GeometricScaling", "Vector3D", "Vector", "",1,1,1
+				P: "MinDampRangeX", "double", "Number", "",0
+				P: "MinDampRangeY", "double", "Number", "",0
+				P: "MinDampRangeZ", "double", "Number", "",0
+				P: "MaxDampRangeX", "double", "Number", "",0
+				P: "MaxDampRangeY", "double", "Number", "",0
+				P: "MaxDampRangeZ", "double", "Number", "",0
+				P: "MinDampStrengthX", "double", "Number", "",0
+				P: "MinDampStrengthY", "double", "Number", "",0
+				P: "MinDampStrengthZ", "double", "Number", "",0
+				P: "MaxDampStrengthX", "double", "Number", "",0
+				P: "MaxDampStrengthY", "double", "Number", "",0
+				P: "MaxDampStrengthZ", "double", "Number", "",0
+				P: "PreferedAngleX", "double", "Number", "",0
+				P: "PreferedAngleY", "double", "Number", "",0
+				P: "PreferedAngleZ", "double", "Number", "",0
+				P: "LookAtProperty", "object", "", ""
+				P: "UpVectorProperty", "object", "", ""
+				P: "Show", "bool", "", "",1
+				P: "NegativePercentShapeSupport", "bool", "", "",1
+				P: "DefaultAttributeIndex", "int", "Integer", "",-1
+				P: "Freeze", "bool", "", "",0
+				P: "LODBox", "bool", "", "",0
+				P: "Lcl Translation", "Lcl Translation", "", "A",0,0,0
+				P: "Lcl Rotation", "Lcl Rotation", "", "A",0,0,0
+				P: "Lcl Scaling", "Lcl Scaling", "", "A",1,1,1
+				P: "Visibility", "Visibility", "", "A",1
+				P: "Visibility Inheritance", "Visibility Inheritance", "", "",1
+			}
+		}
+	}
+}
+
+; Object properties
+;------------------------------------------------------------------
+
+Objects:  {
+	Geometry: 94354168593376, "Geometry::NS01_u_open_o4_n5_v_open_o3_n4", "NurbsSurface" {
+		Type: "NurbsSurface"
+		NurbsSurfaceVersion: 100
+		SurfaceDisplay: 4,0,0
+		NurbsSurfaceOrder: 4,3
+		Dimensions: 5,4
+		Step: 0,0
+		Form: "Open", "Open"
+		Points: *80 {
+			a: 0,0,0,1,1,0,0,1,2,0,0,1,3,0,0,1,4,0,0,1,5,0,0,1,6,0,0,1,7,0,0,1,8,0,0,1,9,0,0,1,10,0,0,1,11,0,0,1,12,0,0,1,13,0,0,1,14,0,0,1,15,0,0,1,16,0,0,1,17,0,0,1,18,0,0,1,19,0,0,1
+		} 
+		KnotVectorU: *9 {
+			a: 0.5,1.5,2.5,3.5,4.5,5.5,6.5,7.5,8.5
+		} 
+		KnotVectorV: *7 {
+			a: 100.25,101.25,102.25,103.25,104.25,105.25,106.25
+		} 
+		GeometryVersion: 124
+		FlipNormals: 0
+	}
+	Geometry: 94354168767008, "Geometry::NS02_u_periodic_o4_n5_v_open_o3_n4", "NurbsSurface" {
+		Type: "NurbsSurface"
+		NurbsSurfaceVersion: 100
+		SurfaceDisplay: 4,0,0
+		NurbsSurfaceOrder: 4,3
+		Dimensions: 5,4
+		Step: 0,0
+		Form: "Periodic", "Open"
+		Points: *80 {
+			a: 0,0,0,1,1,0,0,1,2,0,0,1,3,0,0,1,4,0,0,1,5,0,0,1,6,0,0,1,7,0,0,1,8,0,0,1,9,0,0,1,10,0,0,1,11,0,0,1,12,0,0,1,13,0,0,1,14,0,0,1,15,0,0,1,16,0,0,1,17,0,0,1,18,0,0,1,19,0,0,1
+		} 
+		KnotVectorU: *12 {
+			a: 0.5,1.5,2.5,3.5,4.5,5.5,6.5,7.5,8.5,9.5,10.5,11.5
+		} 
+		KnotVectorV: *7 {
+			a: 100.25,101.25,102.25,103.25,104.25,105.25,106.25
+		} 
+		GeometryVersion: 124
+		FlipNormals: 0
+	}
+	Geometry: 94354168777184, "Geometry::NS03_u_closed_o4_n5_v_open_o3_n4", "NurbsSurface" {
+		Type: "NurbsSurface"
+		NurbsSurfaceVersion: 100
+		SurfaceDisplay: 4,0,0
+		NurbsSurfaceOrder: 4,3
+		Dimensions: 5,4
+		Step: 0,0
+		Form: "Closed", "Open"
+		Points: *80 {
+			a: 0,0,0,1,1,0,0,1,2,0,0,1,3,0,0,1,4,0,0,1,5,0,0,1,6,0,0,1,7,0,0,1,8,0,0,1,9,0,0,1,10,0,0,1,11,0,0,1,12,0,0,1,13,0,0,1,14,0,0,1,15,0,0,1,16,0,0,1,17,0,0,1,18,0,0,1,19,0,0,1
+		} 
+		KnotVectorU: *10 {
+			a: 0.5,1.5,2.5,3.5,4.5,5.5,6.5,7.5,8.5,9.5
+		} 
+		KnotVectorV: *7 {
+			a: 100.25,101.25,102.25,103.25,104.25,105.25,106.25
+		} 
+		GeometryVersion: 124
+		FlipNormals: 0
+	}
+	Geometry: 94354168786336, "Geometry::NS04_u_open_o4_n5_v_periodic_o3_n4", "NurbsSurface" {
+		Type: "NurbsSurface"
+		NurbsSurfaceVersion: 100
+		SurfaceDisplay: 4,0,0
+		NurbsSurfaceOrder: 4,3
+		Dimensions: 5,4
+		Step: 0,0
+		Form: "Open", "Periodic"
+		Points: *80 {
+			a: 0,0,0,1,1,0,0,1,2,0,0,1,3,0,0,1,4,0,0,1,5,0,0,1,6,0,0,1,7,0,0,1,8,0,0,1,9,0,0,1,10,0,0,1,11,0,0,1,12,0,0,1,13,0,0,1,14,0,0,1,15,0,0,1,16,0,0,1,17,0,0,1,18,0,0,1,19,0,0,1
+		} 
+		KnotVectorU: *9 {
+			a: 0.5,1.5,2.5,3.5,4.5,5.5,6.5,7.5,8.5
+		} 
+		KnotVectorV: *9 {
+			a: 100.25,101.25,102.25,103.25,104.25,105.25,106.25,107.25,108.25
+		} 
+		GeometryVersion: 124
+		FlipNormals: 0
+	}
+	Geometry: 94354168788368, "Geometry::NS05_u_closed_o4_n5_v_closed_o3_n4", "NurbsSurface" {
+		Type: "NurbsSurface"
+		NurbsSurfaceVersion: 100
+		SurfaceDisplay: 4,0,0
+		NurbsSurfaceOrder: 4,3
+		Dimensions: 5,4
+		Step: 0,0
+		Form: "Closed", "Closed"
+		Points: *80 {
+			a: 0,0,0,1,1,0,0,1,2,0,0,1,3,0,0,1,4,0,0,1,5,0,0,1,6,0,0,1,7,0,0,1,8,0,0,1,9,0,0,1,10,0,0,1,11,0,0,1,12,0,0,1,13,0,0,1,14,0,0,1,15,0,0,1,16,0,0,1,17,0,0,1,18,0,0,1,19,0,0,1
+		} 
+		KnotVectorU: *10 {
+			a: 0.5,1.5,2.5,3.5,4.5,5.5,6.5,7.5,8.5,9.5
+		} 
+		KnotVectorV: *8 {
+			a: 100.25,101.25,102.25,103.25,104.25,105.25,106.25,107.25
+		} 
+		GeometryVersion: 124
+		FlipNormals: 0
+	}
+	Geometry: 94354168804816, "Geometry::NS06_u_periodic_o4_n5_v_periodic_o3_n4", "NurbsSurface" {
+		Type: "NurbsSurface"
+		NurbsSurfaceVersion: 100
+		SurfaceDisplay: 4,0,0
+		NurbsSurfaceOrder: 4,3
+		Dimensions: 5,4
+		Step: 0,0
+		Form: "Periodic", "Periodic"
+		Points: *80 {
+			a: 0,0,0,1,1,0,0,1,2,0,0,1,3,0,0,1,4,0,0,1,5,0,0,1,6,0,0,1,7,0,0,1,8,0,0,1,9,0,0,1,10,0,0,1,11,0,0,1,12,0,0,1,13,0,0,1,14,0,0,1,15,0,0,1,16,0,0,1,17,0,0,1,18,0,0,1,19,0,0,1
+		} 
+		KnotVectorU: *12 {
+			a: 0.5,1.5,2.5,3.5,4.5,5.5,6.5,7.5,8.5,9.5,10.5,11.5
+		} 
+		KnotVectorV: *9 {
+			a: 100.25,101.25,102.25,103.25,104.25,105.25,106.25,107.25,108.25
+		} 
+		GeometryVersion: 124
+		FlipNormals: 0
+	}
+	Geometry: 94354168814080, "Geometry::NS07_u_open_o2_n2_v_open_o2_n3_rational", "NurbsSurface" {
+		Type: "NurbsSurface"
+		NurbsSurfaceVersion: 100
+		SurfaceDisplay: 4,0,0
+		NurbsSurfaceOrder: 2,2
+		Dimensions: 2,3
+		Step: 0,0
+		Form: "Open", "Open"
+		Points: *24 {
+			a: 0,0,0,1,1,0,0,1.01,2,0,0,1.02,3,0,0,1.03,4,0,0,1.04,5,0,0,1.05
+		} 
+		KnotVectorU: *4 {
+			a: 0.5,1.5,2.5,3.5
+		} 
+		KnotVectorV: *5 {
+			a: 100.25,101.25,102.25,103.25,104.25
+		} 
+		GeometryVersion: 124
+		FlipNormals: 0
+	}
+	Geometry: 94354168822032, "Geometry::s08", "NurbsSurface" {
+		Type: "NurbsSurface"
+		NurbsSurfaceVersion: 100
+		SurfaceDisplay: 4,3,5
+		NurbsSurfaceOrder: 2,2
+		Dimensions: 2,3
+		Step: 3,5
+		Form: "Open", "Open"
+		Points: *24 {
+			a: 0,0,0,1,1,0,0,1,2,0,0,1,3,0,0,1,4,0,0,1,5,0,0,1
+		} 
+		KnotVectorU: *4 {
+			a: 0.5,1.5,2.5,3.5
+		} 
+		KnotVectorV: *5 {
+			a: 100.25,101.25,102.25,103.25,104.25
+		} 
+		GeometryVersion: 124
+		FlipNormals: 0
+	}
+	Geometry: 94354168824832, "Geometry::s09", "NurbsSurface" {
+		Type: "NurbsSurface"
+		NurbsSurfaceVersion: 100
+		SurfaceDisplay: 4,0,0
+		NurbsSurfaceOrder: 2,2
+		Dimensions: 3,2
+		Step: 0,0
+		Form: "Open", "Open"
+		Points: *24 {
+			a: 0,0,0,1,2,0,0,1,4,0,0,1,1,0,0,1,3,0,0,1,5,0,0,1
+		} 
+		KnotVectorU: *5 {
+			a: 100.25,101.25,102.25,103.25,104.25
+		} 
+		KnotVectorV: *4 {
+			a: 0.5,1.5,2.5,3.5
+		} 
+		GeometryVersion: 124
+		FlipNormals: 0
+	}
+	Geometry: 94354168840384, "Geometry::s10", "NurbsSurface" {
+		Type: "NurbsSurface"
+		NurbsSurfaceVersion: 100
+		SurfaceDisplay: 4,0,0
+		NurbsSurfaceOrder: 2,2
+		Dimensions: 2,3
+		Step: 0,0
+		Form: "Open", "Open"
+		Points: *24 {
+			a: 0,0,0,1,1,0,0,1,2,0,0,1,3,0,0,1,4,0,0,1,5,0,0,1
+		} 
+		KnotVectorU: *4 {
+			a: 0.5,1.5,2.5,3.5
+		} 
+		KnotVectorV: *5 {
+			a: 100.25,101.25,102.25,103.25,104.25
+		} 
+		GeometryVersion: 124
+		FlipNormals: 0
+	}
+	Geometry: 94354168849264, "Geometry::s11", "NurbsSurface" {
+		Type: "NurbsSurface"
+		NurbsSurfaceVersion: 100
+		SurfaceDisplay: 4,0,0
+		NurbsSurfaceOrder: 2,2
+		Dimensions: 2,3
+		Step: 0,0
+		Form: "Open", "Open"
+		Points: *24 {
+			a: 0,0,0,1,1,0,0,1,2,0,0,1,3,0,0,1,4,0,0,1,5,0,0,1
+		} 
+		KnotVectorU: *4 {
+			a: 0.5,1.5,2.5,3.5
+		} 
+		KnotVectorV: *5 {
+			a: 100.25,101.25,102.25,103.25,104.25
+		} 
+		GeometryVersion: 124
+		FlipNormals: 1
+	}
+	Geometry: 94354168857904, "Geometry::NS12_surface_mode_raw", "NurbsSurface" {
+		Type: "NurbsSurface"
+		NurbsSurfaceVersion: 100
+		SurfaceDisplay: 0,0,0
+		NurbsSurfaceOrder: 2,2
+		Dimensions: 2,3
+		Step: 0,0
+		Form: "Open", "Open"
+		Points: *24 {
+			a: 0,0,0,1,1,0,0,1,2,0,0,1,3,0,0,1,4,0,0,1,5,0,0,1
+		} 
+		KnotVectorU: *4 {
+			a: 0.5,1.5,2.5,3.5
+		} 
+		KnotVectorV: *5 {
+			a: 100.25,101.25,102.25,103.25,104.25
+		} 
+		GeometryVersion: 124
+		FlipNormals: 0
+	}
+	Geometry: 94354168866544, "Geometry::NS13_surface_mode_low_no_normals", "NurbsSurface" {
+		Type: "NurbsSurface"
+		NurbsSurfaceVersion: 100
+		SurfaceDisplay: 1,0,0
+		NurbsSurfaceOrder: 2,2
+		Dimensions: 2,3
+		Step: 0,0
+		Form: "Open", "Open"
+		Points: *24 {
+			a: 0,0,0,1,1,0,0,1,2,0,0,1,3,0,0,1,4,0,0,1,5,0,0,1
+		} 
+		KnotVectorU: *4 {
+			a: 0.5,1.5,2.5,3.5
+		} 
+		KnotVectorV: *5 {
+			a: 100.25,101.25,102.25,103.25,104.25
+		} 
+		GeometryVersion: 124
+		FlipNormals: 0
+	}
+	Geometry: 94354168875264, "Geometry::NS14_surface_mode_low", "NurbsSurface" {
+		Type: "NurbsSurface"
+		NurbsSurfaceVersion: 100
+		SurfaceDisplay: 2,0,0
+		NurbsSurfaceOrder: 2,2
+		Dimensions: 2,3
+		Step: 0,0
+		Form: "Open", "Open"
+		Points: *24 {
+			a: 0,0,0,1,1,0,0,1,2,0,0,1,3,0,0,1,4,0,0,1,5,0,0,1
+		} 
+		KnotVectorU: *4 {
+			a: 0.5,1.5,2.5,3.5
+		} 
+		KnotVectorV: *5 {
+			a: 100.25,101.25,102.25,103.25,104.25
+		} 
+		GeometryVersion: 124
+		FlipNormals: 0
+	}
+	Geometry: 94354168883904, "Geometry::NS15_surface_mode_high_no_normals", "NurbsSurface" {
+		Type: "NurbsSurface"
+		NurbsSurfaceVersion: 100
+		SurfaceDisplay: 3,0,0
+		NurbsSurfaceOrder: 2,2
+		Dimensions: 2,3
+		Step: 0,0
+		Form: "Open", "Open"
+		Points: *24 {
+			a: 0,0,0,1,1,0,0,1,2,0,0,1,3,0,0,1,4,0,0,1,5,0,0,1
+		} 
+		KnotVectorU: *4 {
+			a: 0.5,1.5,2.5,3.5
+		} 
+		KnotVectorV: *5 {
+			a: 100.25,101.25,102.25,103.25,104.25
+		} 
+		GeometryVersion: 124
+		FlipNormals: 0
+	}
+	Geometry: 94354168885888, "Geometry::NS16_surface_mode_high", "NurbsSurface" {
+		Type: "NurbsSurface"
+		NurbsSurfaceVersion: 100
+		SurfaceDisplay: 4,0,0
+		NurbsSurfaceOrder: 2,2
+		Dimensions: 2,3
+		Step: 0,0
+		Form: "Open", "Open"
+		Points: *24 {
+			a: 0,0,0,1,1,0,0,1,2,0,0,1,3,0,0,1,4,0,0,1,5,0,0,1
+		} 
+		KnotVectorU: *4 {
+			a: 0.5,1.5,2.5,3.5
+		} 
+		KnotVectorV: *5 {
+			a: 100.25,101.25,102.25,103.25,104.25
+		} 
+		GeometryVersion: 124
+		FlipNormals: 0
+	}
+	Model: 94354168762384, "Model::NS01_u_open_o4_n5_v_open_o3_n4", "NurbsSurface" {
+		Version: 232
+		Properties70:  {
+			P: "ScalingMax", "Vector3D", "Vector", "",0,0,0
+			P: "DefaultAttributeIndex", "int", "Integer", "",0
+		}
+		Shading: Y
+		Culling: "CullingOff"
+	}
+	Model: 94354168772368, "Model::NS02_u_periodic_o4_n5_v_open_o3_n4", "NurbsSurface" {
+		Version: 232
+		Properties70:  {
+			P: "ScalingMax", "Vector3D", "Vector", "",0,0,0
+			P: "DefaultAttributeIndex", "int", "Integer", "",0
+		}
+		Shading: Y
+		Culling: "CullingOff"
+	}
+	Model: 94354168781776, "Model::NS03_u_closed_o4_n5_v_open_o3_n4", "NurbsSurface" {
+		Version: 232
+		Properties70:  {
+			P: "ScalingMax", "Vector3D", "Vector", "",0,0,0
+			P: "DefaultAttributeIndex", "int", "Integer", "",0
+		}
+		Shading: Y
+		Culling: "CullingOff"
+	}
+	Model: 94354168790928, "Model::NS04_u_open_o4_n5_v_periodic_o3_n4", "NurbsSurface" {
+		Version: 232
+		Properties70:  {
+			P: "ScalingMax", "Vector3D", "Vector", "",0,0,0
+			P: "DefaultAttributeIndex", "int", "Integer", "",0
+		}
+		Shading: Y
+		Culling: "CullingOff"
+	}
+	Model: 94354168800192, "Model::NS05_u_closed_o4_n5_v_closed_o3_n4", "NurbsSurface" {
+		Version: 232
+		Properties70:  {
+			P: "ScalingMax", "Vector3D", "Vector", "",0,0,0
+			P: "DefaultAttributeIndex", "int", "Integer", "",0
+		}
+		Shading: Y
+		Culling: "CullingOff"
+	}
+	Model: 94354168809408, "Model::NS06_u_periodic_o4_n5_v_periodic_o3_n4", "NurbsSurface" {
+		Version: 232
+		Properties70:  {
+			P: "ScalingMax", "Vector3D", "Vector", "",0,0,0
+			P: "DefaultAttributeIndex", "int", "Integer", "",0
+		}
+		Shading: Y
+		Culling: "CullingOff"
+	}
+	Model: 94354168818000, "Model::NS07_u_open_o2_n2_v_open_o2_n3_rational", "NurbsSurface" {
+		Version: 232
+		Properties70:  {
+			P: "ScalingMax", "Vector3D", "Vector", "",0,0,0
+			P: "DefaultAttributeIndex", "int", "Integer", "",0
+		}
+		Shading: Y
+		Culling: "CullingOff"
+	}
+	Model: 94354168826944, "Model::NS08_steps_u3_v5", "NurbsSurface" {
+		Version: 232
+		Properties70:  {
+			P: "ScalingMax", "Vector3D", "Vector", "",0,0,0
+			P: "DefaultAttributeIndex", "int", "Integer", "",0
+		}
+		Shading: Y
+		Culling: "CullingOff"
+	}
+	Model: 94354168835712, "Model::NS09_flip_uv", "NurbsSurface" {
+		Version: 232
+		Properties70:  {
+			P: "ScalingMax", "Vector3D", "Vector", "",0,0,0
+			P: "DefaultAttributeIndex", "int", "Integer", "",0
+		}
+		Shading: Y
+		Culling: "CullingOff"
+	}
+	Model: 94354168844352, "Model::NS10_flip_links", "NurbsSurface" {
+		Version: 232
+		Properties70:  {
+			P: "ScalingMax", "Vector3D", "Vector", "",0,0,0
+			P: "DefaultAttributeIndex", "int", "Integer", "",0
+		}
+		Shading: Y
+		Culling: "CullingOff"
+	}
+	Model: 94354168853184, "Model::NS11_flip_normals", "NurbsSurface" {
+		Version: 232
+		Properties70:  {
+			P: "ScalingMax", "Vector3D", "Vector", "",0,0,0
+			P: "DefaultAttributeIndex", "int", "Integer", "",0
+		}
+		Shading: Y
+		Culling: "CullingOff"
+	}
+	Model: 94354168861824, "Model::NS12_surface_mode_raw", "NurbsSurface" {
+		Version: 232
+		Properties70:  {
+			P: "ScalingMax", "Vector3D", "Vector", "",0,0,0
+			P: "DefaultAttributeIndex", "int", "Integer", "",0
+		}
+		Shading: Y
+		Culling: "CullingOff"
+	}
+	Model: 94354168870464, "Model::NS13_surface_mode_low_no_normals", "NurbsSurface" {
+		Version: 232
+		Properties70:  {
+			P: "ScalingMax", "Vector3D", "Vector", "",0,0,0
+			P: "DefaultAttributeIndex", "int", "Integer", "",0
+		}
+		Shading: Y
+		Culling: "CullingOff"
+	}
+	Model: 94354168879184, "Model::NS14_surface_mode_low", "NurbsSurface" {
+		Version: 232
+		Properties70:  {
+			P: "ScalingMax", "Vector3D", "Vector", "",0,0,0
+			P: "DefaultAttributeIndex", "int", "Integer", "",0
+		}
+		Shading: Y
+		Culling: "CullingOff"
+	}
+	Model: 94354168887824, "Model::NS15_surface_mode_high_no_normals", "NurbsSurface" {
+		Version: 232
+		Properties70:  {
+			P: "ScalingMax", "Vector3D", "Vector", "",0,0,0
+			P: "DefaultAttributeIndex", "int", "Integer", "",0
+		}
+		Shading: Y
+		Culling: "CullingOff"
+	}
+	Model: 94354168896640, "Model::NS16_surface_mode_high", "NurbsSurface" {
+		Version: 232
+		Properties70:  {
+			P: "ScalingMax", "Vector3D", "Vector", "",0,0,0
+			P: "DefaultAttributeIndex", "int", "Integer", "",0
+		}
+		Shading: Y
+		Culling: "CullingOff"
+	}
+}
+
+; Object connections
+;------------------------------------------------------------------
+
+Connections:  {
+	
+	;Model::NS01_u_open_o4_n5_v_open_o3_n4, Model::RootNode
+	C: "OO",94354168762384,0
+	
+	;Model::NS02_u_periodic_o4_n5_v_open_o3_n4, Model::RootNode
+	C: "OO",94354168772368,0
+	
+	;Model::NS03_u_closed_o4_n5_v_open_o3_n4, Model::RootNode
+	C: "OO",94354168781776,0
+	
+	;Model::NS04_u_open_o4_n5_v_periodic_o3_n4, Model::RootNode
+	C: "OO",94354168790928,0
+	
+	;Model::NS05_u_closed_o4_n5_v_closed_o3_n4, Model::RootNode
+	C: "OO",94354168800192,0
+	
+	;Model::NS06_u_periodic_o4_n5_v_periodic_o3_n4, Model::RootNode
+	C: "OO",94354168809408,0
+	
+	;Model::NS07_u_open_o2_n2_v_open_o2_n3_rational, Model::RootNode
+	C: "OO",94354168818000,0
+	
+	;Model::NS08_steps_u3_v5, Model::RootNode
+	C: "OO",94354168826944,0
+	
+	;Model::NS09_flip_uv, Model::RootNode
+	C: "OO",94354168835712,0
+	
+	;Model::NS10_flip_links, Model::RootNode
+	C: "OO",94354168844352,0
+	
+	;Model::NS11_flip_normals, Model::RootNode
+	C: "OO",94354168853184,0
+	
+	;Model::NS12_surface_mode_raw, Model::RootNode
+	C: "OO",94354168861824,0
+	
+	;Model::NS13_surface_mode_low_no_normals, Model::RootNode
+	C: "OO",94354168870464,0
+	
+	;Model::NS14_surface_mode_low, Model::RootNode
+	C: "OO",94354168879184,0
+	
+	;Model::NS15_surface_mode_high_no_normals, Model::RootNode
+	C: "OO",94354168887824,0
+	
+	;Model::NS16_surface_mode_high, Model::RootNode
+	C: "OO",94354168896640,0
+	
+	;Geometry::NS01_u_open_o4_n5_v_open_o3_n4, Model::NS01_u_open_o4_n5_v_open_o3_n4
+	C: "OO",94354168593376,94354168762384
+	
+	;Geometry::NS02_u_periodic_o4_n5_v_open_o3_n4, Model::NS02_u_periodic_o4_n5_v_open_o3_n4
+	C: "OO",94354168767008,94354168772368
+	
+	;Geometry::NS03_u_closed_o4_n5_v_open_o3_n4, Model::NS03_u_closed_o4_n5_v_open_o3_n4
+	C: "OO",94354168777184,94354168781776
+	
+	;Geometry::NS04_u_open_o4_n5_v_periodic_o3_n4, Model::NS04_u_open_o4_n5_v_periodic_o3_n4
+	C: "OO",94354168786336,94354168790928
+	
+	;Geometry::NS05_u_closed_o4_n5_v_closed_o3_n4, Model::NS05_u_closed_o4_n5_v_closed_o3_n4
+	C: "OO",94354168788368,94354168800192
+	
+	;Geometry::NS06_u_periodic_o4_n5_v_periodic_o3_n4, Model::NS06_u_periodic_o4_n5_v_periodic_o3_n4
+	C: "OO",94354168804816,94354168809408
+	
+	;Geometry::NS07_u_open_o2_n2_v_open_o2_n3_rational, Model::NS07_u_open_o2_n2_v_open_o2_n3_rational
+	C: "OO",94354168814080,94354168818000
+	
+	;Geometry::s08, Model::NS08_steps_u3_v5
+	C: "OO",94354168822032,94354168826944
+	
+	;Geometry::s09, Model::NS09_flip_uv
+	C: "OO",94354168824832,94354168835712
+	
+	;Geometry::s10, Model::NS10_flip_links
+	C: "OO",94354168840384,94354168844352
+	
+	;Geometry::s11, Model::NS11_flip_normals
+	C: "OO",94354168849264,94354168853184
+	
+	;Geometry::NS12_surface_mode_raw, Model::NS12_surface_mode_raw
+	C: "OO",94354168857904,94354168861824
+	
+	;Geometry::NS13_surface_mode_low_no_normals, Model::NS13_surface_mode_low_no_normals
+	C: "OO",94354168866544,94354168870464
+	
+	;Geometry::NS14_surface_mode_low, Model::NS14_surface_mode_low
+	C: "OO",94354168875264,94354168879184
+	
+	;Geometry::NS15_surface_mode_high_no_normals, Model::NS15_surface_mode_high_no_normals
+	C: "OO",94354168883904,94354168887824
+	
+	;Geometry::NS16_surface_mode_high, Model::NS16_surface_mode_high
+	C: "OO",94354168885888,94354168896640
+}
+;Takes section
+;----------------------------------------------------
+
+Takes:  {
+	Current: ""
+}
