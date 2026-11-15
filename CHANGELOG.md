@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.5](https://github.com/OxideAV/oxideav-fbx/compare/v0.0.4...v0.0.5) - 2026-11-15
+
+### Other
+
+- Hostile-value test independent of checkout line endings; fixtures are -text
+- Robustness sweep over the typed sweep readers; surface Step held to 64 per span
+- Reader performance, whole-file census, README sweep matrix
+- Texture placement sweep: every record and connection through the scene round trip
+- In-between blend shapes: per-shape FullWeights stations, piecewise targets, writer
+- NURBS surfaces, lines and trimmed surfaces: typed records, tessellation, writer
+- Animation curves: typed key attributes, evaluator, attribute-preserving writer
+- Letter-code C values, ASCII reader for the 2026-11 sweep files, vendored sweep fixtures
+- Synthesized curves reuse the source KeyTime ticks
+- Export-sweep fixtures: blend-shape FullWeights, sampled KeyAttr block, texture wrap/placement, NurbsCurve write-back
+- NurbsCurve geometry: typed record, evaluation join, sampled-line scene surface
+- ASCII object names in the binary Name\x00\x01Class shape; float-typed P values widen to D
+- API hygiene: non_exhaustive option records, builders, hidden scene stages
+
 ### Changed
 
 - Reader performance: uncompressed binary arrays decode straight from
