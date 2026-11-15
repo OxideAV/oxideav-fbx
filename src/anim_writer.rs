@@ -213,42 +213,69 @@ pub(crate) fn build_animation_objects(
                         .and_then(|m| scene.meshes.get(m.0 as usize))
                         .map(|m| m.target_names.clone())
                         .unwrap_or_default();
+                    let slot_join = |slot: usize| CurveJoin {
+                        stack: &stack_name,
+                        target: Some(match slot_names.get(slot) {
+                            Some(n) if !n.is_empty() => n.clone(),
+                            _ => format!("Target{slot}"),
+                        }),
+                    };
+                    // A source that animated only some channels (the
+                    // catalogue names them) keeps that shape: a slot it
+                    // had no curve for, still constant in the typed
+                    // sampler, stays curve-less — its channel's own
+                    // `DeformPercent` carries the value.
+                    let has_source = |slot: usize| {
+                        key_attrs
+                            .entry(&slot_join(slot), "DeformPercent", "d|DeformPercent")
+                            .is_some()
+                    };
+                    let any_source = (0..stride).any(has_source);
                     for (slot, channel_fbx) in channel_fbxs.into_iter().enumerate().take(stride) {
                         // 0..1 weights → 0..100 DeformPercent wire values.
                         let slot_vals: Vec<f32> = frames
                             .iter()
                             .map(|frame| (f64::from(frame[slot]) * DEFORM_PERCENT_SCALE) as f32)
                             .collect();
-                        let join = CurveJoin {
-                            stack: &stack_name,
-                            target: Some(match slot_names.get(slot) {
-                                Some(n) if !n.is_empty() => n.clone(),
-                                _ => format!("Target{slot}"),
-                            }),
-                        };
+                        if any_source
+                            && !has_source(slot)
+                            && slot_vals.windows(2).all(|w| w[0] == w[1])
+                        {
+                            continue;
+                        }
+                        let join = slot_join(slot);
+                        let verbatim = key_attrs.verbatim_curve(
+                            &join,
+                            "DeformPercent",
+                            "d|DeformPercent",
+                            times,
+                            &slot_vals,
+                        );
+                        // The curve node's own channel value: the
+                        // source's while the curve is unedited, else
+                        // the first key.
+                        let node_value = key_attrs
+                            .node_defaults(&join, "DeformPercent")
+                            .filter(|_| verbatim.is_some())
+                            .and_then(|d| d.get("d|DeformPercent"))
+                            .and_then(Value::as_f64)
+                            .unwrap_or_else(|| {
+                                f64::from(slot_vals.first().copied().unwrap_or(0.0))
+                            });
                         let curve_node_id = alloc();
                         objects.push(element(
                             "AnimationCurveNode",
                             curve_node_id,
                             "DeformPercent",
                             "",
-                            props70(vec![p_number(
-                                "d|DeformPercent",
-                                f64::from(slot_vals.first().copied().unwrap_or(0.0)),
-                            )]),
+                            props70(vec![p_number("d|DeformPercent", node_value)]),
                         ));
                         // AnimationCurveNode -> BlendShapeChannel OP.
                         connections.push(conn_op(curve_node_id, channel_fbx, "DeformPercent"));
                         // AnimationCurveNode -> AnimationLayer OO.
                         connections.push(conn_oo(curve_node_id, layer_id));
                         let curve_id = alloc();
-                        let curve = match key_attrs.verbatim_curve(
-                            &join,
-                            "DeformPercent",
-                            "d|DeformPercent",
-                            times,
-                            &slot_vals,
-                        ) {
+                        let curve = match verbatim {
                             Some(mut original) => {
                                 original.properties[0] = FbxProperty::I64(curve_id);
                                 original

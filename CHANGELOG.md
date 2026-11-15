@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- In-between blend shapes (2026-11 sweep §4): a `BlendShapeChannel`
+  with several `Shape` geometries decodes its per-shape `FullWeights`
+  (one float64 percent per shape, connection order) into the typed
+  model — the shape at 100 % as the `MorphTarget`'s deltas, every other
+  station as a `MorphTarget::inbetweens` entry at `full_weight / 100`,
+  evaluated piecewise by `MorphTarget::at_weight` /
+  `Primitive::apply_morph_weights`. A channel with no shape at 100 %
+  gets its weight-1 deltas from the station table; a channel without
+  shapes keeps its slot. `extras["fbx:blend_channels"]`
+  (`deformer::BLEND_CHANNELS_KEY`) carries the deformer name, the
+  channel's `Properties70`, shape names / order / percents and the
+  shapes the typed model has no slot for.
+- Writer: station-layout channels (`Properties70` `DeformPercent`
+  where non-zero, `DeformPercent` leaf, `FullWeights` per shape, sparse
+  `Shape` bodies with `Normals`), from decoded scenes record for record
+  and from API-authored `inbetweens`. `DeformPercent` curves keep the
+  source's animated channel set and curve-node value.
+
 - NURBS grammar of the 2026-11 sweep, binary 7400 / 7500 and ASCII:
   `FbxNurbsSurface` (orders, dimensions, forms, steps, surface mode,
   knots, `FlipNormals`; U-fastest control grid; `Closed` / `Periodic`

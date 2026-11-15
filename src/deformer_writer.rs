@@ -73,7 +73,7 @@
 use oxideav_mesh3d::{NodeId, Scene3D};
 
 use crate::binary::{FbxNode, FbxProperty};
-use crate::deformer::{DEFORM_PERCENT_SCALE, FULL_WEIGHTS_KEY};
+use crate::deformer::{BLEND_CHANNELS_KEY, DEFORM_PERCENT_SCALE, FULL_WEIGHTS_KEY};
 
 /// Output of the deformer emission passes: element records for
 /// `Objects` + connection records for `Connections`.
@@ -161,7 +161,18 @@ pub(crate) fn build_deformer_objects<'a>(
                 continue;
             }
             let blend_fbx = alloc();
-            let mut blend = deformer_element(blend_fbx, "", "BlendShape");
+            // Per-slot channel records round-tripped by the decode
+            // side ([`BLEND_CHANNELS_KEY`]).
+            let channel_entries: &[serde_json::Value] = prim
+                .extras
+                .get(BLEND_CHANNELS_KEY)
+                .and_then(|v| v.as_array())
+                .map_or(&[], Vec::as_slice);
+            let deformer_name = channel_entries
+                .iter()
+                .find_map(|e| e.get("deformer").and_then(|v| v.as_str()))
+                .unwrap_or("");
+            let mut blend = deformer_element(blend_fbx, deformer_name, "BlendShape");
             blend.children.push(leaf_i32("Version", 100));
             out.objects.push(blend);
             out.connections.push(conn_oo(blend_fbx, geom_fbx));
@@ -208,6 +219,52 @@ pub(crate) fn build_deformer_objects<'a>(
                     .and_then(|w| w.get(ti))
                     .copied()
                     .unwrap_or_else(|| mesh.weights.get(ti).copied().unwrap_or(0.0));
+                // A channel with in-between stations, or one decoded
+                // from the per-shape `FullWeights` form: the station
+                // layout (`fbx-sdk-export-sweeps-2026-11.md` §4).
+                let entry = channel_entries.get(ti).filter(|e| !e.is_null());
+                if !target.inbetweens.is_empty()
+                    || entry
+                        .and_then(|e| e.get("station_table"))
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false)
+                {
+                    let shapes = station_shapes(entry, target, &slot_name);
+                    channel.children.push(leaf_i32("Version", 100));
+                    let percent = static_percent(entry, static_weight);
+                    let records = channel_records(entry, percent);
+                    if !records.is_empty() {
+                        channel.children.push(FbxNode {
+                            name: "Properties70".to_string(),
+                            properties: Vec::new(),
+                            children: records,
+                        });
+                    }
+                    channel.children.push(FbxNode {
+                        name: "DeformPercent".to_string(),
+                        properties: vec![FbxProperty::F64(percent)],
+                        children: Vec::new(),
+                    });
+                    if !shapes.is_empty() {
+                        channel.children.push(FbxNode {
+                            name: "FullWeights".to_string(),
+                            properties: vec![FbxProperty::F64Array(
+                                shapes.iter().map(|s| s.full_weight).collect(),
+                            )],
+                            children: Vec::new(),
+                        });
+                    }
+                    out.objects.push(channel);
+                    out.connections.push(conn_oo(channel_fbx, blend_fbx));
+                    for shape in &shapes {
+                        let shape_fbx = alloc();
+                        out.objects
+                            .push(station_shape_geometry(shape_fbx, shape, vertex_of));
+                        out.connections.push(conn_oo(shape_fbx, channel_fbx));
+                    }
+                    channel_ids.push(channel_fbx);
+                    continue;
+                }
                 let shape_fbx = alloc();
                 let (shape, shape_indexes) =
                     shape_geometry(shape_fbx, &slot_name, target, vertex_of);
@@ -446,6 +503,310 @@ fn shape_geometry(
         },
         indexes,
     )
+}
+
+/// Where a station shape's deltas come from.
+enum ShapeDeltas<'a> {
+    /// The typed model: dense per-corner position (and normal) deltas.
+    Typed {
+        position: &'a [[f32; 3]],
+        normal: Option<&'a [[f32; 3]]>,
+    },
+    /// A shape the typed model has no slot for, verbatim.
+    Raw {
+        indexes: Vec<i32>,
+        vertices: Vec<f64>,
+        normals: Vec<f64>,
+    },
+}
+
+/// One target shape of a station-layout channel.
+struct StationShape<'a> {
+    name: String,
+    /// Channel percent at which the shape is fully applied.
+    full_weight: f64,
+    /// Emit an (empty) `Properties70` node first.
+    properties70: bool,
+    /// The source `Indexes` — control points listed even where the
+    /// delta is zero.
+    listed: Vec<i32>,
+    deltas: ShapeDeltas<'a>,
+}
+
+/// The shapes of a station-layout channel, in connection order: the
+/// round-tripped list (each shape taking its deltas from where the
+/// decode side put them — the target itself, an in-between, or the
+/// verbatim arrays), then any in-between the list does not name. With
+/// no list: the target at 100 % followed by its in-betweens.
+fn station_shapes<'a>(
+    entry: Option<&serde_json::Value>,
+    target: &'a oxideav_mesh3d::MorphTarget,
+    slot_name: &str,
+) -> Vec<StationShape<'a>> {
+    const EMPTY: &[[f32; 3]] = &[];
+    let mut used = vec![false; target.inbetweens.len()];
+    let mut out = Vec::new();
+    let floats = |v: Option<&serde_json::Value>| -> Vec<f64> {
+        v.and_then(|v| v.as_array())
+            .map(|a| a.iter().filter_map(serde_json::Value::as_f64).collect())
+            .unwrap_or_default()
+    };
+    let ints = |v: Option<&serde_json::Value>| -> Vec<i32> {
+        v.and_then(|v| v.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|x| x.as_i64().and_then(|n| i32::try_from(n).ok()))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let listed_shapes = entry
+        .and_then(|e| e.get("shapes"))
+        .and_then(|v| v.as_array());
+    for shape in listed_shapes.into_iter().flatten() {
+        let name = shape
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_owned();
+        let stored = shape
+            .get("full_weight")
+            .and_then(serde_json::Value::as_f64)
+            .unwrap_or(DEFORM_PERCENT_SCALE);
+        let properties70 = shape
+            .get("properties70")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let listed = ints(shape.get("indexes"));
+        let (full_weight, deltas) = match shape.get("role").and_then(|v| v.as_str()) {
+            Some("primary") => (
+                stored,
+                ShapeDeltas::Typed {
+                    position: target.position.as_deref().unwrap_or(EMPTY),
+                    normal: target.normal.as_deref(),
+                },
+            ),
+            Some("inbetween") => {
+                // By name, else by station weight.
+                let found = target
+                    .inbetweens
+                    .iter()
+                    .enumerate()
+                    .position(|(i, ib)| {
+                        !used[i] && !name.is_empty() && ib.name.as_deref() == Some(name.as_str())
+                    })
+                    .or_else(|| {
+                        target.inbetweens.iter().enumerate().position(|(i, ib)| {
+                            !used[i]
+                                && (f64::from(ib.weight) * DEFORM_PERCENT_SCALE - stored).abs()
+                                    < 1.0e-3
+                        })
+                    });
+                // An in-between the typed model no longer has was
+                // removed by the caller.
+                let Some(i) = found else { continue };
+                used[i] = true;
+                let ib = &target.inbetweens[i];
+                let typed = f64::from(ib.weight) * DEFORM_PERCENT_SCALE;
+                (
+                    if (typed - stored).abs() < 1.0e-3 {
+                        stored
+                    } else {
+                        typed
+                    },
+                    ShapeDeltas::Typed {
+                        position: ib.position.as_deref().unwrap_or(EMPTY),
+                        normal: ib.normal.as_deref(),
+                    },
+                )
+            }
+            _ => (
+                stored,
+                ShapeDeltas::Raw {
+                    indexes: listed.clone(),
+                    vertices: floats(shape.get("vertices")),
+                    normals: floats(shape.get("normals")),
+                },
+            ),
+        };
+        out.push(StationShape {
+            name,
+            full_weight,
+            properties70,
+            listed,
+            deltas,
+        });
+    }
+    if listed_shapes.is_none() {
+        out.push(StationShape {
+            name: slot_name.to_owned(),
+            full_weight: DEFORM_PERCENT_SCALE,
+            properties70: false,
+            listed: Vec::new(),
+            deltas: ShapeDeltas::Typed {
+                position: target.position.as_deref().unwrap_or(EMPTY),
+                normal: target.normal.as_deref(),
+            },
+        });
+    }
+    for (i, ib) in target.inbetweens.iter().enumerate() {
+        if used[i] || !ib.is_valid_weight() {
+            continue;
+        }
+        let full_weight = f64::from(ib.weight) * DEFORM_PERCENT_SCALE;
+        out.push(StationShape {
+            name: ib
+                .name
+                .clone()
+                .unwrap_or_else(|| format!("{slot_name}_at{full_weight}")),
+            full_weight,
+            properties70: false,
+            listed: Vec::new(),
+            deltas: ShapeDeltas::Typed {
+                position: ib.position.as_deref().unwrap_or(EMPTY),
+                normal: ib.normal.as_deref(),
+            },
+        });
+    }
+    out
+}
+
+/// The channel percent to write: the source `DeformPercent` property
+/// value while the typed static weight still equals it (the weight is
+/// an `f32` blend factor, the wire a float64 percent), else the typed
+/// weight × 100.
+fn static_percent(entry: Option<&serde_json::Value>, static_weight: f32) -> f64 {
+    let typed = f64::from(static_weight) * DEFORM_PERCENT_SCALE;
+    entry
+        .and_then(|e| e.get("records"))
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(crate::properties70::json_to_p_record)
+        .find(|p| crate::properties70::p_name(p) == Some("DeformPercent"))
+        .and_then(|p| crate::properties70::p_numeric_values(&p).first().copied())
+        .filter(|source| (source - typed).abs() < 1.0e-4)
+        .unwrap_or(typed)
+}
+
+/// The channel's `Properties70` records: the source's, with
+/// `DeformPercent` holding `percent` — present exactly when the value
+/// is not the default 0 (§4.3; the property, not the body leaf, is
+/// what a reader takes the channel percent from).
+fn channel_records(entry: Option<&serde_json::Value>, percent: f64) -> Vec<FbxNode> {
+    let mut records: Vec<FbxNode> = entry
+        .and_then(|e| e.get("records"))
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(crate::properties70::json_to_p_record)
+        .collect();
+    let at = records
+        .iter()
+        .position(|p| crate::properties70::p_name(p) == Some("DeformPercent"));
+    match at {
+        Some(i) if percent == 0.0 => {
+            records.remove(i);
+        }
+        Some(i) => {
+            records[i].properties.truncate(4);
+            records[i].properties.push(FbxProperty::F64(percent));
+        }
+        None if percent != 0.0 => records.push(FbxNode {
+            name: "P".to_string(),
+            properties: vec![
+                FbxProperty::String(b"DeformPercent".to_vec()),
+                FbxProperty::String(b"Number".to_vec()),
+                FbxProperty::String(Vec::new()),
+                FbxProperty::String(b"A".to_vec()),
+                FbxProperty::F64(percent),
+            ],
+            children: Vec::new(),
+        }),
+        None => {}
+    }
+    records
+}
+
+/// A `Shape` geometry in the station layout (§4.4): `Version`,
+/// `Indexes`, `Vertices`, `Normals` — sparse, ascending, the normal
+/// array always present and as long as `Vertices`; a shape that moves
+/// nothing is one dummy entry (`Indexes {0}`, zeros).
+fn station_shape_geometry(id: i64, shape: &StationShape<'_>, vertex_of: Option<&[u32]>) -> FbxNode {
+    let (indexes, vertices, normals) = match &shape.deltas {
+        ShapeDeltas::Raw {
+            indexes,
+            vertices,
+            normals,
+        } => (indexes.clone(), vertices.clone(), normals.clone()),
+        ShapeDeltas::Typed { position, normal } => {
+            let n = position.len().max(normal.map_or(0, <[_]>::len));
+            let mut seen: std::collections::HashSet<u32> = std::collections::HashSet::new();
+            let mut rows: Vec<(i32, [f32; 3], [f32; 3])> = Vec::new();
+            for i in 0..n {
+                let p = position.get(i).copied().unwrap_or([0.0; 3]);
+                let nrm = normal.and_then(|v| v.get(i)).copied().unwrap_or([0.0; 3]);
+                let index = match vertex_of {
+                    Some(map) => match map.get(i) {
+                        Some(v) => *v,
+                        None => continue,
+                    },
+                    None => i as u32,
+                };
+                // Listed by the source (a welded geometry keeps its
+                // control-point numbering), or moved.
+                let listed = vertex_of.is_some() && shape.listed.contains(&(index as i32));
+                if (p == [0.0; 3] && nrm == [0.0; 3] && !listed) || !seen.insert(index) {
+                    continue;
+                }
+                rows.push((index as i32, p, nrm));
+            }
+            rows.sort_by_key(|r| r.0);
+            if rows.is_empty() {
+                rows.push((0, [0.0; 3], [0.0; 3]));
+            }
+            (
+                rows.iter().map(|r| r.0).collect(),
+                rows.iter()
+                    .flat_map(|r| r.1)
+                    .map(f64::from)
+                    .collect::<Vec<f64>>(),
+                rows.iter()
+                    .flat_map(|r| r.2)
+                    .map(f64::from)
+                    .collect::<Vec<f64>>(),
+            )
+        }
+    };
+    let mut children = Vec::new();
+    if shape.properties70 {
+        children.push(FbxNode {
+            name: "Properties70".to_string(),
+            properties: Vec::new(),
+            children: Vec::new(),
+        });
+    }
+    children.push(leaf_i32("Version", 100));
+    for (name, prop) in [
+        ("Indexes", FbxProperty::I32Array(indexes)),
+        ("Vertices", FbxProperty::F64Array(vertices)),
+        ("Normals", FbxProperty::F64Array(normals)),
+    ] {
+        children.push(FbxNode {
+            name: name.to_string(),
+            properties: vec![prop],
+            children: Vec::new(),
+        });
+    }
+    FbxNode {
+        name: "Geometry".to_string(),
+        properties: vec![
+            FbxProperty::I64(id),
+            FbxProperty::String(name_class(&shape.name, "Geometry")),
+            FbxProperty::String(b"Shape".to_vec()),
+        ],
+        children,
+    }
 }
 
 /// A channel's `FullWeights` array for the Shape `indexes` being

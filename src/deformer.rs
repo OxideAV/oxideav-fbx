@@ -63,18 +63,25 @@
 //!   the **top 4 weights** per vertex (the
 //!   [`oxideav_mesh3d::Primitive::weights`] / `joints` slots are
 //!   `[f32; 4]` / `[u16; 4]`).
-//! - In-between shapes (`MorphTarget::inbetweens`) are not decoded.
-//!   The staged blend-shape fixtures
-//!   (`docs/3d/fbx/blender-export-sweeps-2026-09.md` §4) carry exactly
-//!   one `Shape` per channel — chained relative keys are written as
-//!   separate channels, each storing its delta against its own
-//!   reference key — and their `FullWeights` is the per-vertex array
-//!   [`FULL_WEIGHTS_KEY`] carries (`len(Indexes)` percent values), not
-//!   a per-`Shape` station table. No staged file has a multi-`Shape`
-//!   channel, so the station weight each extra `Shape` would get is
-//!   unpinned; one [`oxideav_mesh3d::MorphTarget`] is emitted per
-//!   channel, sourced from the most recent `Shape` connection, with
-//!   `inbetweens` empty.
+//! - **In-between shapes** (`docs/3d/fbx/fbx-sdk-export-sweeps-2026-11.md`
+//!   §4): a channel may have several `Shape` geometries connected, and
+//!   `FullWeights` then holds one float64 per shape — the channel
+//!   percent at which that shape is fully applied, in connection
+//!   order, unsorted. The shape at 100 % becomes the
+//!   [`oxideav_mesh3d::MorphTarget`]'s own deltas and every other
+//!   station an entry of `MorphTarget::inbetweens` at
+//!   `full_weight / 100` (each shape stores its delta against the base
+//!   mesh, which is exactly the in-between model). When no shape sits
+//!   at 100 % the deltas at weight 1 are read off the station table.
+//!   How the vendor blends between stations is **not** staged (§4.5,
+//!   §5 item 15); the typed model's reading —
+//!   `MorphTarget::at_weight`, piecewise linear through the stations
+//!   and the base mesh at 0 % — is what a consumer gets.
+//!   [`BLEND_CHANNELS_KEY`] carries what the typed model cannot (shape
+//!   names and order, a second shape at one percent, a channel without
+//!   shapes). Another producer's per-vertex `FullWeights`
+//!   (`blender-export-sweeps-2026-09.md` §4.1) is told apart by its
+//!   length and stays on [`FULL_WEIGHTS_KEY`].
 //! - Skinning method (`SKINNING_METHOD_*`) is not surfaced; we always
 //!   produce LBS-compatible weight buffers.
 
@@ -107,6 +114,28 @@ pub const DEFORM_PERCENT_SCALE: f64 = 100.0;
 /// give the array a per-`Shape` (in-between station) meaning is not
 /// pinned, so the values are carried, not applied to the deltas.
 pub const FULL_WEIGHTS_KEY: &str = "fbx:blend_full_weights";
+
+/// `Primitive::extras` key: one entry per morph-target slot (aligned
+/// with `Primitive::targets`) describing the slot's
+/// `BlendShapeChannel` and its target shapes:
+///
+/// ```json
+/// { "deformer": "BS",            // the owning BlendShape's name
+///   "records": [P…],             // the channel's own Properties70
+///   "station_table": true,       // FullWeights is one percent per shape
+///   "shapes": [                  // connection order
+///     { "name": "A_full100", "full_weight": 100.0, "properties70": false,
+///       "role": "primary" | "inbetween" | "extra",
+///       "indexes": [2] } ] }
+/// ```
+///
+/// `role` says where the shape went in the typed model: the target's
+/// own deltas (`primary`, the shape at 100 %), one of
+/// `MorphTarget::inbetweens` at `full_weight / 100` (`inbetween`), or
+/// nowhere (`extra` — a second shape at one percent, or one at 0 %;
+/// its `vertices` / `normals` arrays ride along verbatim). The writer
+/// re-emits the channel and every shape from it.
+pub const BLEND_CHANNELS_KEY: &str = "fbx:blend_channels";
 
 /// One `BlendShapeChannel`'s animation binding: which scene node's
 /// `MorphWeights` property its `DeformPercent` curves drive, and which
@@ -466,73 +495,122 @@ pub fn extract_deformers(
         let n_corners = corner_indices.len();
         let mut slot_names: Vec<String> = Vec::new();
         for &channel_id in channels {
-            let shape_ids = match shapes_of_channel.get(&channel_id) {
-                Some(v) => v,
-                None => continue,
+            let channel_node = blend_channels.get(&channel_id).copied();
+            // Every `Shape` connected to the channel, in connection
+            // order, with the percent at which it is fully applied.
+            let shape_nodes: Vec<&FbxNode> = shapes_of_channel
+                .get(&channel_id)
+                .into_iter()
+                .flatten()
+                .filter_map(|id| shape_geometries.get(id).copied())
+                .collect();
+            let full_weights_record = channel_node.and_then(|c| read_f64_array(c, "FullWeights"));
+            let stations = shape_stations(&shape_nodes, full_weights_record.as_deref());
+            let expand = |sparse: &HashMap<u32, [f32; 3]>| -> Vec<[f32; 3]> {
+                corner_indices
+                    .iter()
+                    .map(|ix| sparse.get(ix).copied().unwrap_or([0.0; 3]))
+                    .collect()
             };
-            let shape_id = match shape_ids.last() {
-                Some(s) => *s,
-                None => continue,
-            };
-            let shape_node = match shape_geometries.get(&shape_id) {
-                Some(n) => *n,
-                None => continue,
-            };
+            let has_normals = |s: &SparseShape| s.normals.values().any(|n| *n != [0.0; 3]);
 
-            let indexes = read_i32_array(shape_node, "Indexes").unwrap_or_default();
-            let raw_pos = read_f64_array(shape_node, "Vertices").unwrap_or_default();
-            let raw_norm = read_f64_array(shape_node, "Normals").unwrap_or_default();
-
-            // Build sparse delta maps keyed by shared-vertex index.
-            let mut pos_delta: HashMap<u32, [f32; 3]> = HashMap::new();
-            for (slot, &shared_ix) in indexes.iter().enumerate() {
-                if shared_ix < 0 {
-                    continue;
-                }
-                if slot * 3 + 2 < raw_pos.len() {
-                    pos_delta.insert(
-                        shared_ix as u32,
-                        [
-                            raw_pos[slot * 3] as f32,
-                            raw_pos[slot * 3 + 1] as f32,
-                            raw_pos[slot * 3 + 2] as f32,
-                        ],
-                    );
-                }
-            }
-            let mut norm_delta: HashMap<u32, [f32; 3]> = HashMap::new();
-            if !raw_norm.is_empty() && raw_norm.len() == raw_pos.len() {
-                for (slot, &shared_ix) in indexes.iter().enumerate() {
-                    if shared_ix < 0 {
-                        continue;
-                    }
-                    if slot * 3 + 2 < raw_norm.len() {
-                        norm_delta.insert(
-                            shared_ix as u32,
-                            [
-                                raw_norm[slot * 3] as f32,
-                                raw_norm[slot * 3 + 1] as f32,
-                                raw_norm[slot * 3 + 2] as f32,
-                            ],
-                        );
-                    }
-                }
-            }
-
-            // Expand to per-corner.
+            // The primary deltas (the station at 100 %), the in-between
+            // stations, and the per-shape record entries.
             let mut tgt = MorphTarget::new();
-            let mut pos_buf: Vec<[f32; 3]> = Vec::with_capacity(n_corners);
-            for &shared_ix in &corner_indices {
-                pos_buf.push(pos_delta.get(&shared_ix).copied().unwrap_or([0.0; 3]));
-            }
-            tgt.position = Some(pos_buf);
-            if !norm_delta.is_empty() {
-                let mut norm_buf: Vec<[f32; 3]> = Vec::with_capacity(n_corners);
-                for &shared_ix in &corner_indices {
-                    norm_buf.push(norm_delta.get(&shared_ix).copied().unwrap_or([0.0; 3]));
+            let mut shape_entries: Vec<serde_json::Value> = Vec::new();
+            let mut primary: Option<&SparseShape> = None;
+            let mut seen_weights: Vec<f32> = Vec::new();
+            for st in &stations {
+                let w = (st.full_weight / DEFORM_PERCENT_SCALE) as f32;
+                let role = if w == 1.0 && primary.is_none() {
+                    primary = Some(&st.shape);
+                    "primary"
+                } else if w.is_finite() && w != 0.0 && w != 1.0 && !seen_weights.contains(&w) {
+                    seen_weights.push(w);
+                    let mut ib = oxideav_mesh3d::Inbetween::new(w)
+                        .with_position(expand(&st.shape.positions));
+                    if !st.name.is_empty() {
+                        ib = ib.with_name(st.name.clone());
+                    }
+                    if has_normals(&st.shape) {
+                        ib = ib.with_normal(expand(&st.shape.normals));
+                    }
+                    tgt.inbetweens.push(ib);
+                    "inbetween"
+                } else {
+                    // A second shape at one percent, or one at 0 %:
+                    // not a station of the piecewise reading — carried
+                    // verbatim.
+                    "extra"
+                };
+                let mut entry = serde_json::json!({
+                    "name": st.name,
+                    "full_weight": st.full_weight,
+                    "properties70": st.shape.has_properties70,
+                    "role": role,
+                    "indexes": st.shape.indexes,
+                });
+                if role == "extra" {
+                    entry["vertices"] = serde_json::json!(st.shape.raw_vertices);
+                    entry["normals"] = serde_json::json!(st.shape.raw_normals);
                 }
-                tgt.normal = Some(norm_buf);
+                shape_entries.push(entry);
             }
+            match primary {
+                Some(shape) => {
+                    tgt.position = Some(expand(&shape.positions));
+                    if has_normals(shape) {
+                        tgt.normal = Some(expand(&shape.normals));
+                    }
+                }
+                None => {
+                    // No shape sits at 100 %: the deltas at weight 1
+                    // are read off the piecewise-linear station table
+                    // (the base mesh at 0 % included), so the typed
+                    // target evaluates to the same shape at every
+                    // weight.
+                    let (pos, norm) = station_value_at_one(&tgt.inbetweens, n_corners);
+                    tgt.position = Some(pos);
+                    tgt.normal = norm;
+                }
+            }
+            // The index list of the shape the legacy per-vertex
+            // `FullWeights` reading pairs with (the last connected).
+            let indexes: Vec<i32> = stations
+                .last()
+                .map(|st| st.shape.indexes.clone())
+                .unwrap_or_default();
+            let per_shape_table = full_weights_record
+                .as_ref()
+                .is_some_and(|w| w.len() == shape_nodes.len());
+            // One shape listing one control point with a one-element
+            // `FullWeights` fits both renditions. The channel says
+            // which producer wrote it: a non-zero percent held only by
+            // the body leaf, with no `Properties70`, is the per-vertex
+            // producer's channel form (the per-shape producer keeps
+            // the percent in a property, §4.3).
+            let ambiguous = shape_nodes.len() == 1 && indexes.len() == 1;
+            let leaf_only_percent = channel_node.is_some_and(|c| {
+                c.child("Properties70").is_none()
+                    && c.child("DeformPercent")
+                        .and_then(|n| n.properties.first())
+                        .and_then(FbxProperty::as_f64_loose)
+                        .is_some_and(|v| v != 0.0)
+            });
+            let station_layout =
+                shape_nodes.is_empty() || (per_shape_table && !(ambiguous && leaf_only_percent));
+            let blend_entry = serde_json::json!({
+                "deformer": blend_deformers
+                    .get(blend_id)
+                    .copied()
+                    .and_then(display_name)
+                    .unwrap_or_default(),
+                "records": channel_node
+                    .map(crate::properties70::own_records_json)
+                    .unwrap_or_default(),
+                "station_table": station_layout,
+                "shapes": shape_entries,
+            });
 
             // The channel's static (rest) weight: its own
             // `DeformPercent` `Properties70` record, 0..100 on the
@@ -547,8 +625,9 @@ pub fn extract_deformers(
             // `Indexes[k]`, percent) — kept per slot, keyed by the
             // Shape's own `Indexes`, so the writer re-emits it against
             // whatever index set it writes.
-            let full_weights = channel_node
-                .and_then(|c| read_f64_array(c, "FullWeights"))
+            let full_weights = full_weights_record
+                .as_ref()
+                .filter(|w| !per_shape_table || w.len() == indexes.len())
                 .map(|w| {
                     serde_json::json!({
                         "indexes": indexes,
@@ -575,6 +654,15 @@ pub fn extract_deformers(
                 if let Some(arr) = fw.as_array_mut() {
                     arr.resize(target_index, serde_json::Value::Null);
                     arr.push(full_weights);
+                }
+                // Per-slot channel record ([`BLEND_CHANNELS_KEY`]).
+                let bc = prim
+                    .extras
+                    .entry(BLEND_CHANNELS_KEY.to_string())
+                    .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+                if let Some(arr) = bc.as_array_mut() {
+                    arr.resize(target_index, serde_json::Value::Null);
+                    arr.push(blend_entry);
                 }
                 mesh.weights.push(static_weight);
                 slot_names.push(channel_node.and_then(display_name).unwrap_or_default());
@@ -626,6 +714,152 @@ pub fn extract_deformers(
     }
 
     out
+}
+
+/// One `Shape` geometry's sparse deltas.
+struct SparseShape {
+    /// `Indexes` as stored.
+    indexes: Vec<i32>,
+    /// Position delta per listed control point.
+    positions: HashMap<u32, [f32; 3]>,
+    /// Normal delta per listed control point (empty when the array is
+    /// absent or its length disagrees with `Vertices`).
+    normals: HashMap<u32, [f32; 3]>,
+    /// `Vertices` as stored.
+    raw_vertices: Vec<f64>,
+    /// `Normals` as stored.
+    raw_normals: Vec<f64>,
+    /// The element carries a `Properties70` node (empty on every
+    /// staged shape that has one).
+    has_properties70: bool,
+}
+
+impl SparseShape {
+    fn read(node: &FbxNode) -> Self {
+        let indexes = read_i32_array(node, "Indexes").unwrap_or_default();
+        let raw_vertices = read_f64_array(node, "Vertices").unwrap_or_default();
+        let raw_normals = read_f64_array(node, "Normals").unwrap_or_default();
+        let sparse = |raw: &[f64]| -> HashMap<u32, [f32; 3]> {
+            let mut out = HashMap::new();
+            for (slot, &ix) in indexes.iter().enumerate() {
+                if ix >= 0 && slot * 3 + 2 < raw.len() {
+                    out.insert(
+                        ix as u32,
+                        [
+                            raw[slot * 3] as f32,
+                            raw[slot * 3 + 1] as f32,
+                            raw[slot * 3 + 2] as f32,
+                        ],
+                    );
+                }
+            }
+            out
+        };
+        let positions = sparse(&raw_vertices);
+        let normals = if !raw_normals.is_empty() && raw_normals.len() == raw_vertices.len() {
+            sparse(&raw_normals)
+        } else {
+            HashMap::new()
+        };
+        Self {
+            positions,
+            normals,
+            has_properties70: node.child("Properties70").is_some(),
+            indexes,
+            raw_vertices,
+            raw_normals,
+        }
+    }
+}
+
+/// One target shape of a channel with the percent at which it is fully
+/// applied.
+struct ShapeStation {
+    name: String,
+    full_weight: f64,
+    shape: SparseShape,
+}
+
+/// Pair a channel's shapes (connection order) with their full-weight
+/// percents (`docs/3d/fbx/fbx-sdk-export-sweeps-2026-11.md` §4.2).
+///
+/// `FullWeights` is the per-shape table when its length equals the
+/// shape count: element *k* belongs to the *k*-th connected shape,
+/// unsorted. Otherwise the record is another producer's per-vertex
+/// rendition (`blender-export-sweeps-2026-09.md` §4.1) or absent, and
+/// a lone shape sits at 100 %; with several shapes and a table of
+/// another length, a missing entry reads 0 as the vendor reader does —
+/// and with no record at all every shape reads 100.
+fn shape_stations(shapes: &[&FbxNode], full_weights: Option<&[f64]>) -> Vec<ShapeStation> {
+    let table = full_weights.filter(|w| w.len() == shapes.len());
+    shapes
+        .iter()
+        .enumerate()
+        .map(|(k, node)| ShapeStation {
+            name: display_name(node).unwrap_or_default(),
+            full_weight: match (table, full_weights) {
+                (Some(t), _) => t[k],
+                (None, Some(w)) if shapes.len() > 1 => w.get(k).copied().unwrap_or(0.0),
+                _ => DEFORM_PERCENT_SCALE,
+            },
+            shape: SparseShape::read(node),
+        })
+        .collect()
+}
+
+/// `(weight, position deltas, normal deltas)` of one station.
+type Station<'a> = (f32, &'a [[f32; 3]], Option<&'a [[f32; 3]]>);
+
+/// The deltas at channel weight 1 for a target whose stations are its
+/// in-betweens plus the base mesh at weight 0 — the piecewise-linear
+/// reading [`oxideav_mesh3d::MorphTarget::at_weight`] applies, with
+/// the nearest segment extrapolating beyond the outermost stations.
+fn station_value_at_one(
+    inbetweens: &[oxideav_mesh3d::Inbetween],
+    n: usize,
+) -> (Vec<[f32; 3]>, Option<Vec<[f32; 3]>>) {
+    let zeros = vec![[0.0f32; 3]; n];
+    // (weight, position, normal) with the base mesh at 0.
+    let mut stations: Vec<Station<'_>> = vec![(0.0, &zeros, None)];
+    for ib in inbetweens {
+        if let Some(p) = &ib.position {
+            stations.push((ib.weight, p, ib.normal.as_deref()));
+        }
+    }
+    stations.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    if stations.len() < 2 {
+        return (zeros, None);
+    }
+    // The segment containing 1, else the nearest one.
+    let hi = stations
+        .iter()
+        .position(|s| s.0 >= 1.0)
+        .unwrap_or(stations.len() - 1)
+        .max(1);
+    let (a, b) = (&stations[hi - 1], &stations[hi]);
+    let f = if b.0 != a.0 {
+        (1.0 - a.0) / (b.0 - a.0)
+    } else {
+        0.0
+    };
+    let mix = |x: &[[f32; 3]], y: &[[f32; 3]]| -> Vec<[f32; 3]> {
+        (0..n)
+            .map(|i| {
+                let (p, q) = (
+                    x.get(i).copied().unwrap_or([0.0; 3]),
+                    y.get(i).copied().unwrap_or([0.0; 3]),
+                );
+                [
+                    p[0] + (q[0] - p[0]) * f,
+                    p[1] + (q[1] - p[1]) * f,
+                    p[2] + (q[2] - p[2]) * f,
+                ]
+            })
+            .collect()
+    };
+    let normal =
+        (a.2.is_some() || b.2.is_some()).then(|| mix(a.2.unwrap_or(&zeros), b.2.unwrap_or(&zeros)));
+    (mix(a.1, b.1), normal)
 }
 
 /// A channel's static `DeformPercent` (0..100): the `Properties70`
