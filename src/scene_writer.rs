@@ -215,8 +215,12 @@ pub fn encode_scene_with_options(scene: &Scene3D, opts: &SceneEncodeOptions) -> 
     // writer needs for cluster / shape `Indexes`.
     let mut corner_maps: Vec<Option<Vec<u32>>> = Vec::with_capacity(scene.meshes.len());
     for (mi, mesh) in scene.meshes.iter().enumerate() {
-        let geom = build_geometry(mesh, mesh_ids[mi], opts);
+        let geom = build_geometry(mesh, mesh_ids[mi], opts, &mut || alloc.next());
         objects.children.push(geom.node);
+        // The objects a trimmed surface owns (untrimmed surface,
+        // boundaries, edge curves) and their `OO` edges.
+        objects.children.extend(geom.owned_objects);
+        connections.children.extend(geom.owned_connections);
         corner_maps.push(geom.corner_to_vertex);
     }
 
@@ -342,7 +346,19 @@ pub fn encode_scene_with_options(scene: &Scene3D, opts: &SceneEncodeOptions) -> 
 
     // -- Model records (one per node) -----------------------------------
     for (ni, node) in scene.nodes.iter().enumerate() {
-        let model = build_model(node, node_ids[ni]);
+        let mut model = build_model(node, node_ids[ni]);
+        // A Model of a non-polygon geometry carries the geometry's
+        // sub-type string (`fbx-sdk-export-sweeps-2026-11.md` §3.1);
+        // a decoded node already has it on `fbx:model_subtype`.
+        if !node.extras.contains_key("fbx:model_subtype")
+            && let Some(st) = node
+                .mesh
+                .and_then(|m| scene.meshes.get(m.0 as usize))
+                .and_then(|m| m.primitives.first())
+                .and_then(non_polygon_subtype)
+        {
+            model.properties[2] = FbxProperty::String(st.as_bytes().to_vec());
+        }
         objects.children.push(model);
         // Light / Camera NodeAttribute (round 384) — one attribute
         // element per bound node, OO-connected to the owning Model
@@ -2140,6 +2156,22 @@ fn build_bind_pose(entries: Vec<(i64, Vec<f64>)>, id: i64) -> FbxNode {
 struct GeometryEmit {
     node: FbxNode,
     corner_to_vertex: Option<Vec<u32>>,
+    /// `Geometry` objects connected under this one.
+    owned_objects: Vec<FbxNode>,
+    /// Their `Geometry → Geometry` `OO` connections.
+    owned_connections: Vec<FbxNode>,
+}
+
+/// The `Geometry` sub-type of a primitive that carries a non-polygon
+/// record set (`NurbsCurve`, or a [`crate::geometry_tree`] tree).
+fn non_polygon_subtype(prim: &Primitive) -> Option<&str> {
+    if prim
+        .extras
+        .contains_key(crate::nurbs_geometry::NURBS_CURVE_KEY)
+    {
+        return Some("NurbsCurve");
+    }
+    crate::geometry_tree::tree_subtype(prim)
 }
 
 /// Build the `Geometry` element for a mesh: the **welded** form when
@@ -2147,7 +2179,32 @@ struct GeometryEmit {
 /// still agree with the round-tripped control-point table + polygon
 /// structure (`fbx:shared_positions` / `fbx:polygon_vertex_index`),
 /// else the expanded disconnected-triangle form.
-fn build_geometry(mesh: &Mesh, id: i64, opts: &SceneEncodeOptions) -> GeometryEmit {
+fn build_geometry(
+    mesh: &Mesh,
+    id: i64,
+    opts: &SceneEncodeOptions,
+    alloc: &mut dyn FnMut() -> i64,
+) -> GeometryEmit {
+    // A non-polygon geometry (`NurbsSurface` / `TrimNurbsSurface` /
+    // `Line` / …): its record tree rides on the first primitive.
+    if let Some(tree) = mesh
+        .primitives
+        .first()
+        .and_then(|p| p.extras.get(crate::geometry_tree::GEOMETRY_TREE_KEY))
+        && let Some(emit) = crate::geometry_tree::elements_from_tree(
+            tree,
+            id,
+            mesh.name.as_deref().unwrap_or(""),
+            alloc,
+        )
+    {
+        return GeometryEmit {
+            node: emit.root,
+            corner_to_vertex: None,
+            owned_objects: emit.objects,
+            owned_connections: emit.connections,
+        };
+    }
     // A decoded / API-built `NurbsCurve` geometry: its record set
     // rides on the (single) sampled-line primitive.
     if let Some(record) = mesh
@@ -2163,6 +2220,8 @@ fn build_geometry(mesh: &Mesh, id: i64, opts: &SceneEncodeOptions) -> GeometryEm
         return GeometryEmit {
             node,
             corner_to_vertex: None,
+            owned_objects: Vec::new(),
+            owned_connections: Vec::new(),
         };
     }
     if let Some(plan) = mesh
@@ -2175,11 +2234,15 @@ fn build_geometry(mesh: &Mesh, id: i64, opts: &SceneEncodeOptions) -> GeometryEm
         return GeometryEmit {
             node,
             corner_to_vertex: Some(plan.corner_to_vertex),
+            owned_objects: Vec::new(),
+            owned_connections: Vec::new(),
         };
     }
     GeometryEmit {
         node: build_expanded_geometry(mesh, id, opts),
         corner_to_vertex: None,
+        owned_objects: Vec::new(),
+        owned_connections: Vec::new(),
     }
 }
 

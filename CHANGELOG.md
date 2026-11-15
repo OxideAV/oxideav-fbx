@@ -9,6 +9,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- NURBS grammar of the 2026-11 sweep, binary 7400 / 7500 and ASCII:
+  `FbxNurbsSurface` (orders, dimensions, forms, steps, surface mode,
+  knots, `FlipNormals`; U-fastest control grid; `Closed` / `Periodic`
+  per direction), `FbxLine` (complement end marks → polylines),
+  `FbxTrimSurface` / `FbxBoundary` (untrimmed surface, boundary loops
+  of edge curves, trim regions from the connection order and the
+  `OuterBoundary` flag, region membership, trimmed tessellation), each
+  with `from_element` / `to_element` / `to_mesh`. The older `Nurb` /
+  `Patch` families ride along verbatim.
+- `geometry_tree` module: a non-polygon geometry and everything
+  connected under it decode to one sampled mesh carrying the record
+  tree on `extras["fbx:geometry_tree"]`; the encoder writes every
+  object back with its `Geometry → Geometry` connections in order and
+  the Model sub-type of the geometry. Previously these geometries were
+  dropped on re-encode and trim edge curves surfaced as stray nodes.
+- Tolerance tessellation: `NurbsCurve::tessellate_within`,
+  `NurbsSurface::tessellate_within` / `resolution_within`,
+  `NurbsTessellation` (`segments_per_span` or chord `tolerance`),
+  `SceneDecodeOptions::with_nurbs` / `with_nurbs_tolerance`; a
+  surface's own `Step` sets its per-span resolution.
+
+### Changed
+
+- NURBS curve points are read as homogeneous coordinates (the stored
+  `x, y, z` divided by the blended `w`), the convention the sweep pins
+  for curves; `Dimension 2` curves evaluate in the `z = 0` plane.
+
 - `anim_curve` module — typed `AnimationCurve` model per the 2026-11
   key-attribute sweep: `KeyAttrFlags` (interpolation, constant mode,
   tangent mode, break / clamp / time-independent / progressive-clamp,

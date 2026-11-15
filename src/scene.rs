@@ -53,12 +53,16 @@ pub struct SceneDecodeOptions {
     /// fraction of the curve's value range
     /// ([`crate::animation::DEFAULT_CURVE_TOLERANCE`]).
     pub curve_tolerance: f32,
+    /// How NURBS curves and surfaces are sampled into meshes
+    /// (segments per knot span, or a chord tolerance).
+    pub nurbs: crate::nurbs_geometry::NurbsTessellation,
 }
 
 impl Default for SceneDecodeOptions {
     fn default() -> Self {
         Self {
             curve_tolerance: crate::animation::DEFAULT_CURVE_TOLERANCE,
+            nurbs: crate::nurbs_geometry::NurbsTessellation::default(),
         }
     }
 }
@@ -73,6 +77,18 @@ impl SceneDecodeOptions {
     /// [`curve_tolerance`](Self::curve_tolerance).
     pub fn with_curve_tolerance(mut self, curve_tolerance: f32) -> Self {
         self.curve_tolerance = curve_tolerance;
+        self
+    }
+
+    /// Builder-style setter for [`nurbs`](Self::nurbs).
+    pub fn with_nurbs(mut self, nurbs: crate::nurbs_geometry::NurbsTessellation) -> Self {
+        self.nurbs = nurbs;
+        self
+    }
+
+    /// Sample NURBS geometry within a chord tolerance (model units).
+    pub fn with_nurbs_tolerance(mut self, tolerance: f64) -> Self {
+        self.nurbs = self.nurbs.with_tolerance(tolerance);
         self
     }
 }
@@ -122,6 +138,9 @@ pub fn build_scene_with_options(
     // round-trips even when their attribute payloads aren't decoded.
     let mut model_subtypes: HashMap<i64, String> = HashMap::new();
 
+    // `Geometry → Geometry` ownership (trimmed surfaces).
+    let geometry_index = crate::geometry_tree::GeometryIndex::new(doc);
+
     if let Some(objects) = doc.root.child("Objects") {
         for child in &objects.children {
             match child.name.as_str() {
@@ -143,6 +162,10 @@ pub fn build_scene_with_options(
                         let mid = scene.add_mesh(mesh);
                         geometry_meshes.insert(id, mid);
                         geometry_corner_indices.insert(id, corners);
+                    } else if geometry_index.is_owned(id) {
+                        // An untrimmed surface, a boundary or an edge
+                        // curve: part of the trimmed surface it is
+                        // connected under (`crate::geometry_tree`).
                     } else if subtype(child).as_deref() == Some("NurbsCurve") {
                         // `NurbsCurve` (staged grammar:
                         // `fixtures/nurbs-curves-ascii-v7200/notes.md`)
@@ -151,6 +174,21 @@ pub fn build_scene_with_options(
                         let mesh = crate::nurbs_geometry::mesh_for_element(
                             child,
                             element_name(child).filter(|n| !n.is_empty()),
+                            &options.nurbs,
+                        );
+                        let mid = scene.add_mesh(mesh);
+                        geometry_meshes.insert(id, mid);
+                    } else if subtype(child).as_deref() != Some("Shape")
+                        && let Some(tree) = geometry_index.tree(id)
+                    {
+                        // `NurbsSurface` / `TrimNurbsSurface` / `Line`
+                        // and the older `Nurb` / `Patch` families
+                        // (`fbx-sdk-export-sweeps-2026-11.md` §3): a
+                        // sampled mesh carrying the whole record tree.
+                        let mesh = crate::geometry_tree::mesh_for_tree(
+                            tree,
+                            element_name(child).filter(|n| !n.is_empty()),
+                            &options.nurbs,
                         );
                         let mid = scene.add_mesh(mesh);
                         geometry_meshes.insert(id, mid);

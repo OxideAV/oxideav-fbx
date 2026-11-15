@@ -3,12 +3,10 @@
 //! FBX carries free-form geometry as `Geometry` elements whose §6
 //! prop2 subtype is `"NurbsCurve"` / `"NurbsSurface"` /
 //! `"TrimNurbsSurface"` / `"Boundary"` / `"Line"`
-//! (`docs/3d/fbx/fbx-binary-properties70.md` §6 point 3). The
-//! `NurbsCurve` record set is staged
-//! (`docs/3d/fbx/fixtures/nurbs-curves-ascii-v7200/`) and joins into
-//! this engine through [`crate::nurbs_geometry`]; the other subtypes'
-//! payloads are not staged (their discriminator still surfaces via
-//! [`crate::geometry_kind`]).
+//! (`docs/3d/fbx/fbx-binary-properties70.md` §6 point 3). Their record
+//! sets (`docs/3d/fbx/fbx-sdk-export-sweeps-2026-11.md` §3) join this
+//! engine through [`crate::nurbs_geometry`] and
+//! [`crate::geometry_tree`].
 //!
 //! This module is the format-independent half:
 //! a validated typed model for rational B-spline (NURBS) curves and
@@ -533,6 +531,9 @@ impl TessellationOptions {
     }
 }
 
+/// Upper bound on the per-span segment count a tolerance can ask for.
+pub const MAX_SEGMENTS_PER_SPAN: u32 = 64;
+
 impl Default for TessellationOptions {
     fn default() -> Self {
         Self {
@@ -593,7 +594,181 @@ impl NurbsCurve {
     }
 }
 
+fn dist(a: [f64; 3], b: [f64; 3]) -> f64 {
+    ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
+}
+
+fn midpoint(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [
+        0.5 * (a[0] + b[0]),
+        0.5 * (a[1] + b[1]),
+        0.5 * (a[2] + b[2]),
+    ]
+}
+
+/// The distinct knot values inside `[lo, hi]`, end points included —
+/// the span boundaries of the evaluation domain.
+fn span_breaks(knots: &[f64], lo: f64, hi: f64) -> Vec<f64> {
+    let mut out = vec![lo];
+    for &k in knots {
+        if k > lo && k < hi && out.last().is_some_and(|l| k > *l) {
+            out.push(k);
+        }
+    }
+    out.push(hi);
+    out
+}
+
+impl NurbsCurve {
+    /// Number of non-empty knot spans in the evaluation domain.
+    pub fn span_count(&self) -> usize {
+        let (lo, hi) = self.domain();
+        span_breaks(&self.knots, lo, hi).len() - 1
+    }
+
+    /// Sample the curve into a line primitive whose chords stay within
+    /// `tolerance` (model units) of the curve.
+    ///
+    /// Each knot span is bisected while the curve's quarter points
+    /// leave the chord by more than `tolerance` (at most
+    /// [`MAX_SEGMENTS_PER_SPAN`] segments per span, the whole capped by
+    /// [`MAX_TESSELLATION_VERTICES`]). Topology and `uvs[0]` are as in
+    /// [`NurbsCurve::tessellate`].
+    pub fn tessellate_within(&self, tolerance: f64) -> Result<Primitive> {
+        if !(tolerance.is_finite() && tolerance > 0.0) {
+            return Err(Error::invalid(
+                "nurbs curve: tessellation tolerance must be finite and positive",
+            ));
+        }
+        let (lo, hi) = self.domain();
+        let breaks = span_breaks(&self.knots, lo, hi);
+        let mut params: Vec<f64> = vec![lo];
+        let max_depth = MAX_SEGMENTS_PER_SPAN.trailing_zeros();
+        for w in breaks.windows(2) {
+            self.bisect_span(&mut params, w[0], w[1], tolerance, max_depth);
+            params.push(w[1]);
+            if params.len() > MAX_TESSELLATION_VERTICES {
+                return Err(Error::invalid(format!(
+                    "nurbs curve: tessellation exceeds the {MAX_TESSELLATION_VERTICES}-vertex cap"
+                )));
+            }
+        }
+        let wraps = self.form.wraps();
+        if wraps {
+            params.pop();
+        }
+        let mut prim = Primitive::new(if wraps {
+            Topology::LineLoop
+        } else {
+            Topology::LineStrip
+        });
+        let mut uv = Vec::with_capacity(params.len());
+        for t in params {
+            let p = self.evaluate(t);
+            prim.positions.push([p[0] as f32, p[1] as f32, p[2] as f32]);
+            uv.push([((t - lo) / (hi - lo)) as f32, 0.0]);
+        }
+        prim.uvs.push(uv);
+        Ok(prim)
+    }
+
+    /// Push the interior parameters of `(a, b)` a chord reading needs.
+    fn bisect_span(&self, out: &mut Vec<f64>, a: f64, b: f64, tolerance: f64, depth: u32) {
+        if depth == 0 {
+            return;
+        }
+        let (pa, pb) = (self.evaluate(a), self.evaluate(b));
+        let flat = [0.25, 0.5, 0.75].iter().all(|f| {
+            let p = self.evaluate(a + (b - a) * f);
+            let chord = [
+                pa[0] + (pb[0] - pa[0]) * f,
+                pa[1] + (pb[1] - pa[1]) * f,
+                pa[2] + (pb[2] - pa[2]) * f,
+            ];
+            dist(p, chord) <= tolerance
+        });
+        if flat {
+            return;
+        }
+        let mid = 0.5 * (a + b);
+        self.bisect_span(out, a, mid, tolerance, depth - 1);
+        out.push(mid);
+        self.bisect_span(out, mid, b, tolerance, depth - 1);
+    }
+}
+
 impl NurbsSurface {
+    /// Non-empty knot spans of the evaluation domain, `(u, v)`.
+    pub fn span_counts(&self) -> (usize, usize) {
+        let (ulo, uhi) = self.domain_u();
+        let (vlo, vhi) = self.domain_v();
+        (
+            span_breaks(&self.knots_u, ulo, uhi).len() - 1,
+            span_breaks(&self.knots_v, vlo, vhi).len() - 1,
+        )
+    }
+
+    /// The `(resolution_u, resolution_v)` segment counts a chord
+    /// `tolerance` asks for: per direction, the per-span segment count
+    /// is doubled (1, 2, 4 … [`MAX_SEGMENTS_PER_SPAN`]) until the
+    /// surface at the mid-point of every facet edge of that direction —
+    /// sampled along the other direction's own grid — is within
+    /// `tolerance` of the edge's mid-point.
+    pub fn resolution_within(&self, tolerance: f64) -> (u32, u32) {
+        let (su, sv) = self.span_counts();
+        let (ulo, uhi) = self.domain_u();
+        let (vlo, vhi) = self.domain_v();
+        // Cross-direction sample lines: enough to see every span.
+        let cross_u = (sv * 2).clamp(2, 64);
+        let cross_v = (su * 2).clamp(2, 64);
+        let fits = |along_u: bool, segments: usize, cross: usize| -> bool {
+            for c in 0..=cross {
+                let fc = c as f64 / cross as f64;
+                for i in 0..segments {
+                    let f0 = i as f64 / segments as f64;
+                    let f1 = (i + 1) as f64 / segments as f64;
+                    let at = |f: f64| {
+                        if along_u {
+                            self.evaluate(ulo + (uhi - ulo) * f, vlo + (vhi - vlo) * fc)
+                        } else {
+                            self.evaluate(ulo + (uhi - ulo) * fc, vlo + (vhi - vlo) * f)
+                        }
+                    };
+                    if dist(at(0.5 * (f0 + f1)), midpoint(at(f0), at(f1))) > tolerance {
+                        return false;
+                    }
+                }
+            }
+            true
+        };
+        let pick = |along_u: bool, spans: usize, cross: usize| -> u32 {
+            let mut per_span = 1u32;
+            while per_span < MAX_SEGMENTS_PER_SPAN
+                && !fits(along_u, spans * per_span as usize, cross)
+            {
+                per_span *= 2;
+            }
+            (spans as u64 * u64::from(per_span)).min(u64::from(u32::MAX)) as u32
+        };
+        (pick(true, su, cross_u), pick(false, sv, cross_v))
+    }
+
+    /// [`NurbsSurface::tessellate`] at the resolution a chord
+    /// `tolerance` (model units) asks for
+    /// ([`NurbsSurface::resolution_within`]).
+    pub fn tessellate_within(&self, tolerance: f64) -> Result<Primitive> {
+        if !(tolerance.is_finite() && tolerance > 0.0) {
+            return Err(Error::invalid(
+                "nurbs surface: tessellation tolerance must be finite and positive",
+            ));
+        }
+        let (resolution_u, resolution_v) = self.resolution_within(tolerance);
+        self.tessellate(&TessellationOptions {
+            resolution_u,
+            resolution_v,
+        })
+    }
+
     /// Tessellate the surface into an indexed triangle primitive.
     ///
     /// Samples a regular `(resolution_u + 1) × (resolution_v + 1)`
@@ -605,8 +780,9 @@ impl NurbsSurface {
     /// `2 · resolution_u · resolution_v`-triangle index buffer wound
     /// counter-clockwise around that normal.
     pub fn tessellate(&self, options: &TessellationOptions) -> Result<Primitive> {
-        let ru = options.resolution_u as usize;
-        let rv = options.resolution_v as usize;
+        let (res_u, res_v) = (options.resolution_u, options.resolution_v);
+        let ru = res_u as usize;
+        let rv = res_v as usize;
         if ru == 0 || rv == 0 {
             return Err(Error::invalid("nurbs surface: tessellation resolution 0"));
         }
@@ -615,9 +791,8 @@ impl NurbsSurface {
             .filter(|&c| c <= MAX_TESSELLATION_VERTICES)
             .ok_or_else(|| {
                 Error::invalid(format!(
-                    "nurbs surface: tessellation of ({} + 1) x ({} + 1) vertices exceeds \
-                     the {MAX_TESSELLATION_VERTICES}-vertex cap",
-                    options.resolution_u, options.resolution_v
+                    "nurbs surface: tessellation of ({res_u} + 1) x ({res_v} + 1) vertices exceeds \
+                     the {MAX_TESSELLATION_VERTICES}-vertex cap"
                 ))
             })?;
         let (ulo, uhi) = self.domain_u();

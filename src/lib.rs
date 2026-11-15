@@ -253,6 +253,10 @@ pub mod geometry;
 /// (round 271).
 #[doc(hidden)]
 pub mod geometry_kind;
+/// Non-polygon `Geometry` objects (`NurbsSurface`, `Line`,
+/// `TrimNurbsSurface` with boundaries and edge curves, `Nurb`,
+/// `Patch`) as sampled meshes carrying their record tree.
+pub mod geometry_tree;
 /// `GlobalSettings` element decoder — scene-wide axis / unit / time /
 /// ambient settings surfaced onto [`oxideav_mesh3d::Scene3D`] (round
 /// 219).
@@ -322,7 +326,9 @@ pub use binary::{
 pub use decoder::{FbxDecoder, is_binary_fbx};
 pub use encoder::{FbxEncoder, FbxOutputForm};
 pub use nurbs::{NurbsCurve, NurbsForm, NurbsSurface, TessellationOptions};
-pub use nurbs_geometry::FbxNurbsCurve;
+pub use nurbs_geometry::{
+    FbxBoundary, FbxLine, FbxNurbsCurve, FbxNurbsSurface, FbxTrimSurface, NurbsTessellation,
+};
 pub use scene::SceneDecodeOptions;
 pub use scene_writer::{SceneEncodeOptions, encode_scene, encode_scene_with_options};
 pub use writer::{WriterOptions, write_document, write_document_with_options};
